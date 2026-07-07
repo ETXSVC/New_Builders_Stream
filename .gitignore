@@ -1,0 +1,10 @@
+# OS / Office lock files
+~$*
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
+# Editor
+.vscode/
