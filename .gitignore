@@ -11,3 +11,6 @@ Thumbs.db
 
 # Git worktrees (isolated implementation workspaces)
 .worktrees/
+
+# Local environment secrets (keep .env.example trackable)
+.env
