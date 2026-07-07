@@ -14,3 +14,11 @@ Thumbs.db
 
 # Local environment secrets (keep .env.example trackable)
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
