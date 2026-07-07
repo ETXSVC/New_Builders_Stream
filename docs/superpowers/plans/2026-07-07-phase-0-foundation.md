@@ -396,14 +396,26 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 async def set_current_user(session: AsyncSession, user_id: str) -> None:
     """Scopes the self-membership RLS policy (design decision #3) to this user for the
-    remainder of the current transaction."""
-    await session.execute(text("SET LOCAL app.current_user_id = :uid"), {"uid": user_id})
+    remainder of the current transaction.
+
+    Uses set_config(), not `SET LOCAL ... = :param`, because PostgreSQL's SET/SET LOCAL
+    grammar only accepts a literal in the value position — a bound parameter there is a
+    syntax error at the server, regardless of driver. set_config(name, value, is_local)
+    is a plain function call, so it accepts bound parameters normally; is_local=true
+    gives it the same transaction-scoped reset-on-commit/rollback semantics as SET LOCAL.
+    """
+    await session.execute(
+        text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": user_id}
+    )
 
 
 async def set_current_tenant(session: AsyncSession, company_id: str) -> None:
     """Scopes every tenant-isolation RLS policy to this company (and its descendants)
-    for the remainder of the current transaction."""
-    await session.execute(text("SET LOCAL app.current_tenant = :cid"), {"cid": company_id})
+    for the remainder of the current transaction. See set_current_user's docstring for
+    why this uses set_config() instead of SET LOCAL with a bound parameter."""
+    await session.execute(
+        text("SELECT set_config('app.current_tenant', :cid, true)"), {"cid": company_id}
+    )
 ```
 
 - [ ] **Step 2: Verify it imports cleanly**
@@ -2472,7 +2484,9 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
         f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
     )
     try:
-        await app_conn.execute("SET app.current_tenant = $1", company_a_id)
+        # set_config(), not `SET app.current_tenant = $1` — see set_current_tenant's
+        # docstring in app/db.py (Task 3) for why a bound parameter there is a syntax error.
+        await app_conn.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
         visible_as_a = await app_conn.fetchrow(
             "SELECT id FROM companies WHERE id = $1", company_b_id
         )
@@ -2487,7 +2501,7 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
             f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
         )
         try:
-            await app_conn2.execute("SET app.current_tenant = $1", company_a_id)
+            await app_conn2.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
             visible_with_rls_off = await app_conn2.fetchrow(
                 "SELECT id FROM companies WHERE id = $1", company_b_id
             )
