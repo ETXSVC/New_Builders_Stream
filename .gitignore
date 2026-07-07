@@ -8,3 +8,6 @@ Thumbs.db
 
 # Editor
 .vscode/
+
+# Git worktrees (isolated implementation workspaces)
+.worktrees/
