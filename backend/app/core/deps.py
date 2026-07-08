@@ -43,7 +43,14 @@ async def get_current_user():
 
     user_id = uuid.UUID(payload["sub"])
     claimed_tenant = claimed_tenant_id_ctx.get() or payload["default_company_id"]
-    claimed_tenant_uuid = uuid.UUID(claimed_tenant)
+    try:
+        claimed_tenant_uuid = uuid.UUID(claimed_tenant)
+    except (ValueError, AttributeError, TypeError):
+        # claimed_tenant is attacker-controlled when it comes from the
+        # X-Tenant-ID header (design decision #3) — a malformed value must
+        # fail cleanly here, before a session is opened, rather than surface
+        # as an unhandled 500 from the bare uuid.UUID() call below.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed X-Tenant-ID header")
 
     session = SessionLocal()
     try:
