@@ -144,7 +144,19 @@ async def test_current_tenant_guc_does_not_poison_later_queries_on_same_connecti
                 "in this transaction and is 'poisoned' from the prior one"
             )
     finally:
-        await conn.execute("DELETE FROM company_users WHERE user_id = $1", user_id)
-        await conn.execute("DELETE FROM users WHERE id = $1", user_id)
-        await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
         await conn.close()
+        # Cleanup must run as the table owner, not app_user: by this point
+        # app.current_tenant on this connection is poisoned to '' (design
+        # decision #7), and companies has no DELETE policy at all — an
+        # app_user DELETE here silently affects 0 rows (RLS correctly
+        # denying it) rather than actually cleaning up, leaking a
+        # "Poison Test Co" row on every run. This is test cleanup, not a
+        # runtime code path, so bypassing RLS via the owner connection is
+        # correct (same rationale as conftest.py's _clean_tables fixture).
+        owner_conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+        try:
+            await owner_conn.execute("DELETE FROM company_users WHERE user_id = $1", user_id)
+            await owner_conn.execute("DELETE FROM users WHERE id = $1", user_id)
+            await owner_conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+        finally:
+            await owner_conn.close()
