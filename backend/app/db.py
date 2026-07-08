@@ -40,3 +40,16 @@ async def set_current_tenant(session: AsyncSession, company_id: str) -> None:
     await session.execute(
         text("SELECT set_config('app.current_tenant', :cid, true)"), {"cid": company_id}
     )
+
+
+async def set_invitation_probe(session: AsyncSession, invitation_id: str) -> None:
+    """Scopes the invitation_probe RLS policy (design decision #9, migration 0002) to
+    exactly this invitation_id for the remainder of the current transaction. Required
+    before the first, pre-tenant-context lookup in accept_invitation: invitations' only
+    other policy (tenant_isolation) requires app.current_tenant to already be set, which
+    is impossible at that point (the invitee isn't a member of any company yet). See
+    set_current_user's docstring for why this uses set_config() instead of SET LOCAL
+    with a bound parameter."""
+    await session.execute(
+        text("SELECT set_config('app.probing_invitation_id', :iid, true)"), {"iid": invitation_id}
+    )
