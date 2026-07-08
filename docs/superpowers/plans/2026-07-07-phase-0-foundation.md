@@ -24,6 +24,17 @@ These are not implementation details to improvise later — get them wrong and t
 
 ---
 
+## Regression Testing Policy
+
+Each task's own verification step only proves *that task's* new code works in isolation. Nothing in the per-task steps re-checks that a later task hasn't silently broken an earlier one — Task 4's model changes could break Task 2's health check, Task 13's nested-hierarchy endpoint could break Task 12's isolation guarantees, and so on. Two things close that gap:
+
+1. **From the first task that has a real pytest suite onward (Task 9, which adds `conftest.py`), every subsequent task's verification step includes running the *entire* suite — `pytest -v` from `backend/` with no path filter — not just the new task's test file.** A task is not done if the full suite has a regression, even one unrelated to that task's own code. If a task's changes break an earlier test, the earlier test's expectations don't automatically win — figure out which one is actually wrong and fix that one, but never leave both in a state where the suite is red.
+2. **Task 19 (after Task 18, before Phase 0 is considered complete) runs a genuine end-to-end regression pass against the real, fully-assembled Docker Compose stack** — actual containers, actual network calls over real HTTP, not the in-process ASGI transport every other task's tests use. This is the only point in the plan that exercises the system the way a real client actually would, including the two hostname contexts (`postgres` from inside the Docker network vs. `localhost` from the host) actually working together correctly.
+
+This is deliberately layered, not redundant: fast in-process tests give quick feedback per task, and the slower full-stack pass at the end catches the class of bug that only shows up when everything runs together for real (wiring, hostnames, container startup ordering, environment variable propagation).
+
+---
+
 ## File Structure
 
 ```
@@ -114,14 +125,16 @@ APP_DB_USER=app_user
 APP_DB_PASSWORD=app_password
 
 DATABASE_URL=postgresql+asyncpg://app_user:app_password@postgres:5432/builders_stream
-MIGRATIONS_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@postgres:5432/builders_stream
-TEST_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@postgres:5432/builders_stream_test
+MIGRATIONS_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream_test
 
 JWT_SECRET=dev-only-secret-change-me
 JWT_EXPIRE_MINUTES=60
 
 REDIS_URL=redis://redis:6379/0
 ```
+
+**Hostname note:** `DATABASE_URL` uses the Docker-network hostname `postgres` because it's read by the `backend` container at real runtime (Task 18), where service names resolve via Docker's internal DNS. `MIGRATIONS_DATABASE_URL` and `TEST_DATABASE_URL` use `localhost` instead, because Alembic (Task 5) and pytest (Task 9) both run directly on the host machine in this plan, not inside a container — from the host, only `localhost:5432` (published by `docker-compose.yml`'s `"5432:5432"` port mapping) resolves, `postgres` does not.
 
 - [ ] **Step 2: Create the Docker Compose stack**
 
@@ -2737,6 +2750,199 @@ git commit -m "feat: add minimal Next.js frontend proving end-to-end Docker Comp
 
 ---
 
+## Task 19: Full-Stack End-to-End Regression Pass
+
+Every prior task's tests run in-process against the app via `httpx.ASGITransport` — fast, but it never actually binds a port, never goes over real TCP, and never proves the two different hostname contexts (`postgres` inside the Docker network vs. `localhost` from the host — see the hostname note in Task 1) actually resolve correctly together. This task does that, once, as the final gate before Phase 0 is considered done. See "Regression Testing Policy" near the top of this document for why this exists as a separate layer from the per-task test runs.
+
+**Files:**
+- Create: `scripts/e2e_smoke_test.py`
+
+- [ ] **Step 1: Write the end-to-end smoke test script**
+
+`scripts/e2e_smoke_test.py`:
+```python
+"""Full-stack E2E regression check. Run against a live `docker compose up -d`
+stack — hits real HTTP ports, not the in-process ASGI transport the pytest
+suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
+Task 19."""
+
+import sys
+import time
+import uuid
+
+import httpx
+
+BACKEND_URL = "http://localhost:8000"
+FRONTEND_URL = "http://localhost:3000"
+PASSWORD = "supersecret123"
+
+
+def wait_for_backend(client: httpx.Client, timeout_seconds: int = 30) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error = None
+    while time.time() < deadline:
+        try:
+            response = client.get("/health")
+            if response.status_code == 200 and response.json() == {"status": "ok"}:
+                return
+        except httpx.ConnectError as exc:
+            last_error = exc
+        time.sleep(1)
+    raise RuntimeError(f"Backend never became healthy within {timeout_seconds}s: {last_error}")
+
+
+def register(client: httpx.Client, company_name: str, email: str) -> dict:
+    response = client.post(
+        "/auth/register",
+        json={
+            "company_name": company_name,
+            "admin_full_name": "E2E Admin",
+            "admin_email": email,
+            "admin_password": PASSWORD,
+        },
+    )
+    assert response.status_code == 201, f"register failed: {response.status_code} {response.text}"
+    return response.json()
+
+
+def login(client: httpx.Client, email: str) -> dict:
+    response = client.post("/auth/login", json={"email": email, "password": PASSWORD})
+    assert response.status_code == 200, f"login failed: {response.status_code} {response.text}"
+    return response.json()
+
+
+def run() -> None:
+    run_id = uuid.uuid4().hex[:8]  # unique suffix so repeated runs don't collide on email uniqueness
+    checks_passed = []
+
+    with httpx.Client(base_url=BACKEND_URL, timeout=10.0) as client:
+        wait_for_backend(client)
+        checks_passed.append("backend /health reachable over real HTTP")
+
+        company_a = register(client, "E2E Company A", f"admin-a-{run_id}@e2e.test")
+        token_a = login(client, f"admin-a-{run_id}@e2e.test")["access_token"]
+        headers_a = {"Authorization": f"Bearer {token_a}"}
+        checks_passed.append("company A registered and logged in over real HTTP")
+
+        own_company = client.get(f"/companies/{company_a['company_id']}", headers=headers_a)
+        assert own_company.status_code == 200, own_company.text
+        checks_passed.append("company A can read its own company record")
+
+        company_b = register(client, "E2E Company B", f"admin-b-{run_id}@e2e.test")
+
+        cross_tenant = client.get(f"/companies/{company_b['company_id']}", headers=headers_a)
+        assert cross_tenant.status_code == 404, (
+            f"CRITICAL: cross-tenant isolation failed over real network — expected 404, "
+            f"got {cross_tenant.status_code}: {cross_tenant.text}"
+        )
+        checks_passed.append("cross-tenant isolation holds over real HTTP (company A cannot read company B)")
+
+        child = client.post(
+            f"/companies/{company_a['company_id']}/children",
+            json={"name": "E2E Branch"},
+            headers=headers_a,
+        )
+        assert child.status_code == 201, child.text
+        child_id = child.json()["id"]
+        checks_passed.append("nested child-company creation works over real HTTP")
+
+        child_read = client.get(f"/companies/{child_id}", headers=headers_a)
+        assert child_read.status_code == 200 and child_read.json()["parent_id"] == company_a["company_id"]
+        checks_passed.append("parent can read its own newly-created child branch")
+
+        invite_email = f"invitee-{run_id}@e2e.test"
+        invite = client.post(
+            "/invitations", json={"email": invite_email, "role": "field_crew"}, headers=headers_a
+        )
+        assert invite.status_code == 201, invite.text
+        checks_passed.append("invitation created over real HTTP")
+
+        accept = client.post(
+            f"/invitations/{invite.json()['id']}/accept",
+            json={"full_name": "E2E Invitee", "password": PASSWORD},
+        )
+        assert accept.status_code == 200, accept.text
+        checks_passed.append("invitation accepted over real HTTP")
+
+        invitee_login = login(client, invite_email)
+        assert invitee_login["default_company_id"] == company_a["company_id"]
+        checks_passed.append("newly-invited user can log in and lands in the correct company")
+
+    with httpx.Client(timeout=10.0) as client:
+        frontend_response = client.get(FRONTEND_URL)
+        assert frontend_response.status_code == 200, frontend_response.text
+        assert "Backend status: ok" in frontend_response.text, (
+            f"Frontend did not report backend as healthy. Body: {frontend_response.text[:500]}"
+        )
+        checks_passed.append("frontend container reaches backend container over the Docker network and renders it")
+
+    print(f"\n{'=' * 60}\nE2E SMOKE TEST: {len(checks_passed)}/{len(checks_passed)} checks passed\n{'=' * 60}")
+    for check in checks_passed:
+        print(f"  PASS: {check}")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except AssertionError as exc:
+        print(f"\nFAIL: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - top-level smoke test, want any failure to exit non-zero with context
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+```
+
+- [ ] **Step 2: Run the full pytest suite one final time**
+
+Run:
+```bash
+cd backend
+pytest -v
+```
+Expected: every test from every prior task passes — this is the last checkpoint before moving to real containers, per the Regression Testing Policy above. If anything fails here, stop and fix it before proceeding to Step 3; don't let an in-process regression get masked by the E2E pass below.
+
+- [ ] **Step 3: Bring up the complete stack and apply migrations to it**
+
+Run:
+```bash
+cd ..   # repo root
+docker compose up -d --build
+```
+Expected: all four services (`postgres`, `redis`, `backend`, `frontend`) start. `postgres`/`redis` reach `healthy` (they have healthchecks); `backend`/`frontend` don't have healthchecks yet (a known, previously-flagged gap — Step 1 of the smoke script polls `/health` itself to compensate, so this doesn't block the check, but don't "fix" it as a side quest here — it's out of scope for this task).
+
+Then apply migrations to the stack's real dev database (not the pytest suite's throwaway test database, which manages its own migrations independently):
+```bash
+cd backend
+alembic upgrade head
+```
+This uses `MIGRATIONS_DATABASE_URL` from `.env`, which — per the Task 1 hostname note — correctly points at `localhost:5432` since Alembic runs on the host, not in a container.
+
+- [ ] **Step 4: Run the E2E smoke test against the live stack**
+
+Run:
+```bash
+cd ..   # repo root
+python scripts/e2e_smoke_test.py
+```
+Expected: output ending in `E2E SMOKE TEST: 9/9 checks passed`, with every line prefixed `PASS:`. If the cross-tenant isolation check fails here (over real HTTP, real containers, real network) when the equivalent in-process test in Task 12 passes, that is a serious, `docker-compose.yml`/networking/environment-specific bug that the fast in-process tests structurally cannot catch — treat it as build-blocking, not a flaky test to retry.
+
+- [ ] **Step 5: Tear down**
+
+Run:
+```bash
+docker compose down
+```
+Note: this does not delete the `pgdata` volume (no `-v` flag) — intentionally, so local dev data survives between sessions. Don't add `-v` here without explicit instruction; removing a data volume is a destructive action outside this task's scope.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/e2e_smoke_test.py
+git commit -m "test: add full-stack end-to-end regression script (Task 19 gate)"
+```
+
+---
+
 ## Phase 0 Exit Criteria Checklist
 
 Cross-check against [`docs/09-roadmap-implementation-plan.md`](../../09-roadmap-implementation-plan.md):
@@ -2748,6 +2954,7 @@ Cross-check against [`docs/09-roadmap-implementation-plan.md`](../../09-roadmap-
 - [x] Auth: registration, login, invitations — Tasks 9, 10, 14
 - [x] Audit log table and a working write path — Tasks 5, 9, 13, 14, 15
 - [x] Exit criteria: automated RLS isolation tests pass in CI — Tasks 12, 16, 17
+- [x] Full-stack end-to-end regression pass against real containers over real HTTP (not just in-process ASGI tests) — Task 19
 
 ## Explicitly Deferred (tracked, not forgotten)
 
