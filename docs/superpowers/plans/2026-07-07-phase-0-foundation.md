@@ -587,8 +587,15 @@ from app.models.base import Base, TimestampMixin, UUIDPKMixin
 class AuditLog(Base, UUIDPKMixin, TimestampMixin):
     __tablename__ = "audit_log"
 
+    # No ondelete here (defaults to RESTRICT), unlike every other company_id FK in
+    # this file. docs/07-security-compliance.md requires a minimum 7-year audit log
+    # retention and states no code path ever deletes audit entries — CASCADE would
+    # let deleting a company silently destroy its own audit trail, which directly
+    # contradicts that policy. RESTRICT means a company can't be deleted while it
+    # still has audit history, which is the correct failure mode until Phase 0 (which
+    # has no company-delete endpoint at all) grows one with an explicit retention story.
     company_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False
     )
     actor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
@@ -827,7 +834,10 @@ def upgrade() -> None:
     op.create_table(
         "audit_log",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("company_id", UUID(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False),
+        # No ondelete (defaults to RESTRICT) — see the matching comment on the
+        # AuditLog ORM model (Task 4): CASCADE here would violate the audit log's
+        # documented 7-year, never-deleted retention policy.
+        sa.Column("company_id", UUID(as_uuid=True), sa.ForeignKey("companies.id"), nullable=False),
         sa.Column("actor_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("action", sa.String(100), nullable=False),
         sa.Column("entity_type", sa.String(50), nullable=False),
