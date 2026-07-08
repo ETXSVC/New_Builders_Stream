@@ -28,6 +28,8 @@ These are not implementation details to improvise later — get them wrong and t
 
 7. **Every `current_setting('app.x', true)::uuid` cast in an RLS policy must guard against `''`, not just `NULL`.** A custom ("placeholder") GUC, once set even once via `SET LOCAL`/`set_config(..., is_local=true)` on a given physical connection, does not revert to NULL when that transaction ends — `current_setting(name, true)` instead returns `''` for the rest of that connection's lifetime, even across later, unrelated transactions that never touch the setting themselves. Casting `''::uuid` raises `invalid input syntax for type uuid`, an unhandled error (a 500), not a policy evaluating to false. Because a connection pool reuses physical connections across unrelated logical requests, this bites in exactly the way that's hardest to catch in isolated testing: a request that never sets `app.current_tenant` (e.g. `login()`, which only sets `app.current_user_id`) can be served a connection previously "poisoned" by an earlier request that did set it and commit (e.g. `register()`). This went undetected through all of Task 5's and Task 9's own testing because every manual verification used a *fresh* connection per test — it only surfaced when Task 10 chained register→login through the app's real connection-pooled `session_scope()` for the first time. Fixed by wrapping every such cast as `NULLIF(current_setting('app.x', true), '')::uuid`, so a poisoned `''` becomes a real `NULL` before the cast, and the policy correctly denies access instead of erroring. Verified empirically against live Postgres in both the broken and fixed forms.
 
+8. **`get_current_user` must defer its commit past `yield`, or every route handler downstream loses tenant context.** `set_current_user`/`set_current_tenant` are transaction-scoped (design decision #7). The original draft called `session.commit()` before returning `CurrentUser`, ending the transaction — meaning by the time a route handler (Task 12+) reused `CurrentUser.session` for its own query, `app.current_tenant` had already reverted to `''`/NULL and RLS would deny access to the caller's *own* data. This is a FastAPI "dependency with yield": the fix restructures `get_current_user` as an async generator that `yield`s `CurrentUser` mid-transaction and only commits (or rolls back, on exception) *after* the route handler returns, so the transaction — and the tenant context set within it — stays alive for the whole request. Verified empirically both ways: the eager-commit version returns zero rows for a route handler querying the caller's own company; the deferred-commit version returns it correctly, with no connection leaks or deadlocks across repeated success/failure requests. An earlier attempt at "just remove the commit" without the `yield`-based teardown left the transaction open indefinitely, which deadlocked the test suite's own cleanup fixture — the `yield` structure (not merely deferring the commit) is what makes this safe.
+
 ---
 
 ## Regression Testing Policy
@@ -2039,7 +2041,19 @@ class CurrentUser:
     session: AsyncSession
 
 
-async def get_current_user() -> CurrentUser:
+async def get_current_user():
+    """A FastAPI "dependency with yield": everything after `yield` runs after
+    the route handler returns (success or exception), not inline here. This
+    is required, not stylistic — set_current_user/set_current_tenant use
+    set_config(..., is_local=true), which is transaction-scoped (design
+    decision #7). If this function committed the transaction before handing
+    CurrentUser to the route handler, the tenant context would already be
+    gone by the time route handlers (Task 12+) reuse CurrentUser.session for
+    their own queries, and RLS would deny access to the caller's own data.
+    Verified empirically: the same scenario with an eager commit() here
+    returns zero rows for a route handler's own company; with the commit
+    deferred past `yield`, it correctly returns the row.
+    """
     token = bearer_token_ctx.get()
     if token is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")
@@ -2055,6 +2069,7 @@ async def get_current_user() -> CurrentUser:
 
     session = SessionLocal()
     try:
+        await session.begin()
         await set_current_user(session, str(user_id))
 
         result = await session.execute(select(User).where(User.id == user_id))
@@ -2076,12 +2091,17 @@ async def get_current_user() -> CurrentUser:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a member of this company")
 
         await set_current_tenant(session, str(claimed_tenant_uuid))
-        await session.commit()
 
-        return CurrentUser(user=user, company_id=claimed_tenant_uuid, role=membership.role, session=session)
+        # The transaction stays open here — do not commit before yielding.
+        # See this function's docstring.
+        yield CurrentUser(user=user, company_id=claimed_tenant_uuid, role=membership.role, session=session)
+
+        await session.commit()
     except Exception:
-        await session.close()
+        await session.rollback()
         raise
+    finally:
+        await session.close()
 
 
 def require_role(*allowed_roles: str):
@@ -2339,7 +2359,10 @@ async def create_child_company(
         entity_type="company",
         entity_id=child.id,
     )
-    await current.session.commit()
+    # No explicit commit here — get_current_user (design decision #8) commits
+    # current.session once, after this handler returns. An inline commit here
+    # wouldn't be wrong (SQLAlchemy tolerates a second no-op commit), but it's
+    # redundant and muddies who owns the transaction; one owner, one commit.
 
     return CompanyResponse.model_validate(child)
 ```
@@ -2519,7 +2542,8 @@ async def create_invitation(
         entity_id=invitation.id,
         metadata={"email": payload.email, "role": payload.role},
     )
-    await current.session.commit()
+    # No explicit commit here — get_current_user (design decision #8) commits
+    # current.session once, after this handler returns.
 
     return InvitationResponse.model_validate(invitation)
 
