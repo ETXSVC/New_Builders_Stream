@@ -5,7 +5,7 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UUIDPKMixin
+from app.models.base import Base, TimestampMixin, UUIDPKMixin, utcnow
 
 VALID_ROLES = ("admin", "project_manager", "field_crew", "accountant", "client")
 
@@ -30,7 +30,14 @@ class CompanyUser(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     role: Mapped[str] = mapped_column(String(50), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # No TimestampMixin here (CompanyUser is a pure association row, not an
+    # id-bearing entity), but the migration's DDL (0001) already declares
+    # created_at NOT NULL with server_default=sa.func.now(). Without a
+    # matching client-side default, SQLAlchemy's ORM sends an explicit NULL
+    # for this column on INSERT (it doesn't know about the server default),
+    # violating that NOT NULL constraint. default=utcnow mirrors the exact
+    # pattern TimestampMixin uses for every other timestamped model.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (CheckConstraint(_ROLE_CHECK_SQL, name="ck_company_users_role"),)
 
