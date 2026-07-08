@@ -2809,16 +2809,81 @@ async def test_cannot_reparent_company_across_tenant_boundary(client):
 
 Add `import pytest` to the top of the file alongside the existing `import asyncpg` if it isn't already there.
 
-- [ ] **Step 3: Run it**
+- [ ] **Step 3: Pin the GUC-poisoning bug (design decision #7) as an explicit, mechanism-level regression test**
+
+`test_auth.py`'s register-then-login test (Task 10) catches this bug today, but only as a side effect of the connection pool happening to reuse the same physical connection for both calls within one test. Nothing pins *why* that works, so a future pool-configuration change could silently stop exercising the poisoned-connection path without any test failing to flag the loss. This test drives the exact mechanism directly on a single raw connection instead of leaning on incidental pool behavior.
+
+Append to `backend/tests/test_rls_policy_regression.py` (add `import uuid` to the top of the file alongside the existing imports if it isn't already there):
+```python
+async def test_current_tenant_guc_does_not_poison_later_queries_on_same_connection():
+    """Regression test for design decision #7: a custom GUC like
+    app.current_tenant, once set via SET LOCAL/set_config(is_local=true) on a
+    connection and committed, reverts to '' (not NULL) for the rest of that
+    connection's life — not just the one transaction that set it. Casting ''
+    to ::uuid raises an unhandled error rather than the policy simply denying
+    access. This bit login() in practice: a request that never sets
+    app.current_tenant (only app.current_user_id) can be served a pooled
+    connection previously used by a request that did (register()) and
+    committed. Drives the mechanism directly on one raw connection so this
+    keeps catching a regression even if pool configuration changes in a way
+    that stops naturally reusing connections across register() and login()."""
+    company_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+
+    conn = await asyncpg.connect(
+        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
+    )
+    try:
+        # First transaction: sets app.current_tenant (like register() does) and commits.
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.current_tenant', $1, true)", company_id)
+            await conn.execute(
+                "INSERT INTO companies (id, parent_id, name) VALUES ($1, NULL, 'Poison Test Co')",
+                company_id,
+            )
+            await conn.execute(
+                "INSERT INTO users (id, email, password_hash) VALUES ($1, 'poison-guc@test.com', 'x')",
+                user_id,
+            )
+            await conn.execute(
+                "INSERT INTO company_users (company_id, user_id, role, created_at) "
+                "VALUES ($1, $2, 'admin', now())",
+                company_id,
+                user_id,
+            )
+
+        # Second transaction, same connection: only sets app.current_user_id
+        # (like login() does). app.current_tenant is never touched here, but
+        # this connection already saw it set once, in the transaction above.
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.current_user_id', $1, true)", user_id)
+            # Without the NULLIF guard, this raises InvalidTextRepresentationError
+            # instead of returning a row via the self_membership policy.
+            row = await conn.fetchrow(
+                "SELECT company_id FROM company_users WHERE user_id = $1", user_id
+            )
+            assert row is not None, (
+                "self_membership should still allow a user to see their own "
+                "membership row even though app.current_tenant was never set "
+                "in this transaction and is 'poisoned' from the prior one"
+            )
+    finally:
+        await conn.execute("DELETE FROM company_users WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+        await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+        await conn.close()
+```
+
+- [ ] **Step 4: Run it**
 
 Run: `pytest tests/test_rls_policy_regression.py -v`
-Expected: 2 passed. If the first test fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1). If the second test fails (the `UPDATE` succeeds instead of raising), `tenant_update`'s `WITH CHECK` is missing or incorrect — check design decision #6.
+Expected: 3 passed. If the first test fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1). If the second test fails (the `UPDATE` succeeds instead of raising), `tenant_update`'s `WITH CHECK` is missing or incorrect — check design decision #6. If the third test fails, one of the 9 `current_setting(...)::uuid` casts in the migration is missing its `NULLIF` guard — check design decision #7.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add backend/tests/test_rls_policy_regression.py
-git commit -m "test: add RLS policy regression tests (disable/re-enable + cross-tenant reparent)"
+git commit -m "test: add RLS policy regression tests (disable/re-enable, cross-tenant reparent, GUC poisoning)"
 ```
 
 ---
