@@ -1,6 +1,6 @@
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
 
 
 async def _register_and_login(client, company_name, email):
@@ -112,3 +112,26 @@ async def test_invitation_acceptance_is_audited(client):
 
     actions = {row["action"] for row in rows}
     assert "invitation.accepted" in actions
+
+
+async def test_audit_log_entries_are_tenant_scoped_under_rls(client):
+    """Every test above queries audit_log via the RLS-bypassing owner
+    connection — proving entries get written, but not that they're actually
+    tenant-scoped, which is half of this task's own stated goal ("queryable
+    and tenant-scoped"). This connects as app_user with app.current_tenant
+    set to confirm the tenant_isolation policy (migration 0001) actually
+    blocks a company from seeing another company's audit trail."""
+    a = await _register_and_login(client, "Company A", "audit-tenant-a@acme.test")
+    b = await _register_and_login(client, "Company B", "audit-tenant-b@acme.test")
+
+    conn = await asyncpg.connect(TEST_APP_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.current_tenant', $1, true)", a["company_id"])
+            visible = await conn.fetch("SELECT company_id FROM audit_log")
+    finally:
+        await conn.close()
+
+    visible_company_ids = {str(row["company_id"]) for row in visible}
+    assert a["company_id"] in visible_company_ids
+    assert b["company_id"] not in visible_company_ids
