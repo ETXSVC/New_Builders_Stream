@@ -95,3 +95,80 @@ async def test_accept_expired_invitation_is_rejected(client, monkeypatch):
         json={"full_name": "Too Late", "password": "anothersecret123"},
     )
     assert accept.status_code == 410
+
+
+async def test_accept_already_accepted_invitation_is_rejected(client):
+    admin = await _register_and_login(client, "Acme Construction", "admin5@acme.test")
+
+    invite = await client.post(
+        "/invitations",
+        json={"email": "twice@acme.test", "role": "field_crew"},
+        headers=admin["headers"],
+    )
+    invitation_id = invite.json()["id"]
+
+    first = await client.post(
+        f"/invitations/{invitation_id}/accept",
+        json={"full_name": "First Accept", "password": "anothersecret123"},
+    )
+    assert first.status_code == 200
+
+    second = await client.post(
+        f"/invitations/{invitation_id}/accept",
+        json={"full_name": "Second Accept", "password": "anothersecret123"},
+    )
+    assert second.status_code == 409
+
+
+async def test_accept_invitation_rejects_duplicate_email(client):
+    admin = await _register_and_login(client, "Acme Construction", "admin6@acme.test")
+
+    first_invite = await client.post(
+        "/invitations",
+        json={"email": "dupe@acme.test", "role": "field_crew"},
+        headers=admin["headers"],
+    )
+    await client.post(
+        f"/invitations/{first_invite.json()['id']}/accept",
+        json={"full_name": "First Dupe", "password": "anothersecret123"},
+    )
+
+    second_invite = await client.post(
+        "/invitations",
+        json={"email": "dupe@acme.test", "role": "project_manager"},
+        headers=admin["headers"],
+    )
+    second_accept = await client.post(
+        f"/invitations/{second_invite.json()['id']}/accept",
+        json={"full_name": "Second Dupe", "password": "anothersecret123"},
+    )
+    assert second_accept.status_code == 409
+
+
+async def test_non_admin_cannot_create_invitations(client):
+    """Task 14 is the only route that ever creates a non-admin membership
+    (test_deps.py's test_require_role_blocks_non_admin_role has to insert one
+    directly via SQL for exactly this reason) — so this is the first place a
+    non-admin actually exists to exercise require_role("admin") end-to-end."""
+    admin = await _register_and_login(client, "Acme Construction", "admin7@acme.test")
+
+    invite = await client.post(
+        "/invitations",
+        json={"email": "fieldcrew@acme.test", "role": "field_crew"},
+        headers=admin["headers"],
+    )
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "Field Crew", "password": "anothersecret123"},
+    )
+    login = await client.post(
+        "/auth/login", json={"email": "fieldcrew@acme.test", "password": "anothersecret123"}
+    )
+    non_admin_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    response = await client.post(
+        "/invitations",
+        json={"email": "another@acme.test", "role": "field_crew"},
+        headers=non_admin_headers,
+    )
+    assert response.status_code == 403

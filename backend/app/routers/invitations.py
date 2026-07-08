@@ -51,23 +51,9 @@ async def accept_invitation(invitation_id: uuid.UUID, payload: InvitationAcceptR
         async with session.begin():
             # Invitation acceptance happens before the invitee has any tenant
             # membership, so this lookup can't go through the normal
-            # tenant-scoped path. It looks up by primary key only, which
-            # PostgreSQL RLS still restricts unless we're inside the right
-            # tenant context — so we scope to this invitation's own company
-            # up front. This is safe: the only thing an attacker controls is
-            # the invitation_id itself, and a wrong/unknown ID simply finds
-            # nothing after the SET, matching the 404 below.
-            #
-            # set_invitation_probe (design decision #9, migration 0002) scopes
-            # a second, narrowly-permissive RLS policy on invitations —
-            # invitation_probe, mirroring company_users' self_membership
-            # policy — to exactly this invitation_id for the rest of this
-            # transaction. Without it, invitations' sole tenant_isolation
-            # policy blocks this SELECT outright (no tenant context exists
-            # yet), and every accept request 404s regardless of whether the
-            # invitation actually exists. Verified empirically: without this
-            # call, both accept-invitation tests below failed with 404
-            # instead of 200/410.
+            # tenant-scoped path — see set_invitation_probe()'s docstring
+            # (design decision #9, migration 0002) for why this call is
+            # required, not optional.
             await set_invitation_probe(session, str(invitation_id))
 
             probe = await session.execute(
@@ -79,7 +65,15 @@ async def accept_invitation(invitation_id: uuid.UUID, payload: InvitationAcceptR
 
             await set_current_tenant(session, str(company_id))
 
-            result = await session.execute(select(Invitation).where(Invitation.id == invitation_id))
+            # FOR UPDATE: two concurrent accepts of the same invitation would
+            # otherwise both pass the accepted_at check below under READ
+            # COMMITTED and race to insert a User — harmless today only
+            # because users.email's unique constraint happens to arbitrate
+            # it, at the cost of a misleading "Email already registered" for
+            # the loser. Locking the row makes the guarantee by design.
+            result = await session.execute(
+                select(Invitation).where(Invitation.id == invitation_id).with_for_update()
+            )
             invitation = result.scalar_one()
 
             if invitation.accepted_at is not None:

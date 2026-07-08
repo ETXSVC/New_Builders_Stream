@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.user import VALID_ROLES
 
@@ -30,5 +30,5 @@ class InvitationResponse(BaseModel):
 
 
 class InvitationAcceptRequest(BaseModel):
-    full_name: str
-    password: str
+    full_name: str = Field(..., min_length=2, max_length=255)
+    password: str = Field(..., min_length=8)
