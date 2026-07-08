@@ -917,10 +917,16 @@ def upgrade() -> None:
     )
     # Postgres grants EXECUTE on new functions to PUBLIC by default. Since
     # get_all_descendant_ids is SECURITY DEFINER (see the comment above its
-    # definition), a direct call with an arbitrary root_id — bypassing the
-    # RLS policy context entirely — returns that root's descendant company
-    # ids regardless of caller. Revoking PUBLIC and granting only to
-    # app_user keeps that surface as narrow as the rest of this schema.
+    # definition), ANY SQL running as app_user — not just the RLS policy
+    # engine's internal use of it — can call it directly with an arbitrary
+    # root_id and get back that root's descendant company ids, regardless of
+    # the caller's own tenant context. This is an accepted, narrow residual:
+    # it only leaks UUID parent/child relationships (no other columns), and
+    # app_user is the backend's single trusted connection role, not something
+    # end users get raw access to. Revoking PUBLIC and granting only to
+    # app_user keeps the surface as narrow as it can be while the function
+    # still does its job — it's not a full fix, since app_user itself must
+    # retain EXECUTE for the policies above to work.
     op.execute("REVOKE EXECUTE ON FUNCTION get_all_descendant_ids(UUID) FROM PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
