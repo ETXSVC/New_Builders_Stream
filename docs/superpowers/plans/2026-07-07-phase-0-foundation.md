@@ -2897,11 +2897,25 @@ async def test_current_tenant_guc_does_not_poison_later_queries_on_same_connecti
                 "in this transaction and is 'poisoned' from the prior one"
             )
     finally:
-        await conn.execute("DELETE FROM company_users WHERE user_id = $1", user_id)
-        await conn.execute("DELETE FROM users WHERE id = $1", user_id)
-        await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
         await conn.close()
+        # Cleanup must run as the table owner, not app_user: by this point
+        # app.current_tenant on this connection is poisoned to '' (design
+        # decision #7), and companies has no DELETE policy at all — an
+        # app_user DELETE here silently affects 0 rows (RLS correctly
+        # denying it) rather than actually cleaning up, leaking a
+        # "Poison Test Co" row on every run. This is test cleanup, not a
+        # runtime code path, so bypassing RLS via the owner connection is
+        # correct (same rationale as conftest.py's _clean_tables fixture).
+        owner_conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+        try:
+            await owner_conn.execute("DELETE FROM company_users WHERE user_id = $1", user_id)
+            await owner_conn.execute("DELETE FROM users WHERE id = $1", user_id)
+            await owner_conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+        finally:
+            await owner_conn.close()
 ```
+
+**Correction, found during Task 16's spec review:** the `finally` block above, as originally drafted in this plan, deleted via the poisoned `app_user` connection — but `companies` has no DELETE policy at all, and `company_users`' only applicable policy requires a tenant context that's already gone by cleanup time. Both `DELETE`s silently affected 0 rows (RLS correctly denying them); only `users`' `ON DELETE CASCADE` removed the `company_users` row as a side effect. This was invisible in the test suite because `conftest.py`'s autouse `_clean_tables` fixture truncates all tables via the owner connection after every test regardless — but running this file outside that harness would leak one `companies` row per run. Verified via a standalone repro outside the test harness: `DELETE 0` / `DELETE 0` with the original code, `DELETE 1` / `DELETE 1` / `DELETE 1` after switching cleanup to the owner connection, as now shown above.
 
 - [ ] **Step 4: Run it**
 
