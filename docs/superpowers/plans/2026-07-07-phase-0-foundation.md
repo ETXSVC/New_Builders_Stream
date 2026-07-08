@@ -22,6 +22,8 @@ These are not implementation details to improvise later — get them wrong and t
 
 4. **Refresh-token rotation is explicitly out of scope for this plan.** [`docs/07-security-compliance.md`](../../07-security-compliance.md) specifies short-lived access tokens with refresh rotation as the target end state. This plan issues a single 60-minute access token with no refresh flow, so the login session simply expires and the user re-authenticates. This is a known, deliberate simplification — track it as follow-up work before real subscriber data is on the platform, not a Phase-0 blocker.
 
+5. **`get_all_descendant_ids()` must be `SECURITY DEFINER`, or RLS recurses infinitely for the real runtime role.** The function queries `companies`, and `companies`' own RLS policies call the function — for any caller that isn't the table owner (i.e. `app_user`, the actual role the app connects as), that's unbounded recursion: the function's internal query re-triggers the policy that invoked it, forever, until Postgres raises `stack depth limit exceeded`. This is invisible if you only test as the `postgres` superuser (superusers bypass RLS, so the recursive policy call never fires) — which is exactly why Task 5's own verification steps test the `app_user` role directly, not just check that RLS is "enabled." `SECURITY DEFINER` makes the function's internal traversal run as its owner (`postgres`), bypassing RLS only for that internal scan; the outer policies still gate everything real callers can see. Because a `SECURITY DEFINER` function bypasses RLS for anyone who can call it, `EXECUTE` is revoked from `PUBLIC` and granted only to `app_user`, matching the narrow-by-default posture of the rest of this schema. Caught empirically during Task 5 implementation, not anticipated in the original design — see Task 5's migration for the full mechanism.
+
 ---
 
 ## Regression Testing Policy
@@ -848,17 +850,48 @@ def upgrade() -> None:
     op.create_index("idx_audit_log_company_created", "audit_log", ["company_id", "created_at"])
 
     # --- Recursive descendant lookup (design decision #2/#3 depend on this) -
+    #
+    # SECURITY DEFINER + a pinned search_path are required here, not optional
+    # hardening: this function queries `companies` internally, and `companies`
+    # has RLS enabled with a SELECT policy that itself calls this function.
+    # For any caller who is not the table owner (i.e. the real runtime
+    # `app_user` role — see design decision #1), a plain (non-SECURITY
+    # DEFINER) version of this function recurses infinitely: the function's
+    # internal SELECT on `companies` re-triggers the `tenant_select` policy,
+    # which calls this function again, forever, until Postgres raises
+    # "stack depth limit exceeded". This was caught by directly testing as
+    # app_user during Task 5 implementation — every single query against any
+    # RLS-protected table failed until this fix was applied. It would NOT
+    # have been caught by running Step 5/6's verification as the `postgres`
+    # superuser alone, since superusers bypass RLS and never trigger the
+    # recursive policy call in the first place.
+    #
+    # Marking the function SECURITY DEFINER makes its body execute with the
+    # privileges of its owner (postgres, who also owns `companies` and was
+    # never granted FORCE ROW LEVEL SECURITY), so the internal traversal
+    # bypasses RLS entirely and terminates normally. This does NOT weaken
+    # tenant isolation: the outer RLS policies still gate what `app_user`
+    # can ultimately see/write via `... IN (SELECT id FROM
+    # get_all_descendant_ids(...))` — only this function's own internal scan
+    # is exempted, and EXECUTE on it is restricted to app_user below (not
+    # left at Postgres's PUBLIC default, since a SECURITY DEFINER function
+    # bypasses RLS for anyone who can call it directly).
     op.execute(
         """
         CREATE OR REPLACE FUNCTION get_all_descendant_ids(root_id UUID)
-        RETURNS TABLE (id UUID) AS $$
+        RETURNS TABLE (id UUID)
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
             WITH RECURSIVE company_tree AS (
                 SELECT c.id FROM companies c WHERE c.id = root_id
                 UNION ALL
                 SELECT c.id FROM companies c INNER JOIN company_tree ct ON c.parent_id = ct.id
             )
             SELECT id FROM company_tree;
-        $$ LANGUAGE sql STABLE;
+        $$;
         """
     )
 
@@ -880,6 +913,13 @@ def upgrade() -> None:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
         "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user"
     )
+    # Postgres grants EXECUTE on new functions to PUBLIC by default. Since
+    # get_all_descendant_ids is SECURITY DEFINER (see the comment above its
+    # definition), a direct call with an arbitrary root_id — bypassing the
+    # RLS policy context entirely — returns that root's descendant company
+    # ids regardless of caller. Revoking PUBLIC and granting only to
+    # app_user keeps that surface as narrow as the rest of this schema.
+    op.execute("REVOKE EXECUTE ON FUNCTION get_all_descendant_ids(UUID) FROM PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
     # --- Row-Level Security ---------------------------------------------
@@ -973,6 +1013,18 @@ Run:
 docker compose exec postgres psql -U postgres -d builders_stream -c "\d+ companies" | grep -i "row security"
 ```
 Expected: output includes `Row security is enabled.` or similar (exact wording varies by psql version, but a row about row security must be present — if it's missing, `ENABLE ROW LEVEL SECURITY` did not take effect and Task 5 must be re-checked before continuing).
+
+**This check alone is not sufficient** — it (and the `psql -U postgres` connection used to run it) only proves RLS is turned on, never that it actually works, because the `postgres` superuser bypasses RLS entirely and would never hit a policy-recursion bug even if one existed. The real runtime role is `app_user`. Verify against that role specifically:
+
+```bash
+docker compose exec postgres psql -U app_user -d builders_stream -c "
+BEGIN;
+SELECT set_config('app.current_tenant', gen_random_uuid()::text, true);
+SELECT count(*) FROM companies;
+ROLLBACK;
+"
+```
+Expected: `count = 0`, no error. If this instead raises `stack depth limit exceeded`, `get_all_descendant_ids()` is missing `SECURITY DEFINER` (see the comment above its definition in Step 4) — a plain version of that function recurses infinitely the moment a non-owner role queries `companies`, since the function's own internal query re-triggers the same RLS policy that called it. This is exactly the failure mode Step 6's superuser-only check cannot detect.
 
 - [ ] **Step 7: Commit**
 
