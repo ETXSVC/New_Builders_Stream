@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 
 from app.models.user import VALID_ROLES
 
@@ -19,15 +19,14 @@ class InvitationCreateRequest(BaseModel):
 
 
 class InvitationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     company_id: uuid.UUID
     email: EmailStr
     role: str
     expires_at: datetime
     accepted_at: datetime | None
-
-    class Config:
-        from_attributes = True
 
 
 class InvitationAcceptRequest(BaseModel):
