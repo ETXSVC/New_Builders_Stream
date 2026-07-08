@@ -3,7 +3,9 @@ import uuid
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+
+APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register(client, company_name, email):
@@ -27,9 +29,7 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
     company_a_id = await _register(client, "Company A", "rls-a@test.com")
     company_b_id = await _register(client, "Company B", "rls-b@test.com")
 
-    app_conn = await asyncpg.connect(
-        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
-    )
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
     try:
         # set_config(), not `SET app.current_tenant = $1` — see set_current_tenant's
         # docstring in app/db.py (Task 3) for why a bound parameter there is a syntax error.
@@ -44,9 +44,7 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
     owner_conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
     try:
         await owner_conn.execute("ALTER TABLE companies DISABLE ROW LEVEL SECURITY")
-        app_conn2 = await asyncpg.connect(
-            f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
-        )
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
         try:
             await app_conn2.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
             visible_with_rls_off = await app_conn2.fetchrow(
@@ -61,9 +59,15 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
             await app_conn2.close()
     finally:
         # ALWAYS restore RLS even if the assertion above fails, so this test
-        # can't leave the database in an insecure state for other tests.
-        await owner_conn.execute("ALTER TABLE companies ENABLE ROW LEVEL SECURITY")
-        await owner_conn.close()
+        # can't leave the database in an insecure state for other tests. The
+        # restore itself is isolated in its own try/finally so a failure in
+        # the ALTER (network blip, lock wait) still guarantees owner_conn is
+        # closed rather than leaking it — and doesn't get masked by
+        # replacing a still-propagating AssertionError from the block above.
+        try:
+            await owner_conn.execute("ALTER TABLE companies ENABLE ROW LEVEL SECURITY")
+        finally:
+            await owner_conn.close()
 
 
 async def test_cannot_reparent_company_across_tenant_boundary(client):
@@ -78,9 +82,7 @@ async def test_cannot_reparent_company_across_tenant_boundary(client):
     company_a_id = await _register(client, "Company A", "reparent-a@test.com")
     company_b_id = await _register(client, "Company B", "reparent-b@test.com")
 
-    app_conn = await asyncpg.connect(
-        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
-    )
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
     try:
         await app_conn.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
         with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
@@ -106,9 +108,7 @@ async def test_current_tenant_guc_does_not_poison_later_queries_on_same_connecti
     company_id = str(uuid.uuid4())
     user_id = str(uuid.uuid4())
 
-    conn = await asyncpg.connect(
-        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
-    )
+    conn = await asyncpg.connect(APP_CONN_DSN)
     try:
         # First transaction: sets app.current_tenant (like register() does) and commits.
         async with conn.transaction():
