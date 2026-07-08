@@ -9,9 +9,6 @@ from app.models.base import Base, TimestampMixin, UUIDPKMixin
 
 VALID_ROLES = ("admin", "project_manager", "field_crew", "accountant", "client")
 
-# Rendered to match migrations/versions/0001_initial_schema.py's literal SQL exactly
-# (no spaces after commas) so `alembic revision --autogenerate` never reports a
-# spurious constraint diff between the ORM model and the real database.
 _ROLE_CHECK_SQL = "role IN (" + ",".join(f"'{role}'" for role in VALID_ROLES) + ")"
 
 
