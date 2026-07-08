@@ -24,6 +24,8 @@ These are not implementation details to improvise later — get them wrong and t
 
 5. **`get_all_descendant_ids()` must be `SECURITY DEFINER`, or RLS recurses infinitely for the real runtime role.** The function queries `companies`, and `companies`' own RLS policies call the function — for any caller that isn't the table owner (i.e. `app_user`, the actual role the app connects as), that's unbounded recursion: the function's internal query re-triggers the policy that invoked it, forever, until Postgres raises `stack depth limit exceeded`. This is invisible if you only test as the `postgres` superuser (superusers bypass RLS, so the recursive policy call never fires) — which is exactly why Task 5's own verification steps test the `app_user` role directly, not just check that RLS is "enabled." `SECURITY DEFINER` makes the function's internal traversal run as its owner (`postgres`), bypassing RLS only for that internal scan; the outer policies still gate everything real callers can see. Because a `SECURITY DEFINER` function bypasses RLS for anyone who can call it, `EXECUTE` is revoked from `PUBLIC` and granted only to `app_user`, matching the narrow-by-default posture of the rest of this schema. Caught empirically during Task 5 implementation, not anticipated in the original design — see Task 5's migration for the full mechanism.
 
+6. **Every `UPDATE`-permitting RLS policy needs its own `WITH CHECK`, not just `USING`.** `USING` alone only gates which *existing* rows a caller may target — it says nothing about the *new* values being written. `companies.tenant_update` originally had only `USING`, which meant a tenant could `UPDATE companies SET parent_id = '<other-tenant>' WHERE id = '<own-company>'` and successfully re-parent its own company into a completely unrelated tenant's tree — a full tenant-boundary bypass via UPDATE, even though INSERT and SELECT on the same table were correctly locked down. Empirically confirmed exploitable (a bare cross-tenant re-parent `UPDATE` succeeded, and the row correctly vanished from the original tenant's view immediately after) before a `WITH CHECK` mirroring `tenant_insert`'s was added. Not reachable through any endpoint this plan currently defines (Task 13 only adds company-creation, not re-parenting), but it's the isolation backstop every later task is told to trust — caught during Task 5's code-quality review, not anticipated in the original design.
+
 ---
 
 ## Regression Testing Policy
@@ -935,10 +937,28 @@ def upgrade() -> None:
         USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
         """
     )
+    # WITH CHECK here is not optional. Without it, Postgres would fall back to
+    # reusing USING for the check — but USING only constrains which existing row
+    # a caller may target, never the NEW values being written to it. That leaves
+    # parent_id completely unvalidated on UPDATE: a session scoped to tenant A
+    # could UPDATE one of A's own companies to set parent_id to an unrelated
+    # tenant B's id, re-parenting it out of A's tree and into B's — a full
+    # tenant-boundary bypass via UPDATE, even though INSERT and SELECT on this
+    # same table are correctly locked down. Empirically confirmed exploitable
+    # (a bare `UPDATE companies SET parent_id = '<other-tenant>' WHERE id =
+    # '<own-company>'` succeeds) before this WITH CHECK was added. The
+    # condition mirrors tenant_insert's: a same-tenant update (parent_id
+    # unchanged, or still within the caller's own tree) is unaffected, since
+    # the row's pre-update parent_id must already satisfy this same predicate
+    # for the row to have been visible/targetable via USING in the first place.
     op.execute(
         """
         CREATE POLICY tenant_update ON companies FOR UPDATE
         USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        WITH CHECK (
+            parent_id IS NULL
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+        )
         """
     )
     op.execute(
@@ -2594,16 +2614,49 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
         await owner_conn.close()
 ```
 
-- [ ] **Step 2: Run it**
+- [ ] **Step 2: Pin the cross-tenant re-parent bug as a permanent regression test**
+
+During Task 5's code-quality review, `companies.tenant_update` was found to have no `WITH CHECK` — `USING` alone only gates which existing row a caller may target, never the new values being written, so a tenant could `UPDATE companies SET parent_id = '<other-tenant>'` on its own company and re-parent it into an unrelated tenant's tree. This was fixed (see design decision #6 and Task 5's migration), but the whole reason RLS bugs are dangerous is they're invisible until something exercises the exact write pattern that trips them — pin it permanently rather than trusting it stays fixed by inspection alone.
+
+Append to `backend/tests/test_rls_policy_regression.py`:
+```python
+async def test_cannot_reparent_company_across_tenant_boundary(client):
+    """Regression test for a real bug found in Task 5's code-quality review:
+    companies.tenant_update originally had no WITH CHECK, which let a tenant
+    UPDATE its own company's parent_id to point at an unrelated tenant's
+    company, re-parenting itself out of its own tree and into theirs — a full
+    tenant-boundary bypass via UPDATE that INSERT/SELECT policies didn't
+    have. This connects as app_user directly, the same way the cross-tenant
+    visibility test above does, so it exercises the real RLS policy rather
+    than any application-layer guard."""
+    company_a_id = await _register(client, "Company A", "reparent-a@test.com")
+    company_b_id = await _register(client, "Company B", "reparent-b@test.com")
+
+    app_conn = await asyncpg.connect(
+        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
+    )
+    try:
+        await app_conn.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
+        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+            await app_conn.execute(
+                "UPDATE companies SET parent_id = $1 WHERE id = $2", company_b_id, company_a_id
+            )
+    finally:
+        await app_conn.close()
+```
+
+Add `import pytest` to the top of the file alongside the existing `import asyncpg` if it isn't already there.
+
+- [ ] **Step 3: Run it**
 
 Run: `pytest tests/test_rls_policy_regression.py -v`
-Expected: 1 passed. If the first assertion fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1).
+Expected: 2 passed. If the first test fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1). If the second test fails (the `UPDATE` succeeds instead of raising), `tenant_update`'s `WITH CHECK` is missing or incorrect — check design decision #6.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backend/tests/test_rls_policy_regression.py
-git commit -m "test: add RLS policy regression test (disable/re-enable proves policy, not luck)"
+git commit -m "test: add RLS policy regression tests (disable/re-enable + cross-tenant reparent)"
 ```
 
 ---
