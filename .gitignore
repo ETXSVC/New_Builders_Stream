@@ -22,3 +22,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 .coverage
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts

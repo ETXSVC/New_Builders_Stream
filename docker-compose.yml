@@ -49,7 +49,11 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      # Docker Compose network hostname, not "localhost" — the frontend container's
+      # server-side fetch (app/page.tsx) runs inside its own container, where
+      # "localhost" resolves to itself, not the backend container. The backend
+      # service is reachable at its Compose service name via Docker's internal DNS.
+      NEXT_PUBLIC_API_URL: http://backend:8000
 
 volumes:
   pgdata:
