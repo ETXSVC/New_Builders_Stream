@@ -156,6 +156,29 @@ def upgrade() -> None:
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
     # --- Row-Level Security ---------------------------------------------
+    #
+    # Every current_setting('app.x', true) cast below is wrapped in
+    # NULLIF(..., '') before ::uuid — this is not defensive styling, it fixes
+    # a real bug found empirically via connection pooling. A custom
+    # ("placeholder") GUC like app.current_tenant, once set even once via
+    # SET LOCAL / set_config(..., is_local=true) on a given physical
+    # connection, does NOT revert to NULL when that transaction ends —
+    # current_setting(name, true) instead returns '' (empty string) for the
+    # rest of that connection's life, even in later, unrelated transactions
+    # that never set it themselves. Casting '' directly to ::uuid raises
+    # invalid input syntax for type uuid: "", which is NOT the same as the
+    # policy evaluating to false — it's an unhandled error that surfaces as a
+    # 500. Because connection pools reuse physical connections across
+    # unrelated logical requests, this bites intentionally: any request that
+    # never sets app.current_tenant (e.g. login(), which only sets
+    # app.current_user_id) can be served a connection previously "poisoned"
+    # by an earlier request that did set it (e.g. register()) and commit.
+    # NULLIF(x, '') turns the poisoned '' back into a real NULL before the
+    # cast, so the policy correctly evaluates to false (access denied)
+    # instead of raising. Verified against live Postgres: the un-guarded cast
+    # reproduces the error deterministically once a connection has ever seen
+    # a SET on that GUC; the guarded version returns NULL and
+    # get_all_descendant_ids(NULL) correctly returns zero rows.
     for table in ("companies", "company_users", "invitations", "audit_log"):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 
@@ -165,7 +188,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_select ON companies FOR SELECT
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
     # WITH CHECK here is not optional. Without it, Postgres would fall back to
@@ -185,10 +208,10 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_update ON companies FOR UPDATE
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         WITH CHECK (
             parent_id IS NULL
-            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
         )
         """
     )
@@ -197,7 +220,7 @@ def upgrade() -> None:
         CREATE POLICY tenant_insert ON companies FOR INSERT
         WITH CHECK (
             parent_id IS NULL
-            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
         )
         """
     )
@@ -209,14 +232,14 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_isolation ON company_users FOR ALL
-        USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
     op.execute(
         """
         CREATE POLICY self_membership ON company_users FOR SELECT
-        USING (user_id = current_setting('app.current_user_id', true)::uuid)
+        USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
         """
     )
 
@@ -224,8 +247,8 @@ def upgrade() -> None:
         op.execute(
             f"""
             CREATE POLICY tenant_isolation ON {table} FOR ALL
-            USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+            USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
             """
         )
 
