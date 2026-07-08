@@ -51,3 +51,9 @@ async def test_malformed_tenant_header_is_rejected(client):
         headers={**a["headers"], "X-Tenant-ID": "not-a-uuid"},
     )
     assert response.status_code in (400, 401, 403, 422)  # must not be 200
+
+
+async def test_malformed_company_id_path_param_is_rejected(client):
+    a = await _register_and_login(client, "Company A", "admin-a@test.com")
+    response = await client.get("/companies/not-a-uuid", headers=a["headers"])
+    assert response.status_code == 422
