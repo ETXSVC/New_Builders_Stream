@@ -101,3 +101,38 @@ async def test_sibling_branches_cannot_see_each_other(client):
         headers={**parent["headers"], "X-Tenant-ID": child_a_id},
     )
     assert response.status_code == 403
+
+
+async def test_cannot_create_child_under_unrelated_company(client):
+    """Without the app-layer company_id == current.company_id check, this
+    would hit the tenant_insert RLS policy's rejection as an unhandled DB
+    error (no global exception handler exists), not a clean 403."""
+    a = await _register_and_login(client, "Company A", "admin-a2@test.com")
+    b = await _register_and_login(client, "Company B", "admin-b2@test.com")
+
+    response = await client.post(
+        f"/companies/{b['company_id']}/children",
+        json={"name": "Hostile Branch"},
+        headers=a["headers"],
+    )
+    assert response.status_code == 403
+
+
+async def test_cannot_create_grandchild_via_child_path_param(client):
+    """RLS's tenant_insert policy alone would allow this insert — child_id is
+    inside the parent's own descendant tree — but the app-layer check is
+    stricter, requiring company_id to be the caller's exact active tenant."""
+    parent = await _register_and_login(client, "Parent Co", "admin-parent3@test.com")
+    child = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": "Branch A"},
+        headers=parent["headers"],
+    )
+    child_id = child.json()["id"]
+
+    response = await client.post(
+        f"/companies/{child_id}/children",
+        json={"name": "Grandchild"},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 403
