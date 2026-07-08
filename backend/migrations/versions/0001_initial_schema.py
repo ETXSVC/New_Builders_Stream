@@ -142,10 +142,16 @@ def upgrade() -> None:
     )
     # Postgres grants EXECUTE on new functions to PUBLIC by default. Since
     # get_all_descendant_ids is SECURITY DEFINER (see the comment above its
-    # definition), a direct call with an arbitrary root_id — bypassing the
-    # RLS policy context entirely — returns that root's descendant company
-    # ids regardless of caller. Revoking PUBLIC and granting only to
-    # app_user keeps that surface as narrow as the rest of this schema.
+    # definition), ANY SQL running as app_user — not just the RLS policy
+    # engine's internal use of it — can call it directly with an arbitrary
+    # root_id and get back that root's descendant company ids, regardless of
+    # the caller's own tenant context. This is an accepted, narrow residual:
+    # it only leaks UUID parent/child relationships (no other columns), and
+    # app_user is the backend's single trusted connection role, not something
+    # end users get raw access to. Revoking PUBLIC and granting only to
+    # app_user keeps the surface as narrow as it can be while the function
+    # still does its job — it's not a full fix, since app_user itself must
+    # retain EXECUTE for the policies above to work.
     op.execute("REVOKE EXECUTE ON FUNCTION get_all_descendant_ids(UUID) FROM PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
@@ -162,10 +168,28 @@ def upgrade() -> None:
         USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
         """
     )
+    # WITH CHECK here is not optional. Without it, Postgres would fall back to
+    # reusing USING for the check — but USING only constrains which existing row
+    # a caller may target, never the NEW values being written to it. That leaves
+    # parent_id completely unvalidated on UPDATE: a session scoped to tenant A
+    # could UPDATE one of A's own companies to set parent_id to an unrelated
+    # tenant B's id, re-parenting it out of A's tree and into B's — a full
+    # tenant-boundary bypass via UPDATE, even though INSERT and SELECT on this
+    # same table are correctly locked down. Empirically confirmed exploitable
+    # (a bare `UPDATE companies SET parent_id = '<other-tenant>' WHERE id =
+    # '<own-company>'` succeeds) before this WITH CHECK was added. The
+    # condition mirrors tenant_insert's: a same-tenant update (parent_id
+    # unchanged, or still within the caller's own tree) is unaffected, since
+    # the row's pre-update parent_id must already satisfy this same predicate
+    # for the row to have been visible/targetable via USING in the first place.
     op.execute(
         """
         CREATE POLICY tenant_update ON companies FOR UPDATE
         USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        WITH CHECK (
+            parent_id IS NULL
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+        )
         """
     )
     op.execute(
