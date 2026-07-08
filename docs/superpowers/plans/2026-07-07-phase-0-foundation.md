@@ -22,6 +22,23 @@ These are not implementation details to improvise later — get them wrong and t
 
 4. **Refresh-token rotation is explicitly out of scope for this plan.** [`docs/07-security-compliance.md`](../../07-security-compliance.md) specifies short-lived access tokens with refresh rotation as the target end state. This plan issues a single 60-minute access token with no refresh flow, so the login session simply expires and the user re-authenticates. This is a known, deliberate simplification — track it as follow-up work before real subscriber data is on the platform, not a Phase-0 blocker.
 
+5. **`get_all_descendant_ids()` must be `SECURITY DEFINER`, or RLS recurses infinitely for the real runtime role.** The function queries `companies`, and `companies`' own RLS policies call the function — for any caller that isn't the table owner (i.e. `app_user`, the actual role the app connects as), that's unbounded recursion: the function's internal query re-triggers the policy that invoked it, forever, until Postgres raises `stack depth limit exceeded`. This is invisible if you only test as the `postgres` superuser (superusers bypass RLS, so the recursive policy call never fires) — which is exactly why Task 5's own verification steps test the `app_user` role directly, not just check that RLS is "enabled." `SECURITY DEFINER` makes the function's internal traversal run as its owner (`postgres`), bypassing RLS only for that internal scan; the outer policies still gate everything real callers can see. Because a `SECURITY DEFINER` function bypasses RLS for anyone who can call it, `EXECUTE` is revoked from `PUBLIC` and granted only to `app_user`, matching the narrow-by-default posture of the rest of this schema. Caught empirically during Task 5 implementation, not anticipated in the original design — see Task 5's migration for the full mechanism.
+
+6. **Every `UPDATE`-permitting RLS policy needs its own `WITH CHECK`, not just `USING`.** `USING` alone only gates which *existing* rows a caller may target — it says nothing about the *new* values being written. `companies.tenant_update` originally had only `USING`, which meant a tenant could `UPDATE companies SET parent_id = '<other-tenant>' WHERE id = '<own-company>'` and successfully re-parent its own company into a completely unrelated tenant's tree — a full tenant-boundary bypass via UPDATE, even though INSERT and SELECT on the same table were correctly locked down. Empirically confirmed exploitable (a bare cross-tenant re-parent `UPDATE` succeeded, and the row correctly vanished from the original tenant's view immediately after) before a `WITH CHECK` mirroring `tenant_insert`'s was added. Not reachable through any endpoint this plan currently defines (Task 13 only adds company-creation, not re-parenting), but it's the isolation backstop every later task is told to trust — caught during Task 5's code-quality review, not anticipated in the original design.
+
+7. **Every `current_setting('app.x', true)::uuid` cast in an RLS policy must guard against `''`, not just `NULL`.** A custom ("placeholder") GUC, once set even once via `SET LOCAL`/`set_config(..., is_local=true)` on a given physical connection, does not revert to NULL when that transaction ends — `current_setting(name, true)` instead returns `''` for the rest of that connection's lifetime, even across later, unrelated transactions that never touch the setting themselves. Casting `''::uuid` raises `invalid input syntax for type uuid`, an unhandled error (a 500), not a policy evaluating to false. Because a connection pool reuses physical connections across unrelated logical requests, this bites in exactly the way that's hardest to catch in isolated testing: a request that never sets `app.current_tenant` (e.g. `login()`, which only sets `app.current_user_id`) can be served a connection previously "poisoned" by an earlier request that did set it and commit (e.g. `register()`). This went undetected through all of Task 5's and Task 9's own testing because every manual verification used a *fresh* connection per test — it only surfaced when Task 10 chained register→login through the app's real connection-pooled `session_scope()` for the first time. Fixed by wrapping every such cast as `NULLIF(current_setting('app.x', true), '')::uuid`, so a poisoned `''` becomes a real `NULL` before the cast, and the policy correctly denies access instead of erroring. Verified empirically against live Postgres in both the broken and fixed forms.
+
+---
+
+## Regression Testing Policy
+
+Each task's own verification step only proves *that task's* new code works in isolation. Nothing in the per-task steps re-checks that a later task hasn't silently broken an earlier one — Task 4's model changes could break Task 2's health check, Task 13's nested-hierarchy endpoint could break Task 12's isolation guarantees, and so on. Two things close that gap:
+
+1. **From the first task that has a real pytest suite onward (Task 9, which adds `conftest.py`), every subsequent task's verification step includes running the *entire* suite — `pytest -v` from `backend/` with no path filter — not just the new task's test file.** A task is not done if the full suite has a regression, even one unrelated to that task's own code. If a task's changes break an earlier test, the earlier test's expectations don't automatically win — figure out which one is actually wrong and fix that one, but never leave both in a state where the suite is red.
+2. **Task 19 (after Task 18, before Phase 0 is considered complete) runs a genuine end-to-end regression pass against the real, fully-assembled Docker Compose stack** — actual containers, actual network calls over real HTTP, not the in-process ASGI transport every other task's tests use. This is the only point in the plan that exercises the system the way a real client actually would, including the two hostname contexts (`postgres` from inside the Docker network vs. `localhost` from the host) actually working together correctly.
+
+This is deliberately layered, not redundant: fast in-process tests give quick feedback per task, and the slower full-stack pass at the end catches the class of bug that only shows up when everything runs together for real (wiring, hostnames, container startup ordering, environment variable propagation).
+
 ---
 
 ## File Structure
@@ -114,14 +131,16 @@ APP_DB_USER=app_user
 APP_DB_PASSWORD=app_password
 
 DATABASE_URL=postgresql+asyncpg://app_user:app_password@postgres:5432/builders_stream
-MIGRATIONS_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@postgres:5432/builders_stream
-TEST_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@postgres:5432/builders_stream_test
+MIGRATIONS_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream_test
 
 JWT_SECRET=dev-only-secret-change-me
 JWT_EXPIRE_MINUTES=60
 
 REDIS_URL=redis://redis:6379/0
 ```
+
+**Hostname note:** `DATABASE_URL` uses the Docker-network hostname `postgres` because it's read by the `backend` container at real runtime (Task 18), where service names resolve via Docker's internal DNS. `MIGRATIONS_DATABASE_URL` and `TEST_DATABASE_URL` use `localhost` instead, because Alembic (Task 5) and pytest (Task 9) both run directly on the host machine in this plan, not inside a container — from the host, only `localhost:5432` (published by `docker-compose.yml`'s `"5432:5432"` port mapping) resolves, `postgres` does not.
 
 - [ ] **Step 2: Create the Docker Compose stack**
 
@@ -396,14 +415,26 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 async def set_current_user(session: AsyncSession, user_id: str) -> None:
     """Scopes the self-membership RLS policy (design decision #3) to this user for the
-    remainder of the current transaction."""
-    await session.execute(text("SET LOCAL app.current_user_id = :uid"), {"uid": user_id})
+    remainder of the current transaction.
+
+    Uses set_config(), not `SET LOCAL ... = :param`, because PostgreSQL's SET/SET LOCAL
+    grammar only accepts a literal in the value position — a bound parameter there is a
+    syntax error at the server, regardless of driver. set_config(name, value, is_local)
+    is a plain function call, so it accepts bound parameters normally; is_local=true
+    gives it the same transaction-scoped reset-on-commit/rollback semantics as SET LOCAL.
+    """
+    await session.execute(
+        text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": user_id}
+    )
 
 
 async def set_current_tenant(session: AsyncSession, company_id: str) -> None:
     """Scopes every tenant-isolation RLS policy to this company (and its descendants)
-    for the remainder of the current transaction."""
-    await session.execute(text("SET LOCAL app.current_tenant = :cid"), {"cid": company_id})
+    for the remainder of the current transaction. See set_current_user's docstring for
+    why this uses set_config() instead of SET LOCAL with a bound parameter."""
+    await session.execute(
+        text("SELECT set_config('app.current_tenant', :cid, true)"), {"cid": company_id}
+    )
 ```
 
 - [ ] **Step 2: Verify it imports cleanly**
@@ -562,8 +593,15 @@ from app.models.base import Base, TimestampMixin, UUIDPKMixin
 class AuditLog(Base, UUIDPKMixin, TimestampMixin):
     __tablename__ = "audit_log"
 
+    # No ondelete here (defaults to RESTRICT), unlike every other company_id FK in
+    # this file. docs/07-security-compliance.md requires a minimum 7-year audit log
+    # retention and states no code path ever deletes audit entries — CASCADE would
+    # let deleting a company silently destroy its own audit trail, which directly
+    # contradicts that policy. RESTRICT means a company can't be deleted while it
+    # still has audit history, which is the correct failure mode until Phase 0 (which
+    # has no company-delete endpoint at all) grows one with an explicit retention story.
     company_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("companies.id"), nullable=False
     )
     actor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
@@ -802,7 +840,10 @@ def upgrade() -> None:
     op.create_table(
         "audit_log",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("company_id", UUID(as_uuid=True), sa.ForeignKey("companies.id", ondelete="CASCADE"), nullable=False),
+        # No ondelete (defaults to RESTRICT) — see the matching comment on the
+        # AuditLog ORM model (Task 4): CASCADE here would violate the audit log's
+        # documented 7-year, never-deleted retention policy.
+        sa.Column("company_id", UUID(as_uuid=True), sa.ForeignKey("companies.id"), nullable=False),
         sa.Column("actor_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("action", sa.String(100), nullable=False),
         sa.Column("entity_type", sa.String(50), nullable=False),
@@ -813,17 +854,48 @@ def upgrade() -> None:
     op.create_index("idx_audit_log_company_created", "audit_log", ["company_id", "created_at"])
 
     # --- Recursive descendant lookup (design decision #2/#3 depend on this) -
+    #
+    # SECURITY DEFINER + a pinned search_path are required here, not optional
+    # hardening: this function queries `companies` internally, and `companies`
+    # has RLS enabled with a SELECT policy that itself calls this function.
+    # For any caller who is not the table owner (i.e. the real runtime
+    # `app_user` role — see design decision #1), a plain (non-SECURITY
+    # DEFINER) version of this function recurses infinitely: the function's
+    # internal SELECT on `companies` re-triggers the `tenant_select` policy,
+    # which calls this function again, forever, until Postgres raises
+    # "stack depth limit exceeded". This was caught by directly testing as
+    # app_user during Task 5 implementation — every single query against any
+    # RLS-protected table failed until this fix was applied. It would NOT
+    # have been caught by running Step 5/6's verification as the `postgres`
+    # superuser alone, since superusers bypass RLS and never trigger the
+    # recursive policy call in the first place.
+    #
+    # Marking the function SECURITY DEFINER makes its body execute with the
+    # privileges of its owner (postgres, who also owns `companies` and was
+    # never granted FORCE ROW LEVEL SECURITY), so the internal traversal
+    # bypasses RLS entirely and terminates normally. This does NOT weaken
+    # tenant isolation: the outer RLS policies still gate what `app_user`
+    # can ultimately see/write via `... IN (SELECT id FROM
+    # get_all_descendant_ids(...))` — only this function's own internal scan
+    # is exempted, and EXECUTE on it is restricted to app_user below (not
+    # left at Postgres's PUBLIC default, since a SECURITY DEFINER function
+    # bypasses RLS for anyone who can call it directly).
     op.execute(
         """
         CREATE OR REPLACE FUNCTION get_all_descendant_ids(root_id UUID)
-        RETURNS TABLE (id UUID) AS $$
+        RETURNS TABLE (id UUID)
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
             WITH RECURSIVE company_tree AS (
                 SELECT c.id FROM companies c WHERE c.id = root_id
                 UNION ALL
                 SELECT c.id FROM companies c INNER JOIN company_tree ct ON c.parent_id = ct.id
             )
             SELECT id FROM company_tree;
-        $$ LANGUAGE sql STABLE;
+        $$;
         """
     )
 
@@ -845,9 +917,45 @@ def upgrade() -> None:
         "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
         "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user"
     )
+    # Postgres grants EXECUTE on new functions to PUBLIC by default. Since
+    # get_all_descendant_ids is SECURITY DEFINER (see the comment above its
+    # definition), ANY SQL running as app_user — not just the RLS policy
+    # engine's internal use of it — can call it directly with an arbitrary
+    # root_id and get back that root's descendant company ids, regardless of
+    # the caller's own tenant context. This is an accepted, narrow residual:
+    # it only leaks UUID parent/child relationships (no other columns), and
+    # app_user is the backend's single trusted connection role, not something
+    # end users get raw access to. Revoking PUBLIC and granting only to
+    # app_user keeps the surface as narrow as it can be while the function
+    # still does its job — it's not a full fix, since app_user itself must
+    # retain EXECUTE for the policies above to work.
+    op.execute("REVOKE EXECUTE ON FUNCTION get_all_descendant_ids(UUID) FROM PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
     # --- Row-Level Security ---------------------------------------------
+    #
+    # Every current_setting('app.x', true) cast below is wrapped in
+    # NULLIF(..., '') before ::uuid — this is not defensive styling, it fixes
+    # a real bug found empirically via connection pooling. A custom
+    # ("placeholder") GUC like app.current_tenant, once set even once via
+    # SET LOCAL / set_config(..., is_local=true) on a given physical
+    # connection, does NOT revert to NULL when that transaction ends —
+    # current_setting(name, true) instead returns '' (empty string) for the
+    # rest of that connection's life, even in later, unrelated transactions
+    # that never set it themselves. Casting '' directly to ::uuid raises
+    # invalid input syntax for type uuid: "", which is NOT the same as the
+    # policy evaluating to false — it's an unhandled error that surfaces as a
+    # 500. Because connection pools reuse physical connections across
+    # unrelated logical requests, this bites intentionally: any request that
+    # never sets app.current_tenant (e.g. login(), which only sets
+    # app.current_user_id) can be served a connection previously "poisoned"
+    # by an earlier request that did set it (e.g. register()) and commit.
+    # NULLIF(x, '') turns the poisoned '' back into a real NULL before the
+    # cast, so the policy correctly evaluates to false (access denied)
+    # instead of raising. Verified against live Postgres: the un-guarded cast
+    # reproduces the error deterministically once a connection has ever seen
+    # a SET on that GUC; the guarded version returns NULL and
+    # get_all_descendant_ids(NULL) correctly returns zero rows.
     for table in ("companies", "company_users", "invitations", "audit_log"):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 
@@ -857,13 +965,31 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_select ON companies FOR SELECT
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
+    # WITH CHECK here is not optional. Without it, Postgres would fall back to
+    # reusing USING for the check — but USING only constrains which existing row
+    # a caller may target, never the NEW values being written to it. That leaves
+    # parent_id completely unvalidated on UPDATE: a session scoped to tenant A
+    # could UPDATE one of A's own companies to set parent_id to an unrelated
+    # tenant B's id, re-parenting it out of A's tree and into B's — a full
+    # tenant-boundary bypass via UPDATE, even though INSERT and SELECT on this
+    # same table are correctly locked down. Empirically confirmed exploitable
+    # (a bare `UPDATE companies SET parent_id = '<other-tenant>' WHERE id =
+    # '<own-company>'` succeeds) before this WITH CHECK was added. The
+    # condition mirrors tenant_insert's: a same-tenant update (parent_id
+    # unchanged, or still within the caller's own tree) is unaffected, since
+    # the row's pre-update parent_id must already satisfy this same predicate
+    # for the row to have been visible/targetable via USING in the first place.
     op.execute(
         """
         CREATE POLICY tenant_update ON companies FOR UPDATE
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+        WITH CHECK (
+            parent_id IS NULL
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
+        )
         """
     )
     op.execute(
@@ -871,7 +997,7 @@ def upgrade() -> None:
         CREATE POLICY tenant_insert ON companies FOR INSERT
         WITH CHECK (
             parent_id IS NULL
-            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
         )
         """
     )
@@ -883,14 +1009,14 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_isolation ON company_users FOR ALL
-        USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
     op.execute(
         """
         CREATE POLICY self_membership ON company_users FOR SELECT
-        USING (user_id = current_setting('app.current_user_id', true)::uuid)
+        USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
         """
     )
 
@@ -898,8 +1024,8 @@ def upgrade() -> None:
         op.execute(
             f"""
             CREATE POLICY tenant_isolation ON {table} FOR ALL
-            USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+            USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
             """
         )
 
@@ -938,6 +1064,18 @@ Run:
 docker compose exec postgres psql -U postgres -d builders_stream -c "\d+ companies" | grep -i "row security"
 ```
 Expected: output includes `Row security is enabled.` or similar (exact wording varies by psql version, but a row about row security must be present — if it's missing, `ENABLE ROW LEVEL SECURITY` did not take effect and Task 5 must be re-checked before continuing).
+
+**This check alone is not sufficient** — it (and the `psql -U postgres` connection used to run it) only proves RLS is turned on, never that it actually works, because the `postgres` superuser bypasses RLS entirely and would never hit a policy-recursion bug even if one existed. The real runtime role is `app_user`. Verify against that role specifically:
+
+```bash
+docker compose exec postgres psql -U app_user -d builders_stream -c "
+BEGIN;
+SELECT set_config('app.current_tenant', gen_random_uuid()::text, true);
+SELECT count(*) FROM companies;
+ROLLBACK;
+"
+```
+Expected: `count = 0`, no error. If this instead raises `stack depth limit exceeded`, `get_all_descendant_ids()` is missing `SECURITY DEFINER` (see the comment above its definition in Step 4) — a plain version of that function recurses infinitely the moment a non-owner role queries `companies`, since the function's own internal query re-triggers the same RLS policy that called it. This is exactly the failure mode Step 6's superuser-only check cannot detect.
 
 - [ ] **Step 7: Commit**
 
@@ -1046,12 +1184,52 @@ async def test_middleware_populates_context_from_headers():
 
     assert captured["token"] == "abc123"
     assert captured["tenant"] == "11111111-1111-1111-1111-111111111111"
+
+
+async def test_middleware_leaves_context_none_when_headers_absent():
+    """Covers the branches the first test doesn't: no Authorization header at
+    all, and no X-Tenant-ID header. Both should resolve to None, not an
+    exception or a stale value — later code (Task 11's get_current_user)
+    treats None as "no claim" and falls back appropriately; a regression here
+    (e.g. someone breaks the `else None` ternary in middleware.py) would
+    silently propagate a wrong value instead of failing loudly."""
+    captured = {}
+
+    @app.get("/_debug_context_absent")
+    async def debug_context_absent():
+        captured["token"] = bearer_token_ctx.get()
+        captured["tenant"] = claimed_tenant_id_ctx.get()
+        return {}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.get("/_debug_context_absent")
+
+    assert captured["token"] is None
+    assert captured["tenant"] is None
+
+
+async def test_middleware_leaves_token_none_for_non_bearer_scheme():
+    """Covers the `else None` branch specifically: a non-Bearer Authorization
+    scheme (e.g. Basic auth) must not be captured as a token."""
+    captured = {}
+
+    @app.get("/_debug_context_basic_auth")
+    async def debug_context_basic_auth():
+        captured["token"] = bearer_token_ctx.get()
+        return {}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.get("/_debug_context_basic_auth", headers={"Authorization": "Basic dXNlcjpwYXNz"})
+
+    assert captured["token"] is None
 ```
 
 - [ ] **Step 5: Run it**
 
 Run: `pytest tests/test_middleware.py -v`
-Expected: `test_middleware_populates_context_from_headers PASSED`
+Expected: 3 passed (`test_middleware_populates_context_from_headers`, `test_middleware_leaves_context_none_when_headers_absent`, `test_middleware_leaves_token_none_for_non_bearer_scheme`).
 
 - [ ] **Step 6: Commit**
 
@@ -1072,11 +1250,13 @@ git commit -m "feat: add TenantMiddleware for header/token context propagation"
 
 `backend/tests/test_security.py`:
 ```python
-import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
+import jwt as pyjwt
 import pytest
 
+from app.config import settings
 from app.core.security import (
     hash_password,
     verify_password,
@@ -1096,6 +1276,16 @@ def test_password_hash_rejects_wrong_password():
     assert verify_password("wrong password", hashed) is False
 
 
+def test_password_hash_rejects_malformed_hash():
+    """Regression test for a real gap found in Task 7's code-quality review:
+    verify_password originally only caught VerifyMismatchError, so a
+    corrupted/malformed password_hash value (e.g. from database corruption or
+    a manual edit) raised an unhandled InvalidHashError instead of failing
+    closed. InvalidHashError is not a VerificationError subclass — it's a
+    separate ValueError branch — so it has to be caught explicitly."""
+    assert verify_password("anything", "not-a-valid-argon2-hash") is False
+
+
 def test_token_roundtrip():
     user_id = str(uuid.uuid4())
     company_id = str(uuid.uuid4())
@@ -1107,9 +1297,52 @@ def test_token_roundtrip():
 
 def test_token_rejects_tampering():
     token = create_access_token(user_id=str(uuid.uuid4()), default_company_id=str(uuid.uuid4()))
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    # Tamper the SECOND-to-last character, not the last one. HMAC-SHA256
+    # produces a 32-byte signature; base64url-encoding 32 bytes (not a
+    # multiple of 3) leaves the final character with only 4 meaningful bits
+    # (2 are fixed padding), so a substitution targeting position -1
+    # specifically has a real chance of decoding to the exact same signature
+    # byte, making the test nondeterministically flaky — empirically measured
+    # at roughly an 8% failure-to-raise rate across repeated trials. Position
+    # -2 is a fully meaningful base64 character (all 6 bits are real signature
+    # data), so any substitution there deterministically changes the decoded
+    # signature and reliably triggers InvalidSignatureError. Verified 0
+    # failures across 500 trials after this fix, versus ~8% before it.
+    tampered = token[:-2] + ("A" if token[-2] != "A" else "B") + token[-1]
     with pytest.raises(InvalidTokenError):
         decode_access_token(tampered)
+
+
+def test_token_rejects_expired_token():
+    """Expiry is the core security property of a 60-minute access token —
+    deserves its own explicit test, not just reliance on tampering coverage."""
+    now = datetime.now(timezone.utc)
+    expired_payload = {
+        "sub": str(uuid.uuid4()),
+        "default_company_id": str(uuid.uuid4()),
+        "iat": now - timedelta(minutes=120),
+        "exp": now - timedelta(minutes=60),
+        "jti": str(uuid.uuid4()),
+    }
+    expired_token = pyjwt.encode(expired_payload, settings.jwt_secret, algorithm="HS256")
+    with pytest.raises(InvalidTokenError):
+        decode_access_token(expired_token)
+
+
+def test_token_rejects_wrong_secret():
+    """A token signed with a different secret must be rejected — this is the
+    actual property that makes the JWT signature meaningful at all."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(uuid.uuid4()),
+        "default_company_id": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(minutes=60),
+        "jti": str(uuid.uuid4()),
+    }
+    wrong_secret_token = pyjwt.encode(payload, "a-completely-different-secret", algorithm="HS256")
+    with pytest.raises(InvalidTokenError):
+        decode_access_token(wrong_secret_token)
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -1125,7 +1358,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 
 from app.config import settings
 
@@ -1141,9 +1374,20 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
+    # VerificationError (parent of VerifyMismatchError) covers a genuine wrong
+    # password. InvalidHashError covers a malformed/corrupted password_hash
+    # value — it is NOT a VerificationError subclass (its hierarchy is
+    # InvalidHashError -> ValueError, a completely separate branch from
+    # VerificationError -> Argon2Error; confirmed by inspecting argon2-cffi's
+    # actual exception classes, not assumed), so it must be caught explicitly
+    # or a corrupted row surfaces as an unhandled 500 from the login endpoint
+    # instead of a controlled auth failure. Not reachable via any normal write
+    # path today (this schema only ever writes Argon2 hashes), but auth code
+    # should fail closed on malformed input as a matter of course, not just
+    # for inputs the current code happens to produce.
     try:
         return _hasher.verify(password_hash, plain_password)
-    except VerifyMismatchError:
+    except (VerificationError, InvalidHashError):
         return False
 
 
@@ -1169,7 +1413,7 @@ def decode_access_token(token: str) -> dict:
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `pytest tests/test_security.py -v`
-Expected: 4 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1226,18 +1470,17 @@ class TokenResponse(BaseModel):
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CompanyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     parent_id: uuid.UUID | None
     name: str
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class CreateChildCompanyRequest(BaseModel):
@@ -1250,7 +1493,7 @@ class CreateChildCompanyRequest(BaseModel):
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 
 from app.models.user import VALID_ROLES
 
@@ -1268,15 +1511,14 @@ class InvitationCreateRequest(BaseModel):
 
 
 class InvitationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     company_id: uuid.UUID
     email: EmailStr
     role: str
     expires_at: datetime
     accepted_at: datetime | None
-
-    class Config:
-        from_attributes = True
 
 
 class InvitationAcceptRequest(BaseModel):
@@ -1435,12 +1677,20 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.security import create_access_token, hash_password, verify_password
-from app.db import session_scope, set_current_tenant
+from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, User
 from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 from app.services.audit import write_audit_log
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Precomputed once at import time so a login attempt against an email that
+# doesn't exist pays the same Argon2 verification cost as one that does —
+# skipping verify_password() entirely for an unknown email is measurably
+# faster (empirically ~77ms vs ~0ms) and lets an attacker enumerate
+# registered emails purely from response timing, which matters for a B2B
+# product where "does this company have an account" is itself sensitive.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-never-used-for-real-auth")
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
@@ -1492,16 +1742,35 @@ async def login(payload: LoginRequest) -> TokenResponse:
     async with session_scope() as session:
         result = await session.execute(select(User).where(User.email == payload.email))
         user = result.scalar_one_or_none()
-        if user is None or not verify_password(payload.password, user.password_hash):
+
+        # Always call verify_password, even for an unknown email — against a
+        # fixed dummy hash when there's no real user — so both branches pay
+        # the same Argon2 cost. See _DUMMY_PASSWORD_HASH's comment above.
+        password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+        password_valid = verify_password(payload.password, password_hash)
+
+        if user is None or not password_valid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
         # Membership lookup needs app.current_user_id set for the self_membership
         # RLS policy to allow it (design decision #3).
-        from app.db import set_current_user
-
         await set_current_user(session, str(user.id))
         result = await session.execute(
-            select(CompanyUser).where(CompanyUser.user_id == user.id).order_by(CompanyUser.created_at)
+            select(CompanyUser)
+            .where(CompanyUser.user_id == user.id)
+            # company_id as a tiebreaker is not cosmetic: company_users has no
+            # surrogate id (composite PK on company_id, user_id), and
+            # created_at alone collides often enough to matter — measured at
+            # ~32% of rapid successive inserts sharing a timestamp on ordinary
+            # hardware, since datetime.now() resolution is coarser than
+            # typical call overhead. Without a deterministic secondary key,
+            # which membership .first() returns after a tie is unspecified by
+            # Postgres and can differ between two logically identical queries,
+            # making a user's "default company" not actually stable. Not
+            # reachable today (registration only ever creates one membership),
+            # but this is exactly the ordering Task 14's invitation-acceptance
+            # flow will start exercising with multiple memberships per user.
+            .order_by(CompanyUser.created_at, CompanyUser.company_id)
         )
         membership = result.scalars().first()
         if membership is None:
@@ -2472,7 +2741,9 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
         f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
     )
     try:
-        await app_conn.execute("SET app.current_tenant = $1", company_a_id)
+        # set_config(), not `SET app.current_tenant = $1` — see set_current_tenant's
+        # docstring in app/db.py (Task 3) for why a bound parameter there is a syntax error.
+        await app_conn.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
         visible_as_a = await app_conn.fetchrow(
             "SELECT id FROM companies WHERE id = $1", company_b_id
         )
@@ -2487,7 +2758,7 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
             f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
         )
         try:
-            await app_conn2.execute("SET app.current_tenant = $1", company_a_id)
+            await app_conn2.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
             visible_with_rls_off = await app_conn2.fetchrow(
                 "SELECT id FROM companies WHERE id = $1", company_b_id
             )
@@ -2505,16 +2776,49 @@ async def test_rls_policy_itself_blocks_cross_tenant_row_visibility(client):
         await owner_conn.close()
 ```
 
-- [ ] **Step 2: Run it**
+- [ ] **Step 2: Pin the cross-tenant re-parent bug as a permanent regression test**
+
+During Task 5's code-quality review, `companies.tenant_update` was found to have no `WITH CHECK` — `USING` alone only gates which existing row a caller may target, never the new values being written, so a tenant could `UPDATE companies SET parent_id = '<other-tenant>'` on its own company and re-parent it into an unrelated tenant's tree. This was fixed (see design decision #6 and Task 5's migration), but the whole reason RLS bugs are dangerous is they're invisible until something exercises the exact write pattern that trips them — pin it permanently rather than trusting it stays fixed by inspection alone.
+
+Append to `backend/tests/test_rls_policy_regression.py`:
+```python
+async def test_cannot_reparent_company_across_tenant_boundary(client):
+    """Regression test for a real bug found in Task 5's code-quality review:
+    companies.tenant_update originally had no WITH CHECK, which let a tenant
+    UPDATE its own company's parent_id to point at an unrelated tenant's
+    company, re-parenting itself out of its own tree and into theirs — a full
+    tenant-boundary bypass via UPDATE that INSERT/SELECT policies didn't
+    have. This connects as app_user directly, the same way the cross-tenant
+    visibility test above does, so it exercises the real RLS policy rather
+    than any application-layer guard."""
+    company_a_id = await _register(client, "Company A", "reparent-a@test.com")
+    company_b_id = await _register(client, "Company B", "reparent-b@test.com")
+
+    app_conn = await asyncpg.connect(
+        f"postgresql://app_user:app_password@localhost:5432/builders_stream_test"
+    )
+    try:
+        await app_conn.execute("SELECT set_config('app.current_tenant', $1, false)", company_a_id)
+        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
+            await app_conn.execute(
+                "UPDATE companies SET parent_id = $1 WHERE id = $2", company_b_id, company_a_id
+            )
+    finally:
+        await app_conn.close()
+```
+
+Add `import pytest` to the top of the file alongside the existing `import asyncpg` if it isn't already there.
+
+- [ ] **Step 3: Run it**
 
 Run: `pytest tests/test_rls_policy_regression.py -v`
-Expected: 1 passed. If the first assertion fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1).
+Expected: 2 passed. If the first test fails (Company A can see Company B with RLS on), Task 5's `tenant_select` policy is not in effect — check that `app_user` isn't accidentally the table owner (design decision #1). If the second test fails (the `UPDATE` succeeds instead of raising), `tenant_update`'s `WITH CHECK` is missing or incorrect — check design decision #6.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backend/tests/test_rls_policy_regression.py
-git commit -m "test: add RLS policy regression test (disable/re-enable proves policy, not luck)"
+git commit -m "test: add RLS policy regression tests (disable/re-enable + cross-tenant reparent)"
 ```
 
 ---
@@ -2723,6 +3027,199 @@ git commit -m "feat: add minimal Next.js frontend proving end-to-end Docker Comp
 
 ---
 
+## Task 19: Full-Stack End-to-End Regression Pass
+
+Every prior task's tests run in-process against the app via `httpx.ASGITransport` — fast, but it never actually binds a port, never goes over real TCP, and never proves the two different hostname contexts (`postgres` inside the Docker network vs. `localhost` from the host — see the hostname note in Task 1) actually resolve correctly together. This task does that, once, as the final gate before Phase 0 is considered done. See "Regression Testing Policy" near the top of this document for why this exists as a separate layer from the per-task test runs.
+
+**Files:**
+- Create: `scripts/e2e_smoke_test.py`
+
+- [ ] **Step 1: Write the end-to-end smoke test script**
+
+`scripts/e2e_smoke_test.py`:
+```python
+"""Full-stack E2E regression check. Run against a live `docker compose up -d`
+stack — hits real HTTP ports, not the in-process ASGI transport the pytest
+suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
+Task 19."""
+
+import sys
+import time
+import uuid
+
+import httpx
+
+BACKEND_URL = "http://localhost:8000"
+FRONTEND_URL = "http://localhost:3000"
+PASSWORD = "supersecret123"
+
+
+def wait_for_backend(client: httpx.Client, timeout_seconds: int = 30) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error = None
+    while time.time() < deadline:
+        try:
+            response = client.get("/health")
+            if response.status_code == 200 and response.json() == {"status": "ok"}:
+                return
+        except httpx.ConnectError as exc:
+            last_error = exc
+        time.sleep(1)
+    raise RuntimeError(f"Backend never became healthy within {timeout_seconds}s: {last_error}")
+
+
+def register(client: httpx.Client, company_name: str, email: str) -> dict:
+    response = client.post(
+        "/auth/register",
+        json={
+            "company_name": company_name,
+            "admin_full_name": "E2E Admin",
+            "admin_email": email,
+            "admin_password": PASSWORD,
+        },
+    )
+    assert response.status_code == 201, f"register failed: {response.status_code} {response.text}"
+    return response.json()
+
+
+def login(client: httpx.Client, email: str) -> dict:
+    response = client.post("/auth/login", json={"email": email, "password": PASSWORD})
+    assert response.status_code == 200, f"login failed: {response.status_code} {response.text}"
+    return response.json()
+
+
+def run() -> None:
+    run_id = uuid.uuid4().hex[:8]  # unique suffix so repeated runs don't collide on email uniqueness
+    checks_passed = []
+
+    with httpx.Client(base_url=BACKEND_URL, timeout=10.0) as client:
+        wait_for_backend(client)
+        checks_passed.append("backend /health reachable over real HTTP")
+
+        company_a = register(client, "E2E Company A", f"admin-a-{run_id}@e2e.test")
+        token_a = login(client, f"admin-a-{run_id}@e2e.test")["access_token"]
+        headers_a = {"Authorization": f"Bearer {token_a}"}
+        checks_passed.append("company A registered and logged in over real HTTP")
+
+        own_company = client.get(f"/companies/{company_a['company_id']}", headers=headers_a)
+        assert own_company.status_code == 200, own_company.text
+        checks_passed.append("company A can read its own company record")
+
+        company_b = register(client, "E2E Company B", f"admin-b-{run_id}@e2e.test")
+
+        cross_tenant = client.get(f"/companies/{company_b['company_id']}", headers=headers_a)
+        assert cross_tenant.status_code == 404, (
+            f"CRITICAL: cross-tenant isolation failed over real network — expected 404, "
+            f"got {cross_tenant.status_code}: {cross_tenant.text}"
+        )
+        checks_passed.append("cross-tenant isolation holds over real HTTP (company A cannot read company B)")
+
+        child = client.post(
+            f"/companies/{company_a['company_id']}/children",
+            json={"name": "E2E Branch"},
+            headers=headers_a,
+        )
+        assert child.status_code == 201, child.text
+        child_id = child.json()["id"]
+        checks_passed.append("nested child-company creation works over real HTTP")
+
+        child_read = client.get(f"/companies/{child_id}", headers=headers_a)
+        assert child_read.status_code == 200 and child_read.json()["parent_id"] == company_a["company_id"]
+        checks_passed.append("parent can read its own newly-created child branch")
+
+        invite_email = f"invitee-{run_id}@e2e.test"
+        invite = client.post(
+            "/invitations", json={"email": invite_email, "role": "field_crew"}, headers=headers_a
+        )
+        assert invite.status_code == 201, invite.text
+        checks_passed.append("invitation created over real HTTP")
+
+        accept = client.post(
+            f"/invitations/{invite.json()['id']}/accept",
+            json={"full_name": "E2E Invitee", "password": PASSWORD},
+        )
+        assert accept.status_code == 200, accept.text
+        checks_passed.append("invitation accepted over real HTTP")
+
+        invitee_login = login(client, invite_email)
+        assert invitee_login["default_company_id"] == company_a["company_id"]
+        checks_passed.append("newly-invited user can log in and lands in the correct company")
+
+    with httpx.Client(timeout=10.0) as client:
+        frontend_response = client.get(FRONTEND_URL)
+        assert frontend_response.status_code == 200, frontend_response.text
+        assert "Backend status: ok" in frontend_response.text, (
+            f"Frontend did not report backend as healthy. Body: {frontend_response.text[:500]}"
+        )
+        checks_passed.append("frontend container reaches backend container over the Docker network and renders it")
+
+    print(f"\n{'=' * 60}\nE2E SMOKE TEST: {len(checks_passed)}/{len(checks_passed)} checks passed\n{'=' * 60}")
+    for check in checks_passed:
+        print(f"  PASS: {check}")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except AssertionError as exc:
+        print(f"\nFAIL: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - top-level smoke test, want any failure to exit non-zero with context
+        print(f"\nERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+```
+
+- [ ] **Step 2: Run the full pytest suite one final time**
+
+Run:
+```bash
+cd backend
+pytest -v
+```
+Expected: every test from every prior task passes — this is the last checkpoint before moving to real containers, per the Regression Testing Policy above. If anything fails here, stop and fix it before proceeding to Step 3; don't let an in-process regression get masked by the E2E pass below.
+
+- [ ] **Step 3: Bring up the complete stack and apply migrations to it**
+
+Run:
+```bash
+cd ..   # repo root
+docker compose up -d --build
+```
+Expected: all four services (`postgres`, `redis`, `backend`, `frontend`) start. `postgres`/`redis` reach `healthy` (they have healthchecks); `backend`/`frontend` don't have healthchecks yet (a known, previously-flagged gap — Step 1 of the smoke script polls `/health` itself to compensate, so this doesn't block the check, but don't "fix" it as a side quest here — it's out of scope for this task).
+
+Then apply migrations to the stack's real dev database (not the pytest suite's throwaway test database, which manages its own migrations independently):
+```bash
+cd backend
+alembic upgrade head
+```
+This uses `MIGRATIONS_DATABASE_URL` from `.env`, which — per the Task 1 hostname note — correctly points at `localhost:5432` since Alembic runs on the host, not in a container.
+
+- [ ] **Step 4: Run the E2E smoke test against the live stack**
+
+Run:
+```bash
+cd ..   # repo root
+python scripts/e2e_smoke_test.py
+```
+Expected: output ending in `E2E SMOKE TEST: 9/9 checks passed`, with every line prefixed `PASS:`. If the cross-tenant isolation check fails here (over real HTTP, real containers, real network) when the equivalent in-process test in Task 12 passes, that is a serious, `docker-compose.yml`/networking/environment-specific bug that the fast in-process tests structurally cannot catch — treat it as build-blocking, not a flaky test to retry.
+
+- [ ] **Step 5: Tear down**
+
+Run:
+```bash
+docker compose down
+```
+Note: this does not delete the `pgdata` volume (no `-v` flag) — intentionally, so local dev data survives between sessions. Don't add `-v` here without explicit instruction; removing a data volume is a destructive action outside this task's scope.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/e2e_smoke_test.py
+git commit -m "test: add full-stack end-to-end regression script (Task 19 gate)"
+```
+
+---
+
 ## Phase 0 Exit Criteria Checklist
 
 Cross-check against [`docs/09-roadmap-implementation-plan.md`](../../09-roadmap-implementation-plan.md):
@@ -2734,6 +3231,7 @@ Cross-check against [`docs/09-roadmap-implementation-plan.md`](../../09-roadmap-
 - [x] Auth: registration, login, invitations — Tasks 9, 10, 14
 - [x] Audit log table and a working write path — Tasks 5, 9, 13, 14, 15
 - [x] Exit criteria: automated RLS isolation tests pass in CI — Tasks 12, 16, 17
+- [x] Full-stack end-to-end regression pass against real containers over real HTTP (not just in-process ASGI tests) — Task 19
 
 ## Explicitly Deferred (tracked, not forgotten)
 
