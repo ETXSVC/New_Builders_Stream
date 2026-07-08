@@ -32,6 +32,8 @@ These are not implementation details to improvise later — get them wrong and t
 
 9. **`invitations` needed its own bootstrap RLS policy — `accept_invitation`'s pre-tenant-context probe, as originally drafted in this plan, 404s on every invitation, valid or not.** `accept_invitation` (Task 14) runs before the invitee has any tenant membership, so — exactly like the `company_users` membership lookup in design decision #3 — its first query (`SELECT company_id FROM invitations WHERE id = :id`, used to discover which tenant to `SET` before re-querying the full row) has a chicken-and-egg problem: it must run before `app.current_tenant` can be set to anything. Unlike `company_users`, `invitations` (migration 0001) was only ever given the single `tenant_isolation` FOR ALL policy, with no bootstrap-permissive companion policy. With no tenant context set, `tenant_isolation`'s `USING` clause reduces to `company_id IN (SELECT ... FROM get_all_descendant_ids(NULL))`, which is always empty — so the probe query returns nothing for every invitation, and the endpoint 404s unconditionally, regardless of whether the invitation is real, expired, or already accepted. This is not a hypothetical: it was reproduced empirically by implementing Task 14 exactly as originally specified and running the test suite against the live Postgres container — `test_accept_invitation_creates_user_and_membership` and `test_accept_expired_invitation_is_rejected` both failed with `404` instead of `200`/`410`. Fixed with the same established pattern as design decision #3: a second, narrowly-scoped permissive RLS policy, `invitation_probe` (migration `0002_invitation_probe_policy.py`), `FOR SELECT ... USING (id = NULLIF(current_setting('app.probing_invitation_id', true), '')::uuid)`. Where `self_membership` keys on `app.current_user_id` (a fact the caller already proved via a valid JWT), `invitation_probe` keys on a new GUC, `app.probing_invitation_id`, which `accept_invitation` now sets (via the new `set_invitation_probe()` helper in `app/db.py`) to the exact `invitation_id` from the URL path, immediately before the probe query. Because Postgres ORs permissive policies of the same command together, this doesn't weaken isolation on any other query path — it only ever allows a session to see the single invitation row whose id it already explicitly supplied; a wrong/unknown id still correctly finds nothing. Verified empirically two ways: (1) the full test suite (38 tests) passes with the fix, including both previously-failing tests; (2) a direct `asyncpg` probe against `app_user` with the GUC set to one invitation's id confirmed it can see *only* that row — not a second, otherwise-identical invitation belonging to the same company, and not via a bare `SELECT * FROM invitations` with no `WHERE` clause either.
 
+10. **`docker-compose.yml`'s `NEXT_PUBLIC_API_URL` for the frontend service must use the Compose network hostname (`http://backend:8000`), not `localhost`.** The original Task 1 scaffolding set it to `http://localhost:8000`. `app/page.tsx`'s health-check fetch (Task 18) runs server-side, inside the frontend container — from there, `localhost` resolves to the frontend container itself, not the backend, so the fetch would always fail and the page would always render "Backend status: unreachable," silently defeating the entire point of Task 18 (proving the Compose topology is wired correctly). Fixed to `http://backend:8000`, matching the same Docker-internal-DNS hostname convention already used for `DATABASE_URL`. Verified by bringing up the full stack and confirming the frontend actually renders "Backend status: ok". Separately: Next.js 16 / React 19's SSR inserts an HTML comment marker between static and dynamic text segments in a Server Component like this one, so the raw HTTP response body is literally `Backend status: <!-- -->ok`, not a contiguous string — Task 19's smoke-test assertion accounts for this by stripping HTML comments before checking, rather than asserting on the literal substring `"Backend status: ok"` directly.
+
 ---
 
 ## Regression Testing Policy
@@ -3151,6 +3153,7 @@ stack — hits real HTTP ports, not the in-process ASGI transport the pytest
 suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
 Task 19."""
 
+import re
 import sys
 import time
 import uuid
@@ -3256,7 +3259,13 @@ def run() -> None:
     with httpx.Client(timeout=10.0) as client:
         frontend_response = client.get(FRONTEND_URL)
         assert frontend_response.status_code == 200, frontend_response.text
-        assert "Backend status: ok" in frontend_response.text, (
+        # Next.js 16 / React 19 SSR inserts an HTML comment marker between static
+        # and dynamic text segments in a Server Component (design decision #10),
+        # so the raw body is literally "Backend status: <!-- -->ok", not a
+        # contiguous string — strip comments before asserting so this doesn't
+        # false-fail on correct output.
+        rendered_text = re.sub(r"<!--.*?-->", "", frontend_response.text)
+        assert "Backend status: ok" in rendered_text, (
             f"Frontend did not report backend as healthy. Body: {frontend_response.text[:500]}"
         )
         checks_passed.append("frontend container reaches backend container over the Docker network and renders it")
