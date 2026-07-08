@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 
 from app.config import settings
 
@@ -19,9 +19,20 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
+    # VerificationError (parent of VerifyMismatchError) covers a genuine wrong
+    # password. InvalidHashError covers a malformed/corrupted password_hash
+    # value — it is NOT a VerificationError subclass (its hierarchy is
+    # InvalidHashError -> ValueError, a completely separate branch from
+    # VerificationError -> Argon2Error; confirmed by inspecting argon2-cffi's
+    # actual exception classes, not assumed), so it must be caught explicitly
+    # or a corrupted row surfaces as an unhandled 500 from the login endpoint
+    # instead of a controlled auth failure. Not reachable via any normal write
+    # path today (this schema only ever writes Argon2 hashes), but auth code
+    # should fail closed on malformed input as a matter of course, not just
+    # for inputs the current code happens to produce.
     try:
         return _hasher.verify(password_hash, plain_password)
-    except VerifyMismatchError:
+    except (VerificationError, InvalidHashError):
         return False
 
 
