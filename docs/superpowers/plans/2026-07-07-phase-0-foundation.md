@@ -26,6 +26,8 @@ These are not implementation details to improvise later — get them wrong and t
 
 6. **Every `UPDATE`-permitting RLS policy needs its own `WITH CHECK`, not just `USING`.** `USING` alone only gates which *existing* rows a caller may target — it says nothing about the *new* values being written. `companies.tenant_update` originally had only `USING`, which meant a tenant could `UPDATE companies SET parent_id = '<other-tenant>' WHERE id = '<own-company>'` and successfully re-parent its own company into a completely unrelated tenant's tree — a full tenant-boundary bypass via UPDATE, even though INSERT and SELECT on the same table were correctly locked down. Empirically confirmed exploitable (a bare cross-tenant re-parent `UPDATE` succeeded, and the row correctly vanished from the original tenant's view immediately after) before a `WITH CHECK` mirroring `tenant_insert`'s was added. Not reachable through any endpoint this plan currently defines (Task 13 only adds company-creation, not re-parenting), but it's the isolation backstop every later task is told to trust — caught during Task 5's code-quality review, not anticipated in the original design.
 
+7. **Every `current_setting('app.x', true)::uuid` cast in an RLS policy must guard against `''`, not just `NULL`.** A custom ("placeholder") GUC, once set even once via `SET LOCAL`/`set_config(..., is_local=true)` on a given physical connection, does not revert to NULL when that transaction ends — `current_setting(name, true)` instead returns `''` for the rest of that connection's lifetime, even across later, unrelated transactions that never touch the setting themselves. Casting `''::uuid` raises `invalid input syntax for type uuid`, an unhandled error (a 500), not a policy evaluating to false. Because a connection pool reuses physical connections across unrelated logical requests, this bites in exactly the way that's hardest to catch in isolated testing: a request that never sets `app.current_tenant` (e.g. `login()`, which only sets `app.current_user_id`) can be served a connection previously "poisoned" by an earlier request that did set it and commit (e.g. `register()`). This went undetected through all of Task 5's and Task 9's own testing because every manual verification used a *fresh* connection per test — it only surfaced when Task 10 chained register→login through the app's real connection-pooled `session_scope()` for the first time. Fixed by wrapping every such cast as `NULLIF(current_setting('app.x', true), '')::uuid`, so a poisoned `''` becomes a real `NULL` before the cast, and the policy correctly denies access instead of erroring. Verified empirically against live Postgres in both the broken and fixed forms.
+
 ---
 
 ## Regression Testing Policy
@@ -931,6 +933,29 @@ def upgrade() -> None:
     op.execute("GRANT EXECUTE ON FUNCTION get_all_descendant_ids(UUID) TO app_user")
 
     # --- Row-Level Security ---------------------------------------------
+    #
+    # Every current_setting('app.x', true) cast below is wrapped in
+    # NULLIF(..., '') before ::uuid — this is not defensive styling, it fixes
+    # a real bug found empirically via connection pooling. A custom
+    # ("placeholder") GUC like app.current_tenant, once set even once via
+    # SET LOCAL / set_config(..., is_local=true) on a given physical
+    # connection, does NOT revert to NULL when that transaction ends —
+    # current_setting(name, true) instead returns '' (empty string) for the
+    # rest of that connection's life, even in later, unrelated transactions
+    # that never set it themselves. Casting '' directly to ::uuid raises
+    # invalid input syntax for type uuid: "", which is NOT the same as the
+    # policy evaluating to false — it's an unhandled error that surfaces as a
+    # 500. Because connection pools reuse physical connections across
+    # unrelated logical requests, this bites intentionally: any request that
+    # never sets app.current_tenant (e.g. login(), which only sets
+    # app.current_user_id) can be served a connection previously "poisoned"
+    # by an earlier request that did set it (e.g. register()) and commit.
+    # NULLIF(x, '') turns the poisoned '' back into a real NULL before the
+    # cast, so the policy correctly evaluates to false (access denied)
+    # instead of raising. Verified against live Postgres: the un-guarded cast
+    # reproduces the error deterministically once a connection has ever seen
+    # a SET on that GUC; the guarded version returns NULL and
+    # get_all_descendant_ids(NULL) correctly returns zero rows.
     for table in ("companies", "company_users", "invitations", "audit_log"):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 
@@ -940,7 +965,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_select ON companies FOR SELECT
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
     # WITH CHECK here is not optional. Without it, Postgres would fall back to
@@ -960,10 +985,10 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_update ON companies FOR UPDATE
-        USING (id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         WITH CHECK (
             parent_id IS NULL
-            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
         )
         """
     )
@@ -972,7 +997,7 @@ def upgrade() -> None:
         CREATE POLICY tenant_insert ON companies FOR INSERT
         WITH CHECK (
             parent_id IS NULL
-            OR parent_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid))
+            OR parent_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
         )
         """
     )
@@ -984,14 +1009,14 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE POLICY tenant_isolation ON company_users FOR ALL
-        USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+        USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+        WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
         """
     )
     op.execute(
         """
         CREATE POLICY self_membership ON company_users FOR SELECT
-        USING (user_id = current_setting('app.current_user_id', true)::uuid)
+        USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
         """
     )
 
@@ -999,8 +1024,8 @@ def upgrade() -> None:
         op.execute(
             f"""
             CREATE POLICY tenant_isolation ON {table} FOR ALL
-            USING (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
-            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(current_setting('app.current_tenant', true)::uuid)))
+            USING (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
+            WITH CHECK (company_id IN (SELECT id FROM get_all_descendant_ids(NULLIF(current_setting('app.current_tenant', true), '')::uuid)))
             """
         )
 
