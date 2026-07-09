@@ -6,8 +6,13 @@ from sqlalchemy import select
 from app.core.deps import CurrentUser, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import Lead
+from app.models import CommunicationLog, Lead
 from app.models.lead import VALID_STATUSES
+from app.schemas.communication_log import (
+    CommunicationLogCreateRequest,
+    CommunicationLogListResponse,
+    CommunicationLogResponse,
+)
 from app.schemas.lead import LeadCreateRequest, LeadListResponse, LeadResponse, LeadUpdateRequest
 from app.services.audit import write_audit_log
 from app.services.lead_transitions import is_legal_transition
@@ -169,3 +174,80 @@ async def update_lead(
             )
 
     return LeadResponse.model_validate(lead)
+
+
+async def _get_lead_or_404(current: CurrentUser, lead_id: uuid.UUID) -> Lead:
+    """Shared existence/tenant check for the nested communications routes
+    below. Same RLS-backed 404 pattern as get_lead()/update_lead() above —
+    a lead that doesn't exist and a lead that exists but belongs to another
+    tenant (invisible under RLS) are intentionally indistinguishable from
+    outside. Deliberately checked BEFORE any communication_logs read/write
+    so a caller can never create or list comm logs under a lead_id they
+    couldn't otherwise see via GET /leads/{id}."""
+    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+    return lead
+
+
+@router.post(
+    "/{lead_id}/communications",
+    response_model=CommunicationLogResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_communication_log(
+    lead_id: uuid.UUID,
+    payload: CommunicationLogCreateRequest,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+) -> CommunicationLogResponse:
+    await _get_lead_or_404(current, lead_id)
+
+    log = CommunicationLog(
+        lead_id=lead_id,
+        company_id=current.company_id,
+        author_id=current.user.id,
+        channel=payload.channel,
+        body=payload.body,
+    )
+    current.session.add(log)
+    await current.session.flush()
+    # No explicit commit here — get_current_user (design decision #8) commits
+    # current.session once, after this handler returns. No audit_log entry
+    # either: Security & Compliance Section 5 scopes audit logging to
+    # "financially or legally significant" state changes (status changes,
+    # approvals, role changes) — a communication log entry is itself the
+    # durable record (and is DB-immutable, Task 1.2's REVOKE), not a mutation
+    # of an existing entity that needs a separate before/after trail.
+
+    return CommunicationLogResponse.model_validate(log)
+
+
+@router.get("/{lead_id}/communications", response_model=CommunicationLogListResponse)
+async def list_communication_logs(
+    lead_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> CommunicationLogListResponse:
+    await _get_lead_or_404(current, lead_id)
+
+    # Oldest-first (US-2.4: "see a chronological history") — paginate()'s
+    # ORDER BY created_at ASC, id ASC is exactly this reading order, so no
+    # extra ordering argument is needed here beyond the composite tiebreaker
+    # paginate() already applies for every list endpoint.
+    query = select(CommunicationLog).where(CommunicationLog.lead_id == lead_id)
+
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=CommunicationLog.created_at,
+        id_col=CommunicationLog.id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    return CommunicationLogListResponse(
+        items=[CommunicationLogResponse.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+    )

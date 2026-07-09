@@ -28,3 +28,13 @@ class CommunicationLogResponse(BaseModel):
     channel: str
     body: str
     created_at: datetime
+
+
+class CommunicationLogListResponse(BaseModel):
+    """Cursor-paginated list envelope for `GET /leads/{lead_id}/communications`
+    (app/core/pagination.py), following the exact pattern of
+    `LeadListResponse` (app/schemas/lead.py). `next_cursor` is `None` once
+    the caller has reached the last page."""
+
+    items: list[CommunicationLogResponse]
+    next_cursor: str | None = None
