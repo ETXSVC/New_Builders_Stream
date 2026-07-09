@@ -6,8 +6,9 @@ from sqlalchemy.orm import aliased
 
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import Document, Phase, Project, Task
+from app.models import DailyLog, Document, Phase, Project, Task
 from app.models.project import VALID_STATUSES
+from app.schemas.daily_log import DailyLogCreateRequest, DailyLogListResponse, DailyLogResponse
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.schemas.project import (
     ProjectClientDashboardResponse,
@@ -47,6 +48,18 @@ _LIST_ROLES = ("admin", "project_manager", "accountant", "field_crew")
 # `client` with a 403 (the more literal reading of "there's no list route
 # for clients at all" — see Task 1.12's spec and this router's tests).
 _GET_ROLES = (*_LIST_ROLES, "client")
+
+# Daily Logs are the one Project Management write field_crew has at all
+# (docs/07-security-compliance.md Section 2's matrix, literal text: Field
+# Crew = "Read assigned + create Daily Logs" — the ONLY write verb granted
+# to that role anywhere in the Project Management row). This is
+# deliberately a separate tuple from _WRITE_ROLES (admin, project_manager
+# only) rather than a reuse: _WRITE_ROLES governs Project/Phase/Task/
+# Document creation, none of which field_crew may do, so folding field_crew
+# into _WRITE_ROLES would silently over-grant those other routes. Matches
+# US-3.3 (functional requirements): "As Field Crew, I can ... submit a
+# Daily Log ... for a Project."
+_DAILY_LOG_WRITE_ROLES = ("admin", "project_manager", "field_crew")
 
 
 def _with_field_crew_scope(query, current: CurrentUser):
@@ -478,5 +491,113 @@ async def list_documents(
 
     return DocumentListResponse(
         items=[DocumentResponse.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+    )
+
+
+@router.post(
+    "/{project_id}/daily-logs",
+    response_model=DailyLogResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_daily_log(
+    project_id: uuid.UUID,
+    payload: DailyLogCreateRequest,
+    current: CurrentUser = Depends(require_role(*_DAILY_LOG_WRITE_ROLES)),
+) -> DailyLogResponse:
+    """Task 1.16. `require_role("admin", "project_manager", "field_crew")`
+    per _DAILY_LOG_WRITE_ROLES above — the RBAC matrix's Project Management
+    row is the only place field_crew gets any write verb at all ("create
+    Daily Logs"), so this route intentionally does NOT reuse _WRITE_ROLES.
+
+    `_get_project_or_404` first, same ordering as every other project-nested
+    write route in this router (existence/tenant/field-crew-assigned-scope
+    check before touching the payload) — this doubles as field_crew's
+    project-level scoping: a field_crew caller with no assigned task on
+    `project_id` gets a 404 here before a DailyLog row is ever created,
+    exactly like upload_document's field_crew scoping. US-3.3 ("submit a
+    Daily Log ... for a Project") and every other field_crew scoping
+    decision in this plan point the same direction: assigned-project-only,
+    not "any project in the tenant."
+
+    `author_id=current.user.id` always — DailyLogCreateRequest has no
+    `author_id` field (see its docstring), so a caller cannot claim to be
+    someone else's author by payload manipulation; this line is the only
+    place author_id is ever set.
+
+    No update/delete route exists anywhere in this router for daily_logs,
+    and Task 1.10's migration additionally `REVOKE`s UPDATE/DELETE on this
+    table from `app_user` at the DB level (design decision #6) — immutable
+    once submitted, matching US-3.3's acceptance criterion, the same
+    two-layer discipline (no route + DB-level REVOKE) Task 1.7 established
+    for communication_logs.
+    """
+    project = await _get_project_or_404(current, project_id)
+
+    daily_log = DailyLog(
+        project_id=project.id,
+        company_id=current.company_id,
+        author_id=current.user.id,
+        log_date=payload.log_date,
+        weather=payload.weather,
+        notes=payload.notes,
+    )
+    current.session.add(daily_log)
+    await current.session.flush()
+    # No explicit commit (Inherited Invariant #4 — get_current_user commits
+    # current.session once). No audit_log entry: same reasoning as
+    # create_project/create_phase/upload_document above — Daily Log
+    # submission isn't in docs/07-security-compliance.md Section 5's
+    # enumerated list of state changes requiring an audit trail (status
+    # transitions, approvals, overrides), and immutability is already
+    # DB-enforced independently of the audit log.
+
+    return DailyLogResponse.model_validate(daily_log)
+
+
+@router.get("/{project_id}/daily-logs", response_model=DailyLogListResponse)
+async def list_daily_logs(
+    project_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> DailyLogListResponse:
+    """Task 1.16. The plan spec says "same read roles as project detail" —
+    read literally that would mean _GET_ROLES (which additionally includes
+    `client`). This deliberately uses `_LIST_ROLES` (client-EXCLUDED)
+    instead, for the same reason list_documents does immediately above:
+    `client`'s only documented read surface anywhere in the RBAC matrix or
+    API spec is the single sanitized `GET /projects/{id}` dashboard route
+    (design decision #8: "client only ever gets the single sanitized
+    dashboard route"), which itself now exposes `phase_count`/`task_count`/
+    `completed_task_count` as the client-facing substitute for granular
+    per-record detail. A `client` caller hitting a raw, unsanitized,
+    paginated list of daily log notes would both contradict design decision
+    #8 and go beyond US-3.5's explicit exclusion of "internal task detail"
+    from what the client sees. `_LIST_ROLES` = admin, project_manager,
+    accountant, field_crew — the matrix's Project Management row gives all
+    four some read access (accountant's row says "Read (financial fields
+    only)", which for Phase 1 collapses to plain read, same reasoning
+    _LIST_ROLES's own comment gives above).
+
+    `_get_project_or_404` applies field_crew's assigned-only scoping here
+    exactly as list_documents does: an unassigned field_crew caller gets a
+    404 before any daily_logs query runs.
+    """
+    project = await _get_project_or_404(current, project_id)
+
+    query = select(DailyLog).where(DailyLog.project_id == project.id)
+
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=DailyLog.created_at,
+        id_col=DailyLog.id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    return DailyLogListResponse(
+        items=[DailyLogResponse.model_validate(row) for row in rows],
         next_cursor=next_cursor,
     )
