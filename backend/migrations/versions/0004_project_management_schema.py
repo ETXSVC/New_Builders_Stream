@@ -127,9 +127,8 @@ def upgrade() -> None:
         sa.Column("weather", sa.String(100), nullable=True),
         sa.Column("notes", sa.Text, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        # Immutable once submitted (application-layer enforced per the
-        # schema doc's comment; DB-level REVOKE UPDATE, DELETE hardening
-        # below).
+        # No updated_at column: immutable once submitted (per the schema
+        # doc's comment), with DB-level REVOKE UPDATE, DELETE hardening below.
     )
 
     # --- Row-Level Security -------------------------------------------------
