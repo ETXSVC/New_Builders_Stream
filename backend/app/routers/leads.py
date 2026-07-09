@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, require_role
+from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import Lead
 from app.models.lead import VALID_STATUSES
-from app.schemas.lead import LeadCreateRequest, LeadListResponse, LeadResponse
+from app.schemas.lead import LeadCreateRequest, LeadListResponse, LeadResponse, LeadUpdateRequest
 from app.services.audit import write_audit_log
+from app.services.lead_transitions import is_legal_transition
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -96,4 +98,74 @@ async def get_lead(
         # "doesn't exist" and "exists but isn't yours" — same pattern as
         # GET /companies/{id}, intentionally indistinguishable from outside.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+    return LeadResponse.model_validate(lead)
+
+
+@router.patch("/{lead_id}", response_model=LeadResponse)
+async def update_lead(
+    lead_id: uuid.UUID,
+    payload: LeadUpdateRequest,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+) -> LeadResponse:
+    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+
+    previous_status = lead.status
+    requested_status = payload.status
+    # A resubmission of the lead's current status is treated as a no-op, not
+    # a transition — it isn't modeled in lead_transitions.LEAD_TRANSITIONS
+    # (no self-loops) and shouldn't 409 just because the caller PATCHed a
+    # field alongside an unchanged status.
+    status_changing = requested_status is not None and requested_status != previous_status
+
+    # Validate the transition BEFORE touching the ORM object at all (Task
+    # 1.5: "don't let a request patch both a valid field and an illegal
+    # status transition and have one silently fail while the other succeeds
+    # — should be one transaction, one outcome"; Inherited Invariant #4: this
+    # handler reuses current.session and never commits inline, so raising
+    # here — before any setattr — guarantees nothing from this request is
+    # staged for the eventual single commit that get_current_user performs).
+    if status_changing and not is_legal_transition(previous_status, requested_status):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Illegal lead status transition: {previous_status} -> {requested_status}",
+        )
+
+    update_fields = payload.model_dump(exclude_unset=True, exclude={"status"})
+    for field_name, value in update_fields.items():
+        setattr(lead, field_name, value)
+    if status_changing:
+        lead.status = requested_status
+
+    # updated_at bumps automatically via UpdatedAtMixin's onupdate=utcnow the
+    # moment any of the setattr()s above (or the status assignment) makes
+    # this row dirty and it gets flushed — no manual touch needed.
+    await current.session.flush()
+
+    if status_changing:
+        await write_audit_log(
+            current.session,
+            company_id=current.company_id,
+            actor_id=current.user.id,
+            action="lead.status_changed",
+            entity_type="lead",
+            entity_id=lead.id,
+            metadata={"from": previous_status, "to": requested_status},
+        )
+
+        # Task 1.7's Project-drafting consumer isn't registered yet, so this
+        # is a real call into a dispatcher with zero handlers — a no-op at
+        # runtime today, but a genuine function call, not a TODO (Task 1.5's
+        # own instruction: "keep the publish() call itself in this task").
+        if requested_status == "won":
+            await publish(
+                "LEAD_WON",
+                lead_id=lead.id,
+                company_id=current.company_id,
+                contact_name=lead.contact_name,
+                project_name=lead.project_name,
+            )
+
     return LeadResponse.model_validate(lead)
