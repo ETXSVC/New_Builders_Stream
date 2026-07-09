@@ -79,6 +79,20 @@ async def client():
 
 
 @pytest.fixture(autouse=True)
+def _clean_event_registry():
+    """app.core.events._handlers is process-lifetime module state (Task 1.5),
+    not per-test state — nothing else resets it between tests. Clearing it
+    both before and after every test means a test that registers a handler
+    and then fails before its own cleanup can't leak that handler into
+    every later test's LEAD_WON (or other event) dispatches."""
+    from app.core import events
+
+    events.clear()
+    yield
+    events.clear()
+
+
+@pytest.fixture(autouse=True)
 async def _clean_tables():
     """Truncates all tenant tables before every test using the Postgres owner
     connection, which bypasses RLS (table owners are exempt by default) — this

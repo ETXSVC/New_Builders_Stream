@@ -61,3 +61,14 @@ async def publish(event_name: str, **payload: object) -> None:
     raises."""
     for handler in _handlers.get(event_name, []):
         await handler(**payload)
+
+
+def clear() -> None:
+    """Deregisters every handler for every event. `_handlers` is
+    process-lifetime module state, not reset between requests the way DB
+    rows are reset between tests by conftest.py's `_clean_tables` — tests
+    that register a handler must not rely on remembering to reach into the
+    private `_handlers` dict themselves; call this (ideally via an autouse
+    fixture) instead, so a test that fails before its own manual cleanup
+    can't leak a handler into later tests."""
+    _handlers.clear()

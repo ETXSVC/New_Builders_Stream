@@ -273,17 +273,15 @@ async def test_transition_into_won_calls_publish_with_the_expected_payload(clien
     async def _capture_handler(**payload):
         received.append(payload)
 
+    # No manual deregister needed here — conftest.py's autouse
+    # _clean_event_registry fixture clears app.core.events' registry after
+    # every test unconditionally, including if this test fails before
+    # reaching this point.
     events.register("LEAD_WON", _capture_handler)
-    try:
-        response = await client.patch(
-            f"/leads/{lead['id']}", json={"status": "won"}, headers=admin["headers"]
-        )
-        assert response.status_code == 200, response.text
-    finally:
-        # app.core.events keeps a module-level registry for the lifetime of
-        # the test process — deregister so this handler doesn't linger and
-        # fire (harmlessly, but noisily) for every LEAD_WON in later tests.
-        events._handlers["LEAD_WON"].remove(_capture_handler)
+    response = await client.patch(
+        f"/leads/{lead['id']}", json={"status": "won"}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
 
     assert len(received) == 1
     payload = received[0]
