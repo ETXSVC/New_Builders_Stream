@@ -56,11 +56,22 @@ class ProjectClientDashboardResponse(BaseModel):
     it, since clients have no other route to query phases/tasks
     independently. The router (Task 1.12) is expected to compute these via
     `COUNT` queries against `phases`/`tasks` scoped to this project and
-    construct this response explicitly (not via `model_validate` on the
-    ORM row alone).
-    """
+    construct this response explicitly — NOT via
+    `ProjectClientDashboardResponse.model_validate(project)` on the bare
+    ORM row, which would raise a validation error citing these 3 missing
+    fields. No `from_attributes` config here (deliberately, unlike every
+    other Response class in this codebase) as a further signal that this
+    one isn't meant to be built directly from an ORM instance. Construct
+    it explicitly instead, e.g.:
 
-    model_config = ConfigDict(from_attributes=True)
+        ProjectClientDashboardResponse(
+            id=project.id, name=project.name, status=project.status,
+            site_address=project.site_address,
+            projected_start_date=project.projected_start_date,
+            phase_count=phase_count, task_count=task_count,
+            completed_task_count=completed_task_count,
+        )
+    """
 
     id: uuid.UUID
     name: str
@@ -120,6 +131,10 @@ class ProjectPatchRequest(BaseModel):
     sending `status` on this route simply has no schema field to land in —
     it's silently ignored, but ignoring it is fully correct, not a risk,
     since this route was never the sanctioned way to change status.
+
+    Also has no `lead_id` field: which Lead a Project was drafted from is
+    fixed at creation (manual `POST /projects` or the `LEAD_WON` auto-draft,
+    Task 1.18) and isn't meant to be editable after the fact.
     """
 
     name: str | None = Field(None, min_length=1, max_length=255)
