@@ -1,19 +1,18 @@
 import uuid
-from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base, TimestampMixin, UUIDPKMixin, utcnow
+from app.models.base import Base, TimestampMixin, UpdatedAtMixin, UUIDPKMixin
 
 VALID_STATUSES = ("new", "contacted", "estimating", "qualified", "won", "lost")
 
 _STATUS_CHECK_SQL = "status IN (" + ",".join(f"'{status}'" for status in VALID_STATUSES) + ")"
 
 
-class Lead(Base, UUIDPKMixin, TimestampMixin):
+class Lead(Base, UUIDPKMixin, TimestampMixin, UpdatedAtMixin):
     __tablename__ = "leads"
 
     # No ondelete here, matching docs/04-database-schema.md Section 3's
@@ -31,19 +30,10 @@ class Lead(Base, UUIDPKMixin, TimestampMixin):
     estimated_value: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     project_type: Mapped[str] = mapped_column(String(100), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # TimestampMixin only supplies created_at (see app/models/base.py) — every
-    # Phase 0 model was create-once/immutable-after-create, so none needed an
-    # updated_at column. Lead is the first model with a mutable lifecycle after
-    # creation (status transitions and field patches, Task 1.5), so it declares
-    # its own bump-on-write updated_at here rather than widening the shared
-    # mixin for two models (CommunicationLog stays immutable, design decision
-    # #6, and gets no updated_at at all). default=utcnow mirrors the
-    # client-side-default pattern created_at already uses (and CompanyUser's
-    # created_at override) since the ORM doesn't know about the migration's
-    # server_default; onupdate=utcnow bumps it on every UPDATE issued via the ORM.
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
-    )
+    # updated_at comes from UpdatedAtMixin (app/models/base.py) — Lead is the
+    # first model in this codebase with a mutable post-create lifecycle
+    # (status transitions and field patches, Task 1.5); every Phase 0 model
+    # was create-once/immutable, hence no prior need for this mixin.
 
     # CHECK constraint mirrors the migration's DB-level constraint (Task 1.2),
     # following the same belt-and-suspenders pattern as user.py's

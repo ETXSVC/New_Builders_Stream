@@ -34,6 +34,11 @@ class CommunicationLog(Base, UUIDPKMixin, TimestampMixin):
     # created_at is the only timestamp. DB-level enforcement (REVOKE UPDATE, DELETE ON
     # communication_logs FROM app_user) lands in the Task 1.2 migration; this model
     # simply has no column and no route will ever exist to mutate one.
+
+    # CheckConstraint mirrors the migration's DB-level constraint (Task 1.2), same
+    # belt-and-suspenders pattern as Lead.ck_leads_status / user.py's role checks —
+    # the migration (raw op.create_table, not metadata.create_all) is the
+    # authoritative enforcement point; this is ORM-level self-documentation only.
     __table_args__ = (
         CheckConstraint(_CHANNEL_CHECK_SQL, name="ck_communication_logs_channel"),
     )
