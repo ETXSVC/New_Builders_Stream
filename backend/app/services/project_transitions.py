@@ -22,19 +22,11 @@ a reversible SIDE DETOUR off of `active`, not a mandatory waypoint every
 project must pass through to reach `completed`. `active -> completed` is
 legal directly.
 
-**Correction, found during this task's spec review**: the first version of
-this table required `active -> suspended -> completed` for every project,
-with no direct `active -> completed` edge, on the reasoning that US-3.2's
-chain places `suspended` immediately before `completed`. That reading was
-wrong: "Suspended" denotes an interruption (funding, weather, disputes,
-permits) — an exceptional state — not a stage every project passes through,
-and requiring a spurious suspend/resume detour before a normal,
-never-interrupted project could ever be marked complete would block the
-single most common real-world workflow entirely. The plan's own phrasing —
-calling out "`active -> suspended` and `suspended -> active`" as a *pair* —
-only makes sense if `active <-> suspended` is a self-contained reversible
-side-loop, not a fixed link in a strictly one-way progression toward
-`completed`. Fixed by adding `active -> completed` directly.
+**Correction, found during this task's spec review**: an earlier version of
+this table required `active -> suspended -> completed` as a mandatory
+waypoint for every project, with no direct `active -> completed` edge. That
+was wrong for the reason above — see the preceding paragraph for the
+argument. Fixed by adding `active -> completed` directly.
 
 The `suspended -> active` edge is the one addition the plan explicitly calls
 for beyond the literal linear chain: "suspension needs to be reversible — the
@@ -49,13 +41,15 @@ suspended Project can either resume (`-> active`) or proceed to completion
 states "A Project cannot move to Completed while it has open (non-approved)
 Change Orders." This is NOT enforced here: `change_orders` doesn't exist as a
 table/model in Phase 1 (explicitly out of scope — see the top of the Phase 1
-plan doc). When Change Orders ships in Phase 2, the `suspended -> completed`
-transition (and any other future edge that lands on `completed`) needs an
+plan doc). When Change Orders ships in Phase 2, BOTH edges landing on
+`completed` — `active -> completed` AND `suspended -> completed` (and any
+further edge added later that also lands on `completed`) — need an
 additional application-layer check — querying for any non-approved Change
 Order rows against this project and rejecting the transition (409) if any
 exist — layered on top of (not replacing) the table-driven check below. Do
-not forget to add this when Change Orders lands; nothing here enforces it
-yet.
+not forget to add this when Change Orders lands, and do not key the check
+off "coming from suspended" specifically — that would silently miss the
+(more common) `active -> completed` path; nothing here enforces it yet.
 
 `archived` has no legal outgoing transition (terminal), same as Lead's
 `won`/`lost`. `draft` has no legal incoming transition (it's the only status
