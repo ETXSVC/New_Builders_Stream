@@ -119,3 +119,24 @@ async def test_clear_empties_the_registry():
     await events.publish("LEAD_WON")
 
     assert handler_called is False
+
+
+async def test_is_registered_reflects_registration_state():
+    """Task 1.18 added `is_registered()` to guard event_handlers.py's
+    `register_event_handlers()` against double-registration. Pins its own
+    contract directly, independent of that caller."""
+
+    async def handler_one(**payload):
+        pass
+
+    async def handler_two(**payload):
+        pass
+
+    assert events.is_registered("LEAD_WON", handler_one) is False
+
+    events.register("LEAD_WON", handler_one)
+    assert events.is_registered("LEAD_WON", handler_one) is True
+    # A different handler on the SAME event name is not conflated with it.
+    assert events.is_registered("LEAD_WON", handler_two) is False
+    # The same handler on a DIFFERENT event name is not conflated either.
+    assert events.is_registered("OTHER_EVENT", handler_one) is False

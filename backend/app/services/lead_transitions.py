@@ -29,6 +29,20 @@ re-transitioning `lost -> lost` isn't a real transition and is already
 rejected by the empty adjacency set below (no self-loops are modeled — a
 same-status PATCH is handled upstream in the router as a no-op, not routed
 through this table at all).
+
+Where the `won` transition's `LEAD_WON` side effect actually lives (Task
+1.18): NOT in this file. This module is intentionally pure transition data
+plus `is_legal_transition()`, with no `app.core.events` import and no
+side effects — the `publish("LEAD_WON", ...)` call itself is in
+`app/routers/leads.py`'s `update_lead` (right after this table validates the
+transition), and the handler that consumes it and drafts a Project is
+`app/services/lead_won_handler.handle_lead_won`, registered via
+`app/core/event_handlers.register_event_handlers()`. See that module's
+docstring for why a module-level `register()` call was deliberately kept
+out of this file (and out of `app/main.py`'s import-time body too): it would
+only survive the first test to import it, because
+`tests/conftest.py`'s autouse `_clean_event_registry` fixture clears the
+process-global handler registry before/after every test.
 """
 
 LEAD_TRANSITIONS: dict[str, frozenset[str]] = {

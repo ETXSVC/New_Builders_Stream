@@ -53,6 +53,23 @@ def register(event_name: str, handler: EventHandler) -> None:
     _handlers[event_name].append(handler)
 
 
+def is_registered(event_name: str, handler: EventHandler) -> bool:
+    """True if `handler` is already subscribed to `event_name`. Added in
+    Task 1.18 for callers whose registration call may legitimately run more
+    than once per process — namely `app.core.event_handlers.
+    register_event_handlers()`, which real app startup (`app/main.py`, at
+    module-import time) and tests (explicitly, per test, since
+    `tests/conftest.py`'s autouse `_clean_event_registry` fixture clears
+    this module's registry before/after every test) can both end up calling
+    for the same handler within one process: the first test that triggers
+    `app.main`'s own module-level import (via the `client` fixture) races
+    that import's registration against the test's own explicit one. Guarding
+    with this before calling `register()` keeps registration idempotent
+    without changing `register()`'s own documented "always append" contract
+    (still exercised as-is by every test in `test_events.py`)."""
+    return handler in _handlers.get(event_name, [])
+
+
 async def publish(event_name: str, **payload: object) -> None:
     """Call every handler registered for `event_name`, in registration
     order, passing `payload` as keyword arguments. A no-op if nothing is

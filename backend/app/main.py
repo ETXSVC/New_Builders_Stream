@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.core.event_handlers import register_event_handlers
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
 from app.routers import auth, companies, invitations, leads, projects, tasks
@@ -13,6 +14,13 @@ app.include_router(invitations.router)
 app.include_router(leads.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
+
+# Task 1.18: wires the real LEAD_WON -> draft-Project handler into
+# app.core.events for actual requests served by this app instance. Called
+# once here, at module import time (i.e. once per process) — see
+# app/core/event_handlers.py's docstring for why tests can't rely on this
+# same call and must invoke register_event_handlers() themselves instead.
+register_event_handlers()
 
 
 @app.exception_handler(InvalidCursorError)

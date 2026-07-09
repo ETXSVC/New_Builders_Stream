@@ -168,17 +168,21 @@ async def update_lead(
             metadata={"from": previous_status, "to": requested_status},
         )
 
-        # Task 1.7's Project-drafting consumer isn't registered yet, so this
-        # is a real call into a dispatcher with zero handlers — a no-op at
-        # runtime today, but a genuine function call, not a TODO (Task 1.5's
-        # own instruction: "keep the publish() call itself in this task").
+        # Task 1.18 registered a real handler (app.services.lead_won_handler)
+        # against this event name, so this is no longer a no-op dispatch —
+        # see app/core/event_handlers.py for the registration call, and
+        # handle_lead_won's own docstring for why `session` and
+        # `company_id=lead.company_id` (not `current.company_id`) are passed
+        # the way they are below.
         if requested_status == "won":
             await publish(
                 "LEAD_WON",
+                session=current.session,
                 lead_id=lead.id,
-                company_id=current.company_id,
+                company_id=lead.company_id,
                 contact_name=lead.contact_name,
                 project_name=lead.project_name,
+                actor_id=current.user.id,
             )
 
     return LeadResponse.model_validate(lead)
