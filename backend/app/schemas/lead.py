@@ -2,11 +2,13 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app.models.lead import VALID_STATUSES
 
 
 class LeadCreateRequest(BaseModel):
-    contact_name: str = Field(..., min_length=1, max_length=255)
+    contact_name: str = Field(..., min_length=2, max_length=255)
     project_name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
     phone: str | None = Field(None, max_length=20)
@@ -26,18 +28,19 @@ class LeadUpdateRequest(BaseModel):
     router that forgets to special-case it silently drop the caller's
     status transition with zero error, which is worse than what this
     field's presence risks. The safety property ("not blind field
-    assignment," Task 1.5) is enforced by the ROUTER validating
-    `status` against the legal-transition table before persisting it,
-    not by the schema omitting the field. `status` is intentionally left
-    unconstrained here (not validated against VALID_STATUSES) — the
-    state-machine validator in app/services/lead_transitions.py (Task 1.5)
-    is the single source of truth for which values/transitions are legal,
-    including for a fresh value with no valid prior state; duplicating
-    that check at the schema layer would just be a second place to keep
-    in sync with the transition table.
+    assignment," Task 1.5) is enforced by the ROUTER validating `status`
+    against the legal-TRANSITION table before persisting it, not by the
+    schema. This schema only validates that the value is one of the known
+    statuses at all (same VALID_STATUSES tuple channel/role validation
+    already references elsewhere in this codebase) — that's a value-set
+    check, not a transition check, so it belongs here for the same reason
+    channel/role validation does: a clean 422 instead of an unhandled DB
+    CheckConstraint IntegrityError for a client typo like status="banana".
+    Whether e.g. "won" is a LEGAL transition from the lead's current state
+    still requires a DB read and stays exclusively the router's job.
     """
 
-    contact_name: str | None = Field(None, min_length=1, max_length=255)
+    contact_name: str | None = Field(None, min_length=2, max_length=255)
     project_name: str | None = Field(None, min_length=1, max_length=255)
     email: EmailStr | None = None
     phone: str | None = Field(None, max_length=20)
@@ -45,6 +48,13 @@ class LeadUpdateRequest(BaseModel):
     estimated_value: Decimal | None = None
     notes: str | None = None
     status: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def status_must_be_a_known_value(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_STATUSES:
+            raise ValueError(f"status must be one of {VALID_STATUSES}")
+        return v
 
 
 class LeadResponse(BaseModel):
