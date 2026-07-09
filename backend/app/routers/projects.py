@@ -43,15 +43,49 @@ _LIST_ROLES = ("admin", "project_manager", "accountant", "field_crew")
 _GET_ROLES = (*_LIST_ROLES, "client")
 
 
+def _with_field_crew_scope(query, current: CurrentUser):
+    """Field crew's assigned-only visibility predicate: a project qualifies
+    if ANY of its tasks, through ANY of its phases, is assigned to this
+    user. Shared by list_projects and _get_project_or_404 so the two
+    enforcement points can't drift apart — this is RBAC-enforcement logic
+    (docs/07-security-compliance.md Section 2: Field Crew gets "Read
+    assigned" for Project Management, an unqualified statement covering
+    both list and single-item read), so a future change to the predicate
+    (task status filtering, reassignment handling, etc.) only needs to
+    happen once. Expressed as a correlated EXISTS rather than a JOIN so a
+    field_crew user with multiple matching tasks on the same project
+    doesn't get duplicate rows for it."""
+    assigned_task_exists = (
+        select(Task.id)
+        .join(Phase, Phase.id == Task.phase_id)
+        .where(Phase.project_id == Project.id, Task.assignee_id == current.user.id)
+        .exists()
+    )
+    return query.where(assigned_task_exists)
+
+
 async def _get_project_or_404(current: CurrentUser, project_id: uuid.UUID) -> Project:
-    """Shared existence/tenant check, same pattern as leads.py's
+    """Shared existence/tenant/RBAC-scope check, same pattern as leads.py's
     _get_lead_or_404 — RLS makes another tenant's project invisible, so this
-    404 covers both "doesn't exist" and "exists but isn't yours",
-    intentionally indistinguishable from outside."""
-    result = await current.session.execute(select(Project).where(Project.id == project_id))
+    404 covers "doesn't exist" and "exists but isn't yours" identically,
+    intentionally indistinguishable from outside.
+
+    Also enforces field_crew's assigned-only read scope (_with_field_crew_scope)
+    here, not just on the list route — a field_crew user requesting a
+    project they have no task on gets the same 404 as a genuinely
+    nonexistent/cross-tenant one, for the same information-disclosure
+    reason every other 404 in this codebase is existence-indistinguishable.
+    Folded into the initial query (rather than a separate EXISTS round
+    trip after fetching the row) so this is one query, not two."""
+    query = select(Project).where(Project.id == project_id)
+    if current.role == "field_crew":
+        query = _with_field_crew_scope(query, current)
+
+    result = await current.session.execute(query)
     project = result.scalar_one_or_none()
     if project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+
     return project
 
 
@@ -147,19 +181,7 @@ async def list_projects(
     query = select(Project)
 
     if current.role == "field_crew":
-        # docs/07-security-compliance.md Section 2's RBAC matrix: Field Crew
-        # gets "Read assigned" only, not a blanket company-scoped list — a
-        # project qualifies if ANY of its tasks, through ANY of its phases,
-        # is assigned to this user. Expressed as a correlated EXISTS rather
-        # than a JOIN so a field_crew user with multiple matching tasks on
-        # the same project doesn't get duplicate rows for it.
-        assigned_task_exists = (
-            select(Task.id)
-            .join(Phase, Phase.id == Task.phase_id)
-            .where(Phase.project_id == Project.id, Task.assignee_id == current.user.id)
-            .exists()
-        )
-        query = query.where(assigned_task_exists)
+        query = _with_field_crew_scope(query, current)
     # admin/project_manager: full company-scoped list (RLS-scoped, no extra
     # filter). accountant: same — Phase 1 has no financial fields on
     # `projects` yet (design decision #8), so "financial-fields-only" read
@@ -184,7 +206,7 @@ async def list_projects(
     )
 
 
-@router.get("/{project_id}", response_model=None)
+@router.get("/{project_id}", response_model=ProjectResponse | ProjectClientDashboardResponse)
 async def get_project(
     project_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_GET_ROLES)),
@@ -194,9 +216,9 @@ async def get_project(
     # Role-based response SHAPE, per design decision #8: `client` gets the
     # sanitized dashboard (no `lead_id`/`company_id`, plus computed progress
     # counts); every other read-capable role gets the full ProjectResponse.
-    # This is the one route every role in _GET_ROLES can reach — the RBAC
-    # distinction here is about shape, not which projects within the
-    # caller's own tenant are visible (see this module's _GET_ROLES comment).
+    # (field_crew's ADDITIONAL restriction — which specific projects they
+    # can reach at all — is enforced upstream in _get_project_or_404, not
+    # here; this branch is shape-only.)
     if current.role == "client":
         return await _client_dashboard_response(current, project)
 

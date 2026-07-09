@@ -313,6 +313,55 @@ async def test_get_project_client_dashboard_shape_with_zero_phases_and_tasks(cli
     assert body["completed_task_count"] == 0
 
 
+async def test_get_project_as_field_crew_with_assigned_task_succeeds(client):
+    """Symmetric to test_list_projects_as_field_crew_shows_only_assigned,
+    but for single-item GET — RBAC matrix's "Read assigned" for field_crew
+    is unqualified, not list-route-only (see _get_project_or_404)."""
+    admin = await _register_and_login(client, "Acme Construction", "get-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "get-fc@acme.test")
+
+    create = await client.post("/projects", json=_project_payload(), headers=admin["headers"])
+    project_id = create.json()["id"]
+    phase = await _seed_phase(project_id, admin["company_id"])
+    await _seed_task(phase, admin["company_id"], assignee_id=field_crew["user_id"])
+
+    response = await client.get(f"/projects/{project_id}", headers=field_crew["headers"])
+    assert response.status_code == 200
+    assert response.json()["id"] == project_id
+
+
+async def test_get_project_as_field_crew_without_assigned_task_returns_404(client):
+    """The gap this fix closes: a field_crew user with no task on a project
+    must not be able to fetch it by id, even though they CAN see other
+    projects (via an assigned task elsewhere) — same 404 as a genuinely
+    nonexistent project, not a 403, so existence isn't distinguishable."""
+    admin = await _register_and_login(client, "Acme Construction", "get-fc2-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "get-fc2@acme.test")
+    other_worker = await _invite_and_login_as(client, admin, "field_crew", "get-fc2-other@acme.test")
+
+    not_mine = await client.post("/projects", json=_project_payload(), headers=admin["headers"])
+    not_mine_id = not_mine.json()["id"]
+    phase = await _seed_phase(not_mine_id, admin["company_id"])
+    await _seed_task(phase, admin["company_id"], assignee_id=other_worker["user_id"])
+
+    response = await client.get(f"/projects/{not_mine_id}", headers=field_crew["headers"])
+    assert response.status_code == 404
+
+
+async def test_get_project_as_field_crew_with_no_phases_returns_404(client):
+    """A project with zero phases/tasks has no possible assignment, so it
+    must 404 for field_crew rather than the EXISTS subquery accidentally
+    evaluating true on an empty join."""
+    admin = await _register_and_login(client, "Acme Construction", "get-fc3-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "get-fc3@acme.test")
+
+    create = await client.post("/projects", json=_project_payload(), headers=admin["headers"])
+    project_id = create.json()["id"]
+
+    response = await client.get(f"/projects/{project_id}", headers=field_crew["headers"])
+    assert response.status_code == 404
+
+
 async def test_get_nonexistent_project_returns_404(client):
     admin = await _register_and_login(client, "Acme Construction", "nonexistent-admin@acme.test")
 
