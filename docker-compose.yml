@@ -37,6 +37,12 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      # Document uploads (Task 1.15, design decision #4): a dedicated named
+      # volume, not a subdirectory of the ./backend bind mount above, so
+      # uploaded files never land inside the git-tracked backend/ source
+      # tree. Mounted at app.config.Settings.storage_root's default value
+      # (`/data/documents`) — keep the two in sync if either changes.
+      - documents_data:/data/documents
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   frontend:
@@ -57,3 +63,4 @@ services:
 
 volumes:
   pgdata:
+  documents_data:

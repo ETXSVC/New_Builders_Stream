@@ -13,6 +13,9 @@ dependencies = [
     "pyjwt>=2.9,<3.0",
     "argon2-cffi>=23.1,<24.0",
     "email-validator>=2.2,<3.0",
+    # Required by FastAPI's Form()/File() (Task 1.15's multipart/form-data
+    # document upload) — FastAPI doesn't vendor multipart parsing itself.
+    "python-multipart>=0.0.12,<0.1",
 ]
 
 [project.optional-dependencies]

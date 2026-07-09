@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 
 import asyncpg
 import email_validator
@@ -45,6 +46,17 @@ os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_EXPIRE_MINUTES", "60")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+# Same reasoning as DATABASE_URL above: app.config.Settings' default
+# (`/data/documents`, a Docker-volume path — see Task 1.15) doesn't exist on
+# the host running pytest. Point it at a host-writable temp directory
+# instead, set at conftest.py import time for the same "before any test
+# module's own import of app.config" ordering reason given above. Left in
+# place (not cleaned up) after the session — it's under the OS temp
+# directory, same as any other tempfile.mkdtemp() caller's convention of
+# leaving cleanup to the OS/user, and test isolation doesn't require
+# removing it (each test's uploaded files use fresh company/project UUIDs,
+# so nothing collides across test runs).
+os.environ.setdefault("STORAGE_ROOT", tempfile.mkdtemp(prefix="builders_stream_test_documents_"))
 
 
 async def _recreate_test_database() -> None:

@@ -1,12 +1,14 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import Phase, Project, Task
+from app.models import Document, Phase, Project, Task
 from app.models.project import VALID_STATUSES
+from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.schemas.project import (
     ProjectClientDashboardResponse,
     ProjectCreateRequest,
@@ -16,6 +18,7 @@ from app.schemas.project import (
     ProjectStatusUpdateRequest,
 )
 from app.services.audit import write_audit_log
+from app.services.document_storage import InvalidFileNameError, validate_file_name, write_document_file
 from app.services.project_transitions import is_legal_transition
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -309,3 +312,171 @@ async def update_project_status(
         )
 
     return ProjectResponse.model_validate(project)
+
+
+@router.post(
+    "/{project_id}/documents",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_document(
+    project_id: uuid.UUID,
+    file_name: str = Form(...),
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> DocumentResponse:
+    """Task 1.15. `require_role("admin", "project_manager")` per the API
+    spec table and the RBAC matrix (docs/07-security-compliance.md Section
+    2: Project Management is "Full CRUD" for Admin/PM only, matching
+    _WRITE_ROLES's existing rationale above).
+
+    `_get_project_or_404` first, same order every other project-nested
+    write route in this router/tasks.py uses (existence/tenant check
+    before any semantic validation of the payload) — a cross-tenant
+    project_id and an invalid file_name both fail, but the caller learns
+    "not found" before "bad filename", never the other way around, so a
+    cross-tenant probe can't be used to fish for filename-validation
+    feedback.
+    """
+    project = await _get_project_or_404(current, project_id)
+
+    try:
+        validate_file_name(file_name)
+    except InvalidFileNameError as exc:
+        # 422, not 400/403: file_name is well-formed input (a string) that
+        # is semantically invalid in this context — same category this
+        # router/tasks.py already uses 422 for (list_projects's `status`
+        # filter, create_task's `phase_id`), never sanitized-and-accepted.
+        # Deliberately raised BEFORE any DB query below and BEFORE
+        # write_document_file() is ever called, so an invalid file_name
+        # never causes a partial write or an orphaned Document row.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    # version = previous_max_version + 1 for this exact (project_id,
+    # file_name) pair, scoped to this project only — a same-named file in a
+    # DIFFERENT project is an unrelated document, not a new version of this
+    # one. A correlated MAX() query alongside the ORM insert below, same
+    # "COUNT/MAX query living next to ordinary ORM code" comfort level as
+    # _client_dashboard_response's COUNT queries above.
+    previous_max_version = await current.session.scalar(
+        select(func.max(Document.version)).where(
+            Document.project_id == project.id, Document.file_name == file_name
+        )
+    )
+    version = (previous_max_version or 0) + 1
+
+    content = await file.read()
+    try:
+        storage_path = write_document_file(
+            company_id=current.company_id,
+            project_id=project.id,
+            version=version,
+            file_name=file_name,
+            content=content,
+        )
+    except FileExistsError as exc:
+        # A genuinely concurrent upload of the same file_name computed the
+        # same `version` and won the race (see write_document_file's
+        # docstring in app/services/document_storage.py) — 409, not a
+        # silently-overwritten file or an unhandled 500. The caller can
+        # simply retry the upload, which will read a fresh (now higher)
+        # previous_max_version. Found during this task's code-quality review.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A concurrent upload of this file_name is in progress; retry the upload",
+        ) from exc
+
+    document = Document(
+        project_id=project.id,
+        company_id=current.company_id,
+        file_name=file_name,
+        storage_path=storage_path,
+        version=version,
+        uploaded_by=current.user.id,
+    )
+    current.session.add(document)
+    await current.session.flush()
+    # No explicit commit — get_current_user (Inherited Invariant #4) commits
+    # current.session once, after this handler returns. No audit_log entry
+    # either: same reasoning as create_project/create_phase above — Document
+    # upload isn't in docs/07-security-compliance.md Section 5's enumerated
+    # list of state changes needing an audit trail (that list is status
+    # transitions), so none is written here.
+
+    return DocumentResponse.model_validate(document)
+
+
+@router.get("/{project_id}/documents", response_model=DocumentListResponse)
+async def list_documents(
+    project_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> DocumentListResponse:
+    """Task 1.15. Not in the API spec's literal route table (only `POST
+    /projects/{id}/documents` is listed there) — added for the same reason
+    design decision #3 added `PATCH /projects/{id}`: the spec doc "describes
+    API contracts conceptually," and without a list route there is no way
+    to satisfy US-3.4's "the most recent version is shown by default with
+    prior versions accessible" at all.
+
+    `_LIST_ROLES` (admin, project_manager, accountant, field_crew) reused
+    as-is from list_projects above: the RBAC matrix's Project Management row
+    gives every one of those four roles some form of read access, and
+    `client` is deliberately excluded — the API spec never documents any
+    list-shaped route for `client` (design decision #8: client only ever
+    gets the single sanitized `GET /projects/{id}` dashboard route), same
+    reasoning list_projects's own docstring gives for excluding `client`
+    from that route.
+
+    `_get_project_or_404` handles field_crew's assigned-only scoping here
+    exactly as it does for phase/task creation: a field_crew caller whose
+    project isn't theirs (no assigned task on it) gets a 404 before this
+    function ever queries `documents`, so no separate per-document
+    field_crew filter is needed below — visibility is gated at the project
+    level, not the document level (documents have no assignee concept of
+    their own).
+    """
+    project = await _get_project_or_404(current, project_id)
+
+    # "Most recent version per file_name" is applied to the base query
+    # BEFORE paginate() ever sees it (rather than, say, filtering the page
+    # of rows paginate() returns AFTER the fact) — filtering post-pagination
+    # would make `limit` apply to the wrong population (it would count
+    # superseded versions against the page size, and a page could legally
+    # end up smaller than `limit` even with plenty more distinct file_names
+    # left to show) and would fight the cursor's meaning (the cursor is a
+    # (created_at, id) position over the FILTERED population, not the raw
+    # table, or a resumed page could re-skip/re-include rows inconsistently
+    # across requests). A correlated subquery is used, rather than a
+    # GROUP BY on file_name, because paginate() needs actual Document ORM
+    # rows (with all response fields), not just aggregated (file_name,
+    # max_version) pairs.
+    DocumentVersion = aliased(Document)
+    latest_version_for_file = (
+        select(func.max(DocumentVersion.version))
+        .where(
+            DocumentVersion.project_id == Document.project_id,
+            DocumentVersion.file_name == Document.file_name,
+        )
+        .correlate(Document)
+        .scalar_subquery()
+    )
+    query = select(Document).where(
+        Document.project_id == project.id,
+        Document.version == latest_version_for_file,
+    )
+
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=Document.created_at,
+        id_col=Document.id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    return DocumentListResponse(
+        items=[DocumentResponse.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+    )
