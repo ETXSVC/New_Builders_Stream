@@ -29,7 +29,7 @@ class Document(Base, UUIDPKMixin, TimestampMixin):
     uploaded_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    # No updated_at column: new versions are new rows (design decision #4),
+    # No updated_at column: new versions are new rows (design decision #6),
     # never an UPDATE of an existing row — same immutable-row rationale as
     # CommunicationLog, though documents is versioned-by-insert rather than
     # fully immutable (Task 1.10's REVOKE UPDATE, DELETE still applies).

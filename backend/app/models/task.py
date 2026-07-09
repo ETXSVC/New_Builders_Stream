@@ -39,4 +39,8 @@ class Task(Base, UUIDPKMixin, TimestampMixin):
     # ordinary UPDATEs (tasks is not immutable), the schema doc simply doesn't
     # track a last-modified timestamp for this table.
 
+    # CHECK constraint mirrors the migration's DB-level constraint (Task
+    # 1.10), same belt-and-suspenders pattern as Lead.ck_leads_status — the
+    # migration (raw op.create_table, not metadata.create_all) is the
+    # authoritative enforcement point; this is ORM-level self-documentation.
     __table_args__ = (CheckConstraint(_STATUS_CHECK_SQL, name="ck_tasks_status"),)
