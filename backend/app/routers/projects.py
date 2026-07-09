@@ -13,7 +13,10 @@ from app.schemas.project import (
     ProjectListResponse,
     ProjectPatchRequest,
     ProjectResponse,
+    ProjectStatusUpdateRequest,
 )
+from app.services.audit import write_audit_log
+from app.services.project_transitions import is_legal_transition
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -242,5 +245,67 @@ async def patch_project(
     await current.session.flush()
     # No explicit commit here — get_current_user (Inherited Invariant #4)
     # commits current.session once, after this handler returns.
+
+    return ProjectResponse.model_validate(project)
+
+
+@router.patch("/{project_id}/status", response_model=ProjectResponse)
+async def update_project_status(
+    project_id: uuid.UUID,
+    payload: ProjectStatusUpdateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> ProjectResponse:
+    """Task 1.13: the Project status state machine, entirely separate from
+    `patch_project` above (design decision #3 — Project splits field edits
+    and status transitions into two routes/schemas, unlike Lead's combined
+    `PATCH /leads/{id}`). Reuses `_get_project_or_404` for the existence/
+    tenant check; field_crew can never reach this route at all (`_WRITE_ROLES`
+    is admin/project_manager only), so the field_crew-scoping half of that
+    helper is inert here — it's reused purely to avoid duplicating the
+    existence/tenant-404 check, not because field_crew's assigned-only
+    visibility is relevant to this route."""
+    project = await _get_project_or_404(current, project_id)
+
+    previous_status = project.status
+    requested_status = payload.status
+    # A resubmission of the project's current status is a no-op, not a
+    # transition — it isn't modeled in project_transitions.PROJECT_TRANSITIONS
+    # (no self-loops), same precedent as Lead's PATCH /leads/{id}.
+    status_changing = requested_status != previous_status
+
+    # Validate the transition BEFORE touching the ORM object at all — same
+    # atomicity discipline as Lead's update_lead: raising here, before any
+    # setattr, guarantees nothing from this request is staged for the
+    # eventual single commit get_current_user performs (Inherited Invariant #4).
+    if status_changing and not is_legal_transition(previous_status, requested_status):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Illegal project status transition: {previous_status} -> {requested_status}",
+        )
+
+    if status_changing:
+        # Change Orders business rule (Functional Requirements Section 3:
+        # "A Project cannot move to Completed while it has open (non-approved)
+        # Change Orders") is NOT enforced here — `change_orders` doesn't exist
+        # in Phase 1 (out of scope). See project_transitions.py's module
+        # docstring for the full note on what needs to be added here, layered
+        # on top of (not replacing) the is_legal_transition() check above,
+        # once Change Orders ships in Phase 2. Do not forget this.
+        project.status = requested_status
+
+    # updated_at bumps automatically via UpdatedAtMixin's onupdate=utcnow the
+    # moment the setattr above makes this row dirty and it gets flushed.
+    await current.session.flush()
+
+    if status_changing:
+        await write_audit_log(
+            current.session,
+            company_id=current.company_id,
+            actor_id=current.user.id,
+            action="project.status_changed",
+            entity_type="project",
+            entity_id=project.id,
+            metadata={"from": previous_status, "to": requested_status, "reason": payload.reason},
+        )
 
     return ProjectResponse.model_validate(project)
