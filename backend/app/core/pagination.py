@@ -36,17 +36,24 @@ being a breaking API change.
 import uuid
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from datetime import datetime
+from typing import TypeVar
+
+from sqlalchemy import Select, tuple_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 DEFAULT_LIMIT = 25
 MAX_LIMIT = 100
 
 _CURSOR_SEPARATOR = "|"
 
+_Row = TypeVar("_Row")
+
 
 class InvalidCursorError(ValueError):
-    """Raised when a client-supplied cursor can't be decoded. Route handlers
-    should catch this and translate it into a 400, not let it surface as an
-    unhandled 500."""
+    """Raised when a client-supplied cursor can't be decoded. `paginate()`
+    catches this itself (see below) — a route handler using `paginate()`
+    never needs to catch this directly."""
 
 
 def encode_cursor(created_at: datetime, id_: uuid.UUID) -> str:
@@ -66,3 +73,54 @@ def decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         # perspective and should collapse to the same InvalidCursorError.
         raise InvalidCursorError("Invalid pagination cursor") from exc
     return created_at, id_
+
+
+async def paginate(
+    session: AsyncSession,
+    query: Select[tuple[_Row]],
+    *,
+    created_at_col: InstrumentedAttribute[datetime],
+    id_col: InstrumentedAttribute[uuid.UUID],
+    cursor: str | None,
+    limit: int,
+) -> tuple[list[_Row], str | None]:
+    """Applies cursor filtering, tie-broken ordering, and limit+1 fetch/trim
+    to `query`, returning `(rows, next_cursor)`. This is the actual
+    reusable half of cursor pagination (see module docstring) — every list
+    endpoint should call this rather than re-deriving the composite
+    tuple_(created_at, id) comparison and fetch-and-trim logic by hand.
+    `query` should already have any non-pagination filters (status, etc.)
+    applied; do not call `.order_by()`/`.limit()` on it yourself — this
+    function owns both.
+
+    Raises InvalidCursorError for a malformed cursor — callers don't need
+    their own try/except; FastAPI's exception handler (app/main.py)
+    translates it into a 400 automatically.
+
+    A cursor pointing at a since-deleted (created_at, id) pair resumes
+    cleanly from the next surviving row: the WHERE clause is a strict
+    inequality against a sort position, not a lookup of a specific row, so
+    the referenced row's continued existence is never required.
+    """
+    if cursor is not None:
+        cursor_created_at, cursor_id = decode_cursor(cursor)
+        query = query.where(tuple_(created_at_col, id_col) > (cursor_created_at, cursor_id))
+
+    # Fetch one extra row (limit + 1) to learn whether a next page exists
+    # without a second COUNT/EXISTS query; the extra row is trimmed below
+    # and never returned to the caller.
+    query = query.order_by(created_at_col.asc(), id_col.asc()).limit(limit + 1)
+
+    result = await session.execute(query)
+    rows = list(result.scalars().all())
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        # .key is the mapped attribute's name (e.g. "created_at") — this is
+        # how we read the value back off a returned row generically, without
+        # the caller needing to also pass "how to get created_at off a row".
+        next_cursor = encode_cursor(getattr(last, created_at_col.key), getattr(last, id_col.key))
+
+    return rows, next_cursor

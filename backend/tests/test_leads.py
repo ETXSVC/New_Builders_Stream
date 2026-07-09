@@ -266,6 +266,45 @@ async def test_list_leads_pagination_breaks_ties_on_identical_created_at(client)
     assert len(seen_ids) == len(set(seen_ids))
 
 
+async def test_list_leads_pagination_resumes_after_cursor_row_deleted(client):
+    """A cursor encodes a sort position (created_at, id), not a lookup of a
+    specific row — app/core/pagination.py's paginate() is documented to
+    resume cleanly if the row the cursor was issued for no longer exists by
+    the time the next page is fetched. Deletes the first-page row directly
+    (there's no DELETE /leads/{id} route — leads can't be deleted via the
+    API by business rule, so this uses the RLS-exempt owner connection, the
+    same pattern the tie-breaker test above uses) and confirms the second
+    page still returns the remaining row rather than erroring or skipping."""
+    admin = await _register_and_login(client, "Acme Construction", "resume-admin@acme.test")
+
+    first = await client.post(
+        "/leads", json=_lead_payload(project_name="Will Be Deleted"), headers=admin["headers"]
+    )
+    second = await client.post(
+        "/leads", json=_lead_payload(project_name="Survives"), headers=admin["headers"]
+    )
+    first_id, second_id = first.json()["id"], second.json()["id"]
+
+    page_one = await client.get("/leads", params={"limit": 1}, headers=admin["headers"])
+    assert page_one.status_code == 200
+    body = page_one.json()
+    assert [item["id"] for item in body["items"]] == [first_id]
+    cursor = body["next_cursor"]
+    assert cursor is not None
+
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        await conn.execute("DELETE FROM leads WHERE id = $1", first_id)
+    finally:
+        await conn.close()
+
+    page_two = await client.get("/leads", params={"limit": 1, "cursor": cursor}, headers=admin["headers"])
+    assert page_two.status_code == 200
+    body_two = page_two.json()
+    assert [item["id"] for item in body_two["items"]] == [second_id]
+    assert body_two["next_cursor"] is None
+
+
 async def test_list_leads_pagination_default_limit_and_max(client):
     admin = await _register_and_login(client, "Acme Construction", "limit-admin@acme.test")
     await client.post("/leads", json=_lead_payload(), headers=admin["headers"])

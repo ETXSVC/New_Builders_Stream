@@ -1,10 +1,10 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, tuple_
+from sqlalchemy import select
 
 from app.core.deps import CurrentUser, require_role
-from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
+from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import Lead
 from app.models.lead import VALID_STATUSES
 from app.schemas.lead import LeadCreateRequest, LeadListResponse, LeadResponse
@@ -69,30 +69,14 @@ async def list_leads(
     if status_filter is not None:
         query = query.where(Lead.status == status_filter)
 
-    if cursor is not None:
-        try:
-            cursor_created_at, cursor_id = decode_cursor(cursor)
-        except InvalidCursorError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid pagination cursor")
-        # Composite row comparison, not two separate AND'd conditions — see
-        # app/core/pagination.py's module docstring for why (created_at, id)
-        # together, compared as a tuple, is required for correctness once
-        # rows can share a created_at value.
-        query = query.where(tuple_(Lead.created_at, Lead.id) > (cursor_created_at, cursor_id))
-
-    # Fetch one extra row (limit + 1) to learn whether a next page exists
-    # without a second COUNT/EXISTS query; the extra row is trimmed below
-    # and never returned to the caller.
-    query = query.order_by(Lead.created_at.asc(), Lead.id.asc()).limit(limit + 1)
-
-    result = await current.session.execute(query)
-    rows = list(result.scalars().all())
-
-    next_cursor: str | None = None
-    if len(rows) > limit:
-        rows = rows[:limit]
-        last = rows[-1]
-        next_cursor = encode_cursor(last.created_at, last.id)
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=Lead.created_at,
+        id_col=Lead.id,
+        cursor=cursor,
+        limit=limit,
+    )
 
     return LeadListResponse(
         items=[LeadResponse.model_validate(row) for row in rows],
