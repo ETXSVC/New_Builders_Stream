@@ -72,3 +72,11 @@ class LeadResponse(BaseModel):
     notes: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class LeadListResponse(BaseModel):
+    """Cursor-paginated list envelope for `GET /leads` (app/core/pagination.py).
+    `next_cursor` is `None` once the caller has reached the last page."""
+
+    items: list[LeadResponse]
+    next_cursor: str | None = None
