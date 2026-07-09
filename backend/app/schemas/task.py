@@ -63,12 +63,3 @@ class TaskResponse(BaseModel):
     due_date: date | None
     status: str
     created_at: datetime
-
-
-class TaskListResponse(BaseModel):
-    """Cursor-paginated list envelope, following the exact pattern of
-    `LeadListResponse` (app/schemas/lead.py). `next_cursor` is `None` once
-    the caller has reached the last page."""
-
-    items: list[TaskResponse]
-    next_cursor: str | None = None

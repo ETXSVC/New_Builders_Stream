@@ -48,6 +48,16 @@ class ProjectClientDashboardResponse(BaseModel):
     fields on `projects` yet (those arrive with Estimation in Phase 2), so
     "sanitized" here means "no internal operational detail," not "no
     budget data" — see design decision #8's own framing.
+
+    `phase_count`/`task_count`/`completed_task_count` are NOT model fields
+    (no such columns exist on `projects`) — a Task 1.11 spec-review found
+    the original design decision #8 promised "phase/task progress" with no
+    concrete fields and no route anywhere in the plan that ever supplied
+    it, since clients have no other route to query phases/tasks
+    independently. The router (Task 1.12) is expected to compute these via
+    `COUNT` queries against `phases`/`tasks` scoped to this project and
+    construct this response explicitly (not via `model_validate` on the
+    ORM row alone).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -57,6 +67,9 @@ class ProjectClientDashboardResponse(BaseModel):
     status: str
     site_address: str
     projected_start_date: date | None
+    phase_count: int
+    task_count: int
+    completed_task_count: int
 
 
 class ProjectStatusUpdateRequest(BaseModel):
