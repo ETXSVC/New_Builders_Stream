@@ -103,7 +103,10 @@ def upgrade() -> None:
     # via 0001's ALTER DEFAULT PRIVILEGES (verified empirically — see module
     # docstring). Revoke the two mutation privileges communication_logs must
     # never allow, so DB-level enforcement backs up the fact that no
-    # update/delete route for communication logs will ever exist.
+    # update/delete route for communication logs will ever exist. leads is
+    # deliberately left untouched here: it's a mutable entity with its own
+    # status state machine and updated_at column (Task 1.5), unlike
+    # communication_logs, which has neither and is immutable by design.
     op.execute("REVOKE UPDATE, DELETE ON communication_logs FROM app_user")
 
 
