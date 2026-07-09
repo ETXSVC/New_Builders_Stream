@@ -11,3 +11,19 @@ Thumbs.db
 
 # Git worktrees (isolated implementation workspaces)
 .worktrees/
+
+# Local environment secrets (keep .env.example trackable)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
