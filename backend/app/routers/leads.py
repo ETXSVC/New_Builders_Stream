@@ -24,6 +24,23 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 _LEAD_ROLES = ("admin", "project_manager")
 
 
+async def _get_lead_or_404(current: CurrentUser, lead_id: uuid.UUID) -> Lead:
+    """Shared existence/tenant check reused by every route below that
+    operates on a single lead (by path lead_id) or a resource nested under
+    one. RLS makes another tenant's lead invisible, so this 404 covers both
+    "doesn't exist" and "exists but isn't yours" — intentionally
+    indistinguishable from outside, same pattern as GET /companies/{id}.
+    For the nested communications routes, this MUST be called before any
+    communication_logs read/write, so a caller can never create or list
+    comm logs under a lead_id they couldn't otherwise see via GET
+    /leads/{id}."""
+    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+    return lead
+
+
 @router.post("", response_model=LeadResponse, status_code=status.HTTP_201_CREATED)
 async def create_lead(
     payload: LeadCreateRequest,
@@ -96,13 +113,7 @@ async def get_lead(
     lead_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
 ) -> LeadResponse:
-    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
-    if lead is None:
-        # RLS makes another tenant's lead invisible, so this 404 covers both
-        # "doesn't exist" and "exists but isn't yours" — same pattern as
-        # GET /companies/{id}, intentionally indistinguishable from outside.
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+    lead = await _get_lead_or_404(current, lead_id)
     return LeadResponse.model_validate(lead)
 
 
@@ -112,10 +123,7 @@ async def update_lead(
     payload: LeadUpdateRequest,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
 ) -> LeadResponse:
-    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
-    if lead is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
+    lead = await _get_lead_or_404(current, lead_id)
 
     previous_status = lead.status
     requested_status = payload.status
@@ -176,21 +184,6 @@ async def update_lead(
     return LeadResponse.model_validate(lead)
 
 
-async def _get_lead_or_404(current: CurrentUser, lead_id: uuid.UUID) -> Lead:
-    """Shared existence/tenant check for the nested communications routes
-    below. Same RLS-backed 404 pattern as get_lead()/update_lead() above —
-    a lead that doesn't exist and a lead that exists but belongs to another
-    tenant (invisible under RLS) are intentionally indistinguishable from
-    outside. Deliberately checked BEFORE any communication_logs read/write
-    so a caller can never create or list comm logs under a lead_id they
-    couldn't otherwise see via GET /leads/{id}."""
-    result = await current.session.execute(select(Lead).where(Lead.id == lead_id))
-    lead = result.scalar_one_or_none()
-    if lead is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found")
-    return lead
-
-
 @router.post(
     "/{lead_id}/communications",
     response_model=CommunicationLogResponse,
@@ -201,6 +194,8 @@ async def create_communication_log(
     payload: CommunicationLogCreateRequest,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
 ) -> CommunicationLogResponse:
+    # Must stay first — see _get_lead_or_404's docstring for why moving this
+    # below the CommunicationLog insert would be an information-disclosure bug.
     await _get_lead_or_404(current, lead_id)
 
     log = CommunicationLog(
@@ -214,11 +209,13 @@ async def create_communication_log(
     await current.session.flush()
     # No explicit commit here — get_current_user (design decision #8) commits
     # current.session once, after this handler returns. No audit_log entry
-    # either: Security & Compliance Section 5 scopes audit logging to
-    # "financially or legally significant" state changes (status changes,
-    # approvals, role changes) — a communication log entry is itself the
-    # durable record (and is DB-immutable, Task 1.2's REVOKE), not a mutation
-    # of an existing entity that needs a separate before/after trail.
+    # either: unlike Company/Invitation/Lead (which get audited on create),
+    # a CommunicationLog carries its own author_id and created_at directly
+    # on the row, and Task 1.2's REVOKE UPDATE/DELETE guarantees that pairing
+    # can never be altered — the row IS the permanent who/when record, so a
+    # parallel audit_log entry would only duplicate information the row
+    # already carries immutably, not add anything a "who created this and
+    # when" investigation couldn't already get from the row itself.
 
     return CommunicationLogResponse.model_validate(log)
 
@@ -230,6 +227,8 @@ async def list_communication_logs(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> CommunicationLogListResponse:
+    # Must stay first — see _get_lead_or_404's docstring for why moving this
+    # below the CommunicationLog query would be an information-disclosure bug.
     await _get_lead_or_404(current, lead_id)
 
     # Oldest-first (US-2.4: "see a chronological history") — paginate()'s
