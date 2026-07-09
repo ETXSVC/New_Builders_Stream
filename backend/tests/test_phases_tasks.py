@@ -393,13 +393,15 @@ async def test_field_crew_cannot_patch_assignee_id_even_on_own_task(client):
     assert response.status_code == 403
 
     # Confirm nothing was silently applied by either rejected request above.
-    get_check = await client.patch(
+    # Uses a legal status-only PATCH as the verification vehicle since
+    # there's no GET /tasks/{id} in this task's scope.
+    verify_patch = await client.patch(
         f"/tasks/{task_id}",
         json={"status": "done"},
         headers=field_crew["headers"],
     )
-    assert get_check.status_code == 200
-    assert get_check.json()["assignee_id"] == field_crew["user_id"]
+    assert verify_patch.status_code == 200
+    assert verify_patch.json()["assignee_id"] == field_crew["user_id"]
 
 
 async def test_field_crew_cannot_patch_task_not_assigned_to_them(client):

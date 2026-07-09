@@ -1,9 +1,12 @@
 """Task 1.12: `POST/GET /projects`, `GET /projects/{id}`, `PATCH /projects/{id}`.
 
-Phases/tasks routes don't exist yet (Task 1.14) so this file seeds `phases`
-and `tasks` rows directly via the RLS-exempt owner connection — the same
-"test setup, not a runtime code path" rationale test_tenant_isolation_phase1.py
-uses for `_insert_lead_directly`.
+This file predates the Task 1.14 phases/tasks routes, so it seeds `phases`
+and `tasks` rows directly via the RLS-exempt owner connection rather than
+through the API — the same "test setup, not a runtime code path" rationale
+test_tenant_isolation_phase1.py uses for `_insert_lead_directly`. Now that
+those routes exist (see test_phases_tasks.py), this direct-seeding approach
+is kept here unchanged since these rows are incidental fixture data for
+this file's own project-route tests, not what's under test.
 """
 import uuid
 

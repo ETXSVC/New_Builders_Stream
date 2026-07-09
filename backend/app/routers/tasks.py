@@ -5,9 +5,16 @@ from sqlalchemy import select
 
 from app.core.deps import CurrentUser, require_role
 from app.models import Phase, Task
-from app.routers.projects import _WRITE_ROLES, _get_project_or_404
+from app.routers.projects import _get_project_or_404
 from app.schemas.phase import PhaseCreateRequest, PhaseResponse
 from app.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
+
+# Duplicated from projects.py rather than imported, matching leads.py's own
+# precedent for this identical ("admin", "project_manager") tuple
+# (_LEAD_ROLES) — this codebase's established convention is that each
+# router owns its role constants rather than reaching into another
+# router's private (underscore-prefixed) namespace for a value this small.
+_WRITE_ROLES = ("admin", "project_manager")
 
 # Task 1.14: Phases and Tasks. Deliberately its OWN file rather than more
 # additions to projects.py (already the largest router at ~310 lines before
@@ -197,6 +204,12 @@ async def patch_task(
     update_fields = payload.model_dump(exclude_unset=True)
 
     if current.role == "field_crew":
+        # Keyed on which fields are PRESENT in the payload, not on whether
+        # their values differ from the task's current row — a field_crew
+        # caller who sends assignee_id set to its own unchanged current
+        # value still gets rejected below. Don't "simplify" this into a
+        # value-comparison check: that would silently readmit the exact
+        # touch-without-permission gap this 403 exists to close.
         disallowed_fields = set(update_fields) - {"status"}
         if disallowed_fields:
             raise HTTPException(
