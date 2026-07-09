@@ -5,7 +5,7 @@ Transition table (explicit, not derived from adjacent-pair heuristics):
 
     draft             -> pre_construction
     pre_construction  -> active
-    active            -> suspended
+    active            -> suspended, completed
     suspended         -> active, completed
     completed         -> archived
     archived          -> (terminal: no legal outgoing transition)
@@ -14,28 +14,35 @@ The linear spine comes straight from
 [Functional Requirements](../../docs/02-functional-requirements.md) US-3.2's
 stated pipeline order: "Draft -> Pre-Construction -> Active -> Suspended ->
 Completed -> Archived." Same precedent as Task 1.5's Lead state machine:
-skipping a stage (e.g. `draft -> completed`, `pre_construction -> suspended`,
-or `active -> completed`) is illegal — only the single-step edges of the
-literal pipeline are legal, so a Project must pass through every stage in
-order, INCLUDING `suspended` on the way to `completed`. This is a deliberate,
-literal reading of US-3.2's own chain (which places `suspended` directly
-before `completed`) rather than treating `suspended` as an optional side
-detour off of `active` — the plan text's only called-out gap in the linear
-list is reversibility (see below), not a shortcut around `suspended`. A
-project that is never suspended therefore cannot reach `completed` per this
-reading; that's a real-world-surprising business rule worth revisiting with
-product in a later phase, but it's what US-3.2's literal chain states and
-matches Task 1.5's own "no skipping stages" discipline, so it's implemented
-as written rather than silently "fixed."
+skipping a stage from the START of the chain is illegal (e.g. `draft ->
+completed`, `pre_construction -> suspended`) — but, also same as Task 1.5's
+own precedent ("a lead can be lost from most stages... use judgment," which
+this task's own text explicitly imports by name), `suspended` is treated as
+a reversible SIDE DETOUR off of `active`, not a mandatory waypoint every
+project must pass through to reach `completed`. `active -> completed` is
+legal directly.
+
+**Correction, found during this task's spec review**: the first version of
+this table required `active -> suspended -> completed` for every project,
+with no direct `active -> completed` edge, on the reasoning that US-3.2's
+chain places `suspended` immediately before `completed`. That reading was
+wrong: "Suspended" denotes an interruption (funding, weather, disputes,
+permits) — an exceptional state — not a stage every project passes through,
+and requiring a spurious suspend/resume detour before a normal,
+never-interrupted project could ever be marked complete would block the
+single most common real-world workflow entirely. The plan's own phrasing —
+calling out "`active -> suspended` and `suspended -> active`" as a *pair* —
+only makes sense if `active <-> suspended` is a self-contained reversible
+side-loop, not a fixed link in a strictly one-way progression toward
+`completed`. Fixed by adding `active -> completed` directly.
 
 The `suspended -> active` edge is the one addition the plan explicitly calls
 for beyond the literal linear chain: "suspension needs to be reversible — the
 linear list alone doesn't capture that." Without it, a suspended Project
 would have no way back to `active` at all, which is clearly not the intent of
-a "suspend/resume" mechanism. `suspended -> completed` (already part of the
-literal chain) is kept as-is, so a suspended Project can either resume
-(`-> active`) or proceed to completion (`-> completed`) directly, without
-needing to un-suspend first.
+a "suspend/resume" mechanism. `suspended -> completed` is also legal, so a
+suspended Project can either resume (`-> active`) or proceed to completion
+(`-> completed`) directly, without needing to un-suspend first.
 
 **Change Orders business rule — deferred, not implemented:**
 [Functional Requirements](../../docs/02-functional-requirements.md) Section 3
@@ -60,7 +67,7 @@ status's adjacency set.
 PROJECT_TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"pre_construction"}),
     "pre_construction": frozenset({"active"}),
-    "active": frozenset({"suspended"}),
+    "active": frozenset({"suspended", "completed"}),
     "suspended": frozenset({"active", "completed"}),
     "completed": frozenset({"archived"}),
     "archived": frozenset(),

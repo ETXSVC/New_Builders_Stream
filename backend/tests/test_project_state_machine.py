@@ -85,8 +85,8 @@ _PRECONDITION_PATH = {
     "pre_construction": ["pre_construction"],
     "active": ["pre_construction", "active"],
     "suspended": ["pre_construction", "active", "suspended"],
-    "completed": ["pre_construction", "active", "suspended", "completed"],
-    "archived": ["pre_construction", "active", "suspended", "completed", "archived"],
+    "completed": ["pre_construction", "active", "completed"],
+    "archived": ["pre_construction", "active", "completed", "archived"],
 }
 
 
@@ -125,6 +125,7 @@ _EXPECTED_LEGAL_EDGES = {
     ("draft", "pre_construction"),
     ("pre_construction", "active"),
     ("active", "suspended"),
+    ("active", "completed"),
     ("suspended", "active"),
     ("suspended", "completed"),
     ("completed", "archived"),
@@ -178,9 +179,8 @@ async def test_legal_transition_succeeds_and_is_audited(client, from_status, to_
         ("draft", "suspended"),  # skips pre_construction/active
         ("draft", "archived"),  # skips everything
         ("pre_construction", "suspended"),  # skips active (the explicitly-flagged ambiguity)
-        ("pre_construction", "completed"),  # skips active/suspended
-        ("active", "completed"),  # skips suspended (literal US-3.2 chain requires it)
-        ("active", "archived"),  # skips suspended/completed
+        ("pre_construction", "completed"),  # skips active
+        ("active", "archived"),  # skips completed
         ("suspended", "archived"),  # skips completed
         ("completed", "active"),  # no legal transition back out of completed except archived
         ("completed", "suspended"),
