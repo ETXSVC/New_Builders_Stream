@@ -4,6 +4,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.estimate_line_item import EstimateLineItemResponse
+
 
 class EstimateCreateRequest(BaseModel):
     """`POST /estimates` (Task 2.10). `project_id` and `lead_id` are both
@@ -78,3 +80,35 @@ class EstimateListResponse(BaseModel):
 
     items: list[EstimateResponse]
     next_cursor: str | None = None
+
+
+class EstimateDetailResponse(EstimateResponse):
+    """`GET /estimates/{id}`-only shape (Task 2.10) — a superset of
+    `EstimateResponse` adding `line_items`, the same "route-specific
+    response schema assembled by the router, not derivable via plain
+    `model_validate()` on the bare ORM instance alone" precedent
+    `ProjectClientDashboardResponse` established (`app/schemas/project.py`):
+    `line_items` isn't a mapped relationship loaded automatically off
+    `Estimate` (no `relationship()` is declared on the model — see
+    `app/models/estimate.py`), it requires the router to run a second,
+    explicit query against `estimate_line_items` and pass the results in,
+    the same way `phase_count`/`task_count` require their own COUNT
+    queries there.
+
+    Deliberately NOT used by `POST /estimates` or `GET /estimates` (list):
+    a freshly created Estimate always has zero line items (this task's own
+    spec: "zero line items" on create), so nesting an always-empty list
+    there adds nothing; and no other list-shaped route in this codebase
+    nests a child collection per row (see `EstimateLineItemResponse`'s own
+    docstring: line items have no independent list route and are "only
+    ever read as part of an `EstimateResponse` ... once Task 2.10's `GET
+    /estimates/{id}` is built" — this is that route). Both `POST
+    /estimates` and `GET /estimates` keep using plain `EstimateResponse`.
+
+    Extends `EstimateResponse` (rather than duplicating its fields) so this
+    schema can never silently drift out of sync with the header fields
+    every other Estimate response shape returns — adding a field to
+    `EstimateResponse` automatically flows through here too.
+    """
+
+    line_items: list[EstimateLineItemResponse]
