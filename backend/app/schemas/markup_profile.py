@@ -27,3 +27,17 @@ class MarkupProfileResponse(BaseModel):
     name: str
     overhead_pct: Decimal
     profit_pct: Decimal
+
+
+class MarkupProfileListResponse(BaseModel):
+    """Cursor-paginated list envelope for `GET /markup-profiles`. See
+    `app/routers/catalogs.py`'s module docstring for why this route's
+    pagination cursor is a bare `id` (not a `(created_at, id)` composite the
+    way `app/core/pagination.py`'s `paginate()` produces for every other list
+    route) — `markup_profiles` has neither a `created_at` nor an `updated_at`
+    column at all (docs/04-database-schema.md Section 5 / the `MarkupProfile`
+    model's own docstring, Task 2.1's deliberate choice), so there is no
+    timestamp column for `paginate()` to order on in the first place."""
+
+    items: list[MarkupProfileResponse]
+    next_cursor: str | None = None

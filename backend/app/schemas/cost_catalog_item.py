@@ -59,3 +59,17 @@ class CostCatalogItemResponse(BaseModel):
     @property
     def is_override(self) -> bool:
         return self.parent_catalog_item_id is not None
+
+
+class CostCatalogItemListResponse(BaseModel):
+    """Cursor-paginated list envelope for `GET /catalogs/items`, same shape
+    as `LeadListResponse` (app/schemas/lead.py) — but see
+    `app/routers/catalogs.py`'s own module docstring for why the cursor this
+    route hands back is NOT produced by `app/core/pagination.py`'s
+    `paginate()`: the list being paginated here is `resolve_visible_catalog_items`'
+    already-materialized, in-memory, deduped result, not a SQLAlchemy
+    `Select`. `next_cursor` is `None` once the caller has reached the last
+    page, same convention as every other list envelope in this codebase."""
+
+    items: list[CostCatalogItemResponse]
+    next_cursor: str | None = None
