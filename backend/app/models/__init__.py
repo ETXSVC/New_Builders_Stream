@@ -13,6 +13,7 @@ from app.models.markup_profile import MarkupProfile
 from app.models.cost_catalog_item import CostCatalogItem
 from app.models.estimate import Estimate
 from app.models.estimate_line_item import EstimateLineItem
+from app.models.esignature import Esignature
 
 __all__ = [
     "Base",
@@ -32,4 +33,5 @@ __all__ = [
     "CostCatalogItem",
     "Estimate",
     "EstimateLineItem",
+    "Esignature",
 ]
