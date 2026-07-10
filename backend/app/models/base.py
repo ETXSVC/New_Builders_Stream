@@ -24,3 +24,16 @@ class UUIDPKMixin:
 
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UpdatedAtMixin:
+    """Opt in alongside TimestampMixin for models with a mutable post-create
+    lifecycle (e.g. status transitions) — not every model needs this; models
+    that are immutable-after-create (CommunicationLog, AuditLog, ...) should
+    not use it. onupdate=utcnow bumps this on every UPDATE issued via the ORM
+    (attribute-set-then-flush, Core-style update(), and 2.0 bulk-update-by-PK
+    all trigger it); it will NOT fire for raw SQL that bypasses the ORM."""
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

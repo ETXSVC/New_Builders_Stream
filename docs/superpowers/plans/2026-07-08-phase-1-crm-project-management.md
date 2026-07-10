@@ -330,10 +330,10 @@ docker-compose.yml               # + a documents volume (design decision #4)
 
 ## Phase 1 Exit Criteria Checklist
 
-- [ ] Lead CRUD, pipeline status transitions (state-machine enforced, illegal transitions rejected), communication logs (immutable, DB-enforced) — Tasks 1.1–1.8
-- [ ] Project CRUD/lifecycle state machine, Phases, Tasks (assignee-scoped RBAC), Documents (versioned, local storage), Daily Logs (immutable, DB-enforced) — Tasks 1.9–1.17
-- [ ] `LEAD_WON` → draft Project event wiring, transactionally consistent — Task 1.18
-- [ ] Client-facing read-only project dashboard (sanitized view, RBAC-scoped) — Task 1.12
-- [ ] A Lead can be created, moved to Won, and lands as a Draft Project with client details carried over, end-to-end, with tests, verified over real HTTP against real containers — Task 1.19
-- [ ] Tenant isolation proven on every new table, including the parent/child hierarchy case — Tasks 1.8, 1.17
-- [ ] Full regression suite green in CI — Task 1.20
+- [x] Lead CRUD, pipeline status transitions (state-machine enforced, illegal transitions rejected), communication logs (immutable, DB-enforced) — Tasks 1.1–1.8
+- [x] Project CRUD/lifecycle state machine, Phases, Tasks (assignee-scoped RBAC), Documents (versioned, local storage), Daily Logs (immutable, DB-enforced) — Tasks 1.9–1.17
+- [x] `LEAD_WON` → draft Project event wiring, transactionally consistent — Task 1.18
+- [x] Client-facing read-only project dashboard (sanitized view, RBAC-scoped) — Task 1.12
+- [x] A Lead can be created, moved to Won, and lands as a Draft Project with client details carried over, end-to-end, with tests, verified over real HTTP against real containers — Task 1.19
+- [x] Tenant isolation proven on every new table, including the parent/child hierarchy case — Tasks 1.8, 1.17
+- [x] Full regression suite green in CI — Task 1.20 (247 backend tests passing, run twice for stability; full RLS regression suite — test_tenant_isolation.py + test_rls_policy_regression.py + test_tenant_isolation_phase1.py — 24/24 passing; CI verification PR #3 green, closed without merging pending the user's explicit merge decision)
