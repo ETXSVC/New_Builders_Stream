@@ -1,7 +1,10 @@
 """Full-stack E2E regression check. Run against a live `docker compose up -d`
 stack — hits real HTTP ports, not the in-process ASGI transport the pytest
 suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
-Task 19."""
+Task 19 for the original checks, and
+docs/superpowers/plans/2026-07-08-phase-1-crm-project-management.md,
+Task 19 for the Lead-to-Won-to-Project exit-criterion block added later
+in this file."""
 
 import re
 import sys
@@ -119,6 +122,111 @@ def run() -> None:
         invitee_login = login(client, invite_email)
         assert invitee_login["default_company_id"] == company_a["company_id"]
         checks_passed.append("newly-invited user can log in and lands in the correct company")
+
+        # --- Phase 1 exit criterion: Lead -> Won -> Project, over real HTTP ---
+        # Fresh company so this block is self-contained and independent of the
+        # Phase 0 checks above.
+        company_c = register(client, "E2E Company C", f"admin-c-{run_id}@e2e.example")
+        token_c = login(client, f"admin-c-{run_id}@e2e.example")["access_token"]
+        headers_c = {"Authorization": f"Bearer {token_c}"}
+        checks_passed.append("company C (Lead-to-Project flow) registered and logged in over real HTTP")
+
+        project_name = f"E2E Kitchen Remodel {run_id}"
+        lead = client.post(
+            "/leads",
+            json={
+                "contact_name": "E2E Lead Contact",
+                "project_name": project_name,
+                "email": f"lead-{run_id}@e2e.example",
+                "project_type": "remodel",
+            },
+            headers=headers_c,
+        )
+        assert lead.status_code == 201, f"lead create failed: {lead.status_code} {lead.text}"
+        lead_id = lead.json()["id"]
+        assert lead.json()["status"] == "new", f"expected initial status='new', got {lead.json()['status']!r}"
+        checks_passed.append("Lead created over real HTTP (status=new)")
+
+        # Walk the FULL legal transition chain (app/services/lead_transitions.py's
+        # LEAD_TRANSITIONS table: new -> contacted -> estimating -> qualified -> won).
+        # Driving every intermediate PATCH for real confirms the deployed backend
+        # enforces the same state machine the in-process tests exercise — skipping
+        # straight to "won" would not prove that.
+        for next_status in ("contacted", "estimating", "qualified", "won"):
+            transition = client.patch(
+                f"/leads/{lead_id}", json={"status": next_status}, headers=headers_c
+            )
+            assert transition.status_code == 200, (
+                f"legal Lead transition to {next_status!r} was rejected over real HTTP: "
+                f"{transition.status_code} {transition.text}"
+            )
+            assert transition.json()["status"] == next_status, (
+                f"expected status={next_status!r} after transition, got "
+                f"{transition.json()['status']!r}"
+            )
+            checks_passed.append(f"Lead legally transitioned to status={next_status!r} over real HTTP")
+
+        # LEAD_WON's side effect (Task 1.18): a draft Project should now exist,
+        # referencing this Lead, carrying over project_name, with site_address=''.
+        # ProjectResponse (admin/PM shape) exposes lead_id, but there's no
+        # "get project by lead_id" route, so list and filter client-side.
+        projects = client.get("/projects", headers=headers_c)
+        assert projects.status_code == 200, projects.text
+        matching_projects = [
+            p for p in projects.json()["items"] if p.get("lead_id") == lead_id
+        ]
+        assert len(matching_projects) == 1, (
+            f"expected exactly one drafted Project referencing lead_id={lead_id}, "
+            f"found {len(matching_projects)}: {projects.json()['items']}"
+        )
+        drafted_project = matching_projects[0]
+        assert drafted_project["name"] == project_name, (
+            f"drafted Project name {drafted_project['name']!r} != Lead's "
+            f"project_name {project_name!r}"
+        )
+        assert drafted_project["site_address"] == "", (
+            f"drafted Project site_address expected '', got "
+            f"{drafted_project['site_address']!r}"
+        )
+        checks_passed.append(
+            "winning a Lead over real HTTP drafts a Project carrying over "
+            "project_name with site_address=''"
+        )
+
+        # A client-role user hitting the same GET /projects/{id} route gets the
+        # sanitized ProjectClientDashboardResponse shape (design decision #8),
+        # which has no lead_id field at all — assert the key is entirely absent,
+        # not just null.
+        client_email = f"client-{run_id}@e2e.example"
+        client_invite = client.post(
+            "/invitations", json={"email": client_email, "role": "client"}, headers=headers_c
+        )
+        assert client_invite.status_code == 201, client_invite.text
+        client_accept = client.post(
+            f"/invitations/{client_invite.json()['id']}/accept",
+            json={"full_name": "E2E Client", "password": PASSWORD},
+        )
+        assert client_accept.status_code == 200, client_accept.text
+        client_token = login(client, client_email)["access_token"]
+        client_headers = {"Authorization": f"Bearer {client_token}"}
+        checks_passed.append("client-role user invited and accepted over real HTTP")
+
+        client_project_view = client.get(
+            f"/projects/{drafted_project['id']}", headers=client_headers
+        )
+        assert client_project_view.status_code == 200, client_project_view.text
+        client_project_body = client_project_view.json()
+        assert "lead_id" not in client_project_body, (
+            f"client-facing GET /projects/{{id}} leaked lead_id: {client_project_body}"
+        )
+        assert client_project_body["site_address"] == "", (
+            f"expected client-facing site_address to be '', got "
+            f"{client_project_body['site_address']!r}"
+        )
+        checks_passed.append(
+            "client-role GET /projects/{id} returns sanitized dashboard shape "
+            "over real HTTP with no lead_id key present"
+        )
 
     with httpx.Client(timeout=10.0) as client:
         frontend_response = client.get(FRONTEND_URL)
