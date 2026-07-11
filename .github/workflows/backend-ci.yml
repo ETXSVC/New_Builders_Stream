@@ -24,6 +24,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # Phase 2 Task 2.14 introduced the first Redis dependency (Dramatiq
+      # async jobs) — this service container was missing from this workflow
+      # even though `REDIS_URL` below already pointed at localhost:6379,
+      # so every test needing Redis (Task 2.15's PDF-export job tests) was
+      # failing in CI with "Connection refused" until this was added.
+      # Same image/healthcheck-style as docker-compose.yml's own `redis`
+      # service.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v4
