@@ -417,3 +417,295 @@ async def test_sibling_branches_cannot_see_each_others_catalog_items_despite_sha
         )
     finally:
         await app_conn2.close()
+
+
+# =============================================================================
+# Task 2.16: Estimates / Estimate Line Items tenant-isolation regression
+# tests
+# =============================================================================
+#
+# Extends this file rather than starting a new one — same module (Phase 2
+# tenant-isolation regression coverage), same helper shape
+# (_register_and_login/_add_membership_directly), just a different pair of
+# tables. Mirrors test_tenant_isolation_phase1.py's own Task 1.17 append
+# convention: a new commented section at the end of an existing file, not a
+# rewritten module docstring.
+#
+# Per migration 0007's own docstring, `estimates` and `estimate_line_items`
+# are each plain, flat, company-scoped tables with their OWN separate
+# ordinary `tenant_isolation` policy — the same get_all_descendant_ids()-only
+# shape `leads`/`projects` (0004) use, NOT `cost_catalog_items`' bidirectional
+# OR-of-two-clauses shape (0005). The sibling-branch/upward-visibility test
+# this file's Task 2.6 section applies to `cost_catalog_items` is therefore
+# deliberately NOT replicated here — it exists to probe an asymmetry
+# (get_all_ancestor_ids()) that these two tables' policies simply don't have.
+# This section is structurally closer to test_tenant_isolation_phase1.py's
+# per-table coverage (header-spoofing + one RLS-disable/re-enable proof) than
+# to this same file's own cost_catalog_items tests.
+#
+# What this section deliberately does NOT re-derive:
+#   - Cross-tenant 404 on GET /estimates/{id}
+#     (test_estimates.py::test_get_estimate_cross_tenant_returns_404, Task
+#     2.10) and on PUT /estimates/{id}/lines
+#     (test_estimates.py::test_replace_line_items_cross_tenant_estimate_returns_404,
+#     Task 2.11) — both already exercise _get_estimate_or_404's ordinary
+#     RLS-backed existence check against a genuinely cross-tenant id, the
+#     same mechanism this section's own RLS-disable/re-enable proof confirms
+#     at the raw-policy layer below. Re-driving the identical HTTP-level 404
+#     here would add no new coverage.
+#   - RBAC (admin/PM can write, field_crew/client/accountant cannot on
+#     write routes; admin/PM/accountant/client can read) and the client's
+#     status='sent' list-scoping — all covered by test_estimates.py (Tasks
+#     2.10/2.11).
+#
+# What IS new here:
+#   - test_estimate_header_spoofing_via_x_tenant_id_is_blocked — the
+#     X-Tenant-ID membership check confirmed explicitly on an
+#     Estimates-scoped route, mirroring
+#     test_tenant_isolation_phase1.py's test_lead_header_spoofing_via_x_tenant_id_is_blocked
+#     and this file's own test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked.
+#   - test_rls_policy_itself_blocks_cross_tenant_estimate_visibility — the
+#     RLS-disable/re-enable proof (Phase 0 Task 16's pattern), applied to
+#     `estimates` for the first time, proving the POLICY itself — not
+#     _get_estimate_or_404's application-layer query — blocks a genuinely
+#     unrelated tenant. Proven once for `estimates` only, per this task's own
+#     spec ("representative of the plain policy shape both tables share"):
+#     migration 0007's docstring confirms `estimate_line_items` carries the
+#     identical FOR ALL / get_all_descendant_ids()-gated policy shape, so
+#     this one proof is representative of both, the same "prove the
+#     mechanism once per policy-shape, not per-table" judgment Task 1.8
+#     applied to `leads`/`communication_logs` and Task 1.17 applied to
+#     `projects`/`phases`/`tasks`/`documents`/`daily_logs`.
+#   - test_export_estimate_pdf_forbidden_for_accountant_client_and_field_crew
+#     and test_export_estimate_pdf_genuinely_cross_tenant_returns_404 — close
+#     a coverage gap Task 2.15's own spec-compliance review flagged as
+#     "naturally belonging to Task 2.16": POST /estimates/{id}/export
+#     (test_estimate_pdf_export.py, Task 2.15) had no explicit
+#     accountant/client 403 test, and its only 404 case
+#     (test_export_estimate_pdf_not_found_returns_404) uses an all-zeros
+#     nonexistent UUID rather than a genuinely cross-tenant estimate
+#     belonging to a real, unrelated company. Both close here, in this
+#     task's own file, rather than in test_estimate_pdf_export.py.
+
+
+def _project_payload(**overrides):
+    payload = {
+        "name": "Kitchen Remodel Project",
+        "site_address": "123 Main St",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_project(client, headers, **overrides):
+    response = await client.post("/projects", json=_project_payload(**overrides), headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _markup_profile_payload(**overrides):
+    payload = {
+        "name": "Standard Markup",
+        "overhead_pct": "10.00",
+        "profit_pct": "15.00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_markup_profile(client, headers, **overrides):
+    response = await client.post(
+        "/markup-profiles", json=_markup_profile_payload(**overrides), headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _create_estimate(client, headers, *, project_id, markup_profile_id):
+    response = await client.post(
+        "/estimates",
+        json={"project_id": project_id, "markup_profile_id": markup_profile_id},
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _invite_and_login_as(client, admin, role, email):
+    """Identical to test_estimates.py's helper of the same name — duplicated
+    rather than imported, matching this codebase's established
+    each-test-file-owns-its-own-helper-set convention."""
+    invite = await client.post(
+        "/invitations",
+        json={"email": email, "role": role},
+        headers=admin["headers"],
+    )
+    assert invite.status_code == 201, invite.text
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "Invited User", "password": "anothersecret123"},
+    )
+    assert accept.status_code == 200, accept.text
+    login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
+    assert login.status_code == 200, login.text
+    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+
+
+# --- Header-spoofing and RLS-disable/re-enable proof, `estimates` -----------
+
+
+async def test_estimate_header_spoofing_via_x_tenant_id_is_blocked(client):
+    """Mirrors test_tenant_isolation_phase1.py's
+    test_lead_header_spoofing_via_x_tenant_id_is_blocked and this file's own
+    test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked,
+    through an Estimates-scoped route. The X-Tenant-ID membership check in
+    app/core/deps.py is route-agnostic and runs before any RLS policy is
+    evaluated, so this is expected to already hold — confirming it
+    explicitly here matters because /estimates is its own router with its
+    own dependency wiring, not yet exercised by any prior task's isolation
+    coverage."""
+    a = await _register_and_login(client, "Company A", "spoof-est-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-est-b@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    markup_b = await _create_markup_profile(client, b["headers"])
+    estimate_b = await _create_estimate(
+        client, b["headers"], project_id=project_b["id"], markup_profile_id=markup_b["id"]
+    )
+
+    response = await client.get(
+        f"/estimates/{estimate_b['id']}",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+async def test_rls_policy_itself_blocks_cross_tenant_estimate_visibility(client):
+    """Mirrors test_tenant_isolation_phase1.py's
+    test_rls_policy_itself_blocks_cross_tenant_lead_visibility and this
+    file's own
+    test_rls_policy_itself_blocks_unrelated_tenant_catalog_item_visibility,
+    adapted to `estimates` — the primary deliverable of this task. Connects
+    as app_user directly (bypassing the FastAPI app, and therefore
+    _get_estimate_or_404 entirely) to prove the POLICY itself, not
+    application-layer filtering, blocks a genuinely unrelated tenant from
+    seeing another tenant's estimate row. Then disables RLS as the table
+    owner and confirms the identical query starts returning the row, showing
+    the policy, not luck, was responsible. Then ALWAYS restores RLS in a
+    finally, even if an assertion above fails partway through, so this test
+    can never leave the database in an insecure state for any test that runs
+    after it — same two-level try/finally discipline as
+    test_rls_policy_regression.py, for the same reason (the restore itself
+    is isolated so a failure in the ALTER doesn't get masked by a still-
+    propagating AssertionError, and owner_conn is guaranteed closed either
+    way). Migration 0007's docstring confirms `estimate_line_items` shares
+    this exact policy shape, so this one proof is representative of both —
+    see this section's own header comment for the "prove the mechanism once
+    per policy-shape" rationale."""
+    a = await _register_and_login(client, "Company A", "rls-est-a@acme.test")
+    b = await _register_and_login(client, "Company B", "rls-est-b@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    markup_b = await _create_markup_profile(client, b["headers"])
+    estimate_b = await _create_estimate(
+        client, b["headers"], project_id=project_b["id"], markup_profile_id=markup_b["id"]
+    )
+    estimate_b_id = estimate_b["id"]
+
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
+    try:
+        # set_config(), not `SET app.current_tenant = $1` — see
+        # set_current_tenant's docstring in app/db.py (Task 3) for why a
+        # bound parameter there is a syntax error.
+        await app_conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+        )
+        visible_as_a = await app_conn.fetchrow(
+            "SELECT id FROM estimates WHERE id = $1", estimate_b_id
+        )
+        assert visible_as_a is None, (
+            "RLS should block Company A's session from seeing Company B's "
+            "estimate"
+        )
+    finally:
+        await app_conn.close()
+
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute("ALTER TABLE estimates DISABLE ROW LEVEL SECURITY")
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
+        try:
+            await app_conn2.execute(
+                "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+            )
+            visible_with_rls_off = await app_conn2.fetchrow(
+                "SELECT id FROM estimates WHERE id = $1", estimate_b_id
+            )
+            assert visible_with_rls_off is not None, (
+                "Sanity check failed: Company B's estimate row should exist "
+                "and be visible once RLS is off — if this fails, the row "
+                "itself is missing, which means the test setup (not the "
+                "policy) is broken."
+            )
+        finally:
+            await app_conn2.close()
+    finally:
+        # ALWAYS restore RLS even if the assertion above fails — see this
+        # test's own docstring for why this is a separate try/finally.
+        try:
+            await owner_conn.execute("ALTER TABLE estimates ENABLE ROW LEVEL SECURITY")
+        finally:
+            await owner_conn.close()
+
+
+# --- Task 2.15 review gap closure: POST /estimates/{id}/export --------------
+
+
+async def test_export_estimate_pdf_forbidden_for_accountant_client_and_field_crew(client):
+    """Closes the RBAC half of the gap Task 2.15's own spec-compliance
+    review flagged: test_estimate_pdf_export.py only ever drove
+    POST /estimates/{id}/export as admin, project_manager, and field_crew
+    (test_export_estimate_pdf_forbidden_for_field_crew) — accountant and
+    client, both in _READ_ROLES but absent from _WRITE_ROLES
+    (app/routers/estimates.py), had never been driven through this specific
+    route at all. field_crew is included in this same loop too — not because
+    it needs new coverage (it's already proven in
+    test_estimate_pdf_export.py), but to confirm all three non-write roles
+    are rejected consistently by the same _WRITE_ROLES-gated dependency, in
+    one place."""
+    admin = await _register_and_login(client, "Acme Construction", "exp-rbac-admin@acme.test")
+    accountant = await _invite_and_login_as(client, admin, "accountant", "exp-rbac-acct@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "exp-rbac-client@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "exp-rbac-crew@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+
+    for actor in (accountant, client_role, field_crew):
+        response = await client.post(
+            f"/estimates/{estimate['id']}/export", headers=actor["headers"]
+        )
+        assert response.status_code == 403
+
+
+async def test_export_estimate_pdf_genuinely_cross_tenant_returns_404(client):
+    """Closes the 404 half of the gap Task 2.15's own spec-compliance review
+    flagged: test_estimate_pdf_export.py's only 404 case
+    (test_export_estimate_pdf_not_found_returns_404) uses the all-zeros
+    nonexistent UUID, which never distinguishes "doesn't exist at all" from
+    "exists, but belongs to someone else" — the latter is the case Inherited
+    Invariant #8 (and _get_estimate_or_404's own docstring) says must be
+    handled identically, but that identity had never actually been PROVEN
+    for this specific route with a real, unrelated company's estimate id.
+    This creates a genuine estimate under Company A and drives the export
+    route as Company B."""
+    a = await _register_and_login(client, "Company A", "exp-cross-a@acme.test")
+    b = await _register_and_login(client, "Company B", "exp-cross-b@acme.test")
+    project_a = await _create_project(client, a["headers"])
+    markup_a = await _create_markup_profile(client, a["headers"])
+    estimate_a = await _create_estimate(
+        client, a["headers"], project_id=project_a["id"], markup_profile_id=markup_a["id"]
+    )
+
+    response = await client.post(f"/estimates/{estimate_a['id']}/export", headers=b["headers"])
+    assert response.status_code == 404
