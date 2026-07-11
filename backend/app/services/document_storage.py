@@ -182,3 +182,41 @@ def write_document_file(
         fh.write(content)
 
     return relative_path
+
+
+def write_estimate_pdf_file(*, company_id: uuid.UUID, estimate_id: uuid.UUID, content: bytes) -> str:
+    """Writes an exported Estimate PDF to
+    `{settings.storage_root}/{company_id}/estimates/{estimate_id}.pdf` and
+    returns the RELATIVE storage_path (`{company_id}/estimates/{estimate_id}.pdf`,
+    matching `relative_document_path`'s "always relative to storage_root,
+    forward slashes" convention) to persist on `estimate.pdf_storage_path`
+    (Task 2.15).
+
+    Mirrors `write_document_file`'s general shape (`Path(settings.storage_root)
+    / ...`, `.parent.mkdir(parents=True, exist_ok=True)`), but differs from it
+    in two deliberate ways:
+
+    1. **Always overwrites** (plain `"wb"` mode), unlike `write_document_file`'s
+       exclusive-create (`"xb"`, never-overwrite) semantics. Design decision #5
+       in the Phase 2 plan doc is explicit that "re-exporting after a
+       line-item edit produces a new PDF from current state, previous exports
+       aren't a retained artifact" — there is exactly one current PDF per
+       estimate at any time, always replaced on re-export. Using `"xb"` here
+       would raise `FileExistsError` on every re-export after the first,
+       which is wrong for this table's semantics (there is no version
+       concept for estimate PDFs the way there is for `Document` uploads).
+
+    2. **No `validate_file_name()` call.** The filename here (`{estimate_id}.pdf`)
+       is fully system-generated from a UUID that has already been validated
+       as a real, RLS-visible `Estimate` by the time this function is ever
+       called — never user input — so `write_document_file`'s path-traversal
+       validation (built for the user-supplied `file_name` on a Document
+       upload) is inapplicable here.
+    """
+    relative_path = f"{company_id}/estimates/{estimate_id}.pdf"
+    absolute_path = Path(settings.storage_root) / str(company_id) / "estimates" / f"{estimate_id}.pdf"
+
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_path.write_bytes(content)
+
+    return relative_path

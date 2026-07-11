@@ -24,12 +24,25 @@ for the same reason.
 
 No actor is defined in this module, or anywhere yet, per this task's own
 scope — Task 2.15 adds the first one (`app/tasks/estimate_pdf.py`).
+
+`AsyncIO` middleware, added during Task 2.15: this codebase's actors are
+`async def` (Task 2.15's `generate_estimate_pdf` needs `await`-based DB
+access via `app/db.py`'s `SessionLocal`), but Dramatiq's `default_middleware`
+(`dramatiq/middleware/__init__.py`) does NOT include `AsyncIO` — it must be
+added explicitly, or an async actor's coroutine is returned but never
+actually driven to completion (empirically confirmed: without this
+middleware, a message sent to an `async def` actor never finishes — no
+exception, the coroutine object is simply never awaited). `AsyncIO`
+manages a dedicated background event-loop thread the worker process uses
+to run every async actor's coroutine to completion.
 """
 
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
+from dramatiq.middleware.asyncio import AsyncIO
 
 from app.config import settings
 
 redis_broker = RedisBroker(url=settings.redis_url)
+redis_broker.add_middleware(AsyncIO())
 dramatiq.set_broker(redis_broker)

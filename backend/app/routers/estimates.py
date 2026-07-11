@@ -33,6 +33,7 @@ from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLin
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
 from app.services.estimate_calculation import calculate_estimate
+from app.tasks.estimate_pdf import generate_estimate_pdf
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -454,3 +455,53 @@ async def calculate_estimate_totals(
             for entry in calculation.category_breakdown
         ],
     )
+
+
+@router.post(
+    "/{estimate_id}/export", response_model=EstimateResponse, status_code=status.HTTP_202_ACCEPTED
+)
+async def export_estimate_pdf(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> EstimateResponse:
+    """Task 2.15: enqueues async PDF generation
+    (`app/tasks/estimate_pdf.py`'s `generate_estimate_pdf` Dramatiq actor)
+    and returns immediately (202) with the Estimate's now-`pending` header —
+    `EstimateResponse` (resolved judgment call #6), not
+    `EstimateDetailResponse`/`EstimateCalculationResponse`, since this route
+    doesn't touch line items, matching `create_estimate`'s own "minimal
+    sufficient schema per route" precedent (Task 2.10).
+
+    No `total IS NULL` guard (resolved judgment call #7) and no
+    `is_snapshotted` guard (resolved judgment call #8): neither is asked for
+    by this task's own spec, and both are real, reachable, already-supported
+    states this route has no reason to reject — an un-calculated Estimate
+    renders "Not yet calculated" placeholders (Task 2.13's
+    `render_estimate_html`), and a snapshotted/approved Estimate is exactly
+    the state where a client-facing PDF is most likely to actually be
+    needed (a signed, final proposal document). The `is_snapshotted` guard
+    that DOES exist on `replace_estimate_line_items`/
+    `calculate_estimate_totals` above exists specifically because those
+    routes MUTATE line items/totals, which this one does not.
+
+    `estimate.pdf_status` is set to `'pending'` via the normal
+    request-scoped session (Inherited Invariant #4 — no explicit commit
+    here; `get_current_user` commits `current.session` once, after this
+    handler returns) before the job is enqueued. `current.user.id` (the
+    admin/PM making this call) is captured now and passed through the
+    Dramatiq message payload as `requesting_user_id` — the actor needs a
+    real, non-optional user id to call `set_current_user` inside its own,
+    separately-managed session (Inherited Invariant #3's worker exception;
+    see `app/tasks/estimate_pdf.py`'s module docstring for the full
+    rationale, including why this is NOT used to write an audit_log entry).
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    estimate.pdf_status = "pending"
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    generate_estimate_pdf.send(str(estimate.id), str(current.user.id))
+
+    return EstimateResponse.model_validate(estimate)

@@ -15,17 +15,32 @@ GTK3/Pango/Cairo runtime dependency — see the substitution comment in
 `app/services/pdf_export.py` for the full rationale). These tests check the
 same `%PDF-` magic-byte output contract the plan doc's own test list
 specifies, regardless of which library produced it.
+
+Task 2.15 extends this file with the async job wiring's own tests (below the
+original rendering-only tests above): `POST /estimates/{id}/export` (real
+HTTP, via the `client` fixture, same discipline as `test_estimates.py`), and
+the `generate_estimate_pdf` Dramatiq actor itself, called DIRECTLY as a
+plain async function (bypassing the broker/worker round-trip entirely, per
+this task's own test-design instruction) against real, persisted DB rows —
+unlike the pure-function tests above, the actor does real DB reads/writes
+and a real filesystem write, so it needs real fixture data, not bare
+in-memory ORM instances.
 """
 
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
+import pytest
+
+from app.config import settings
 from app.models import Estimate, EstimateLineItem, MarkupProfile
 from app.services.pdf_export import (
     EstimateLineItemDisplay,
     render_estimate_html,
     render_estimate_pdf,
 )
+from app.tasks.estimate_pdf import _generate_estimate_pdf
 
 
 def _markup_profile(**overrides):
@@ -346,3 +361,254 @@ def test_render_estimate_html_autoescapes_untrusted_string_fields():
     assert "&lt;script&gt;alert(&#39;cat&#39;)&lt;/script&gt;" in html
     assert "&lt;img src=x onerror=alert(&#39;name&#39;)&gt;" in html
     assert "&lt;b&gt;Acme&lt;/b&gt; &amp; &#34;Sons&#34;" in html
+
+
+# =============================================================================
+# Task 2.15: async job wiring — POST /estimates/{id}/export and the
+# generate_estimate_pdf actor
+# =============================================================================
+
+
+async def _register_and_login(client, company_name, email):
+    register = await client.post(
+        "/auth/register",
+        json={
+            "company_name": company_name,
+            "admin_full_name": "Test Admin",
+            "admin_email": email,
+            "admin_password": "supersecret123",
+        },
+    )
+    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    body = login.json()
+    return {
+        "company_id": register.json()["company_id"],
+        "user_id": register.json()["user_id"],
+        "headers": {"Authorization": f"Bearer {body['access_token']}"},
+    }
+
+
+def _project_payload(**overrides):
+    payload = {
+        "name": "Kitchen Remodel Project",
+        "site_address": "123 Main St",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_project(client, headers, **overrides):
+    response = await client.post("/projects", json=_project_payload(**overrides), headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _markup_profile_payload(**overrides):
+    payload = {
+        "name": "Standard Markup",
+        "overhead_pct": "10.00",
+        "profit_pct": "15.00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_markup_profile(client, headers, **overrides):
+    response = await client.post(
+        "/markup-profiles", json=_markup_profile_payload(**overrides), headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _catalog_item_payload(**overrides):
+    payload = {
+        "category": "framing",
+        "name": "2x4 Lumber",
+        "unit": "each",
+        "unit_rate": "45.00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_catalog_item(client, headers, **overrides):
+    response = await client.post(
+        "/catalogs/items", json=_catalog_item_payload(**overrides), headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _create_estimate_with_line_item(client, admin):
+    """Builds a real, persisted Estimate with one line item entirely through
+    the API (`POST /estimates`, `PUT /estimates/{id}/lines`) — the actor
+    tests below need real DB rows the actor's own fresh session can read
+    back, not in-memory-only ORM instances (unlike the pure-function tests
+    above this section)."""
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert created.status_code == 201, created.text
+    estimate_id = created.json()["id"]
+
+    lines = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "10.00"}]},
+        headers=admin["headers"],
+    )
+    assert lines.status_code == 200, lines.text
+
+    return estimate_id
+
+
+# -----------------------------------------------------------------------
+# POST /estimates/{id}/export
+# -----------------------------------------------------------------------
+
+
+async def test_export_estimate_pdf_returns_202_and_sets_pdf_status_pending(client):
+    admin = await _register_and_login(client, "Acme Construction", "pdf-export-admin@acme.test")
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    response = await client.post(f"/estimates/{estimate_id}/export", headers=admin["headers"])
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["id"] == estimate_id
+    assert body["pdf_status"] == "pending"
+
+    # The pending status is durably persisted, not just reflected in the
+    # response body — a subsequent GET must show the same thing.
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.status_code == 200
+    assert get_response.json()["pdf_status"] == "pending"
+
+
+async def test_export_estimate_pdf_as_project_manager(client):
+    admin = await _register_and_login(client, "Acme Construction", "pdf-export-pm-admin@acme.test")
+    invite = await client.post(
+        "/invitations",
+        json={"email": "pdf-export-pm@acme.test", "role": "project_manager"},
+        headers=admin["headers"],
+    )
+    assert invite.status_code == 201, invite.text
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "PM User", "password": "anothersecret123"},
+    )
+    assert accept.status_code == 200, accept.text
+    login = await client.post(
+        "/auth/login", json={"email": "pdf-export-pm@acme.test", "password": "anothersecret123"}
+    )
+    pm_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    response = await client.post(f"/estimates/{estimate_id}/export", headers=pm_headers)
+    assert response.status_code == 202, response.text
+
+
+async def test_export_estimate_pdf_forbidden_for_field_crew(client):
+    admin = await _register_and_login(client, "Acme Construction", "pdf-export-fc-admin@acme.test")
+    invite = await client.post(
+        "/invitations",
+        json={"email": "pdf-export-fc@acme.test", "role": "field_crew"},
+        headers=admin["headers"],
+    )
+    assert invite.status_code == 201, invite.text
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "Field Crew User", "password": "anothersecret123"},
+    )
+    assert accept.status_code == 200, accept.text
+    login = await client.post(
+        "/auth/login", json={"email": "pdf-export-fc@acme.test", "password": "anothersecret123"}
+    )
+    fc_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    response = await client.post(f"/estimates/{estimate_id}/export", headers=fc_headers)
+    assert response.status_code == 403
+
+
+async def test_export_estimate_pdf_not_found_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "pdf-export-404-admin@acme.test")
+
+    response = await client.post(
+        "/estimates/00000000-0000-0000-0000-000000000000/export", headers=admin["headers"]
+    )
+    assert response.status_code == 404
+
+
+# -----------------------------------------------------------------------
+# generate_estimate_pdf actor — called directly, bypassing the Dramatiq
+# broker/worker round-trip entirely (this task's own test-design
+# instruction)
+# -----------------------------------------------------------------------
+
+
+async def test_generate_estimate_pdf_actor_writes_file_and_marks_ready(client):
+    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-admin@acme.test")
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    await _generate_estimate_pdf(estimate_id, admin["user_id"])
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.status_code == 200
+    body = get_response.json()
+    assert body["pdf_status"] == "ready"
+    assert body["pdf_storage_path"] == f"{admin['company_id']}/estimates/{estimate_id}.pdf"
+    assert body["pdf_generated_at"] is not None
+
+    absolute_path = Path(settings.storage_root) / admin["company_id"] / "estimates" / f"{estimate_id}.pdf"
+    assert absolute_path.exists()
+    assert absolute_path.read_bytes().startswith(b"%PDF-")
+
+
+async def test_generate_estimate_pdf_actor_overwrites_on_reexport(client):
+    """Design decision #5: re-exporting produces a new PDF from current
+    state, always overwriting the previous file — never `FileExistsError`
+    on a second export of the same estimate."""
+    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-reexport-admin@acme.test")
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    await _generate_estimate_pdf(estimate_id, admin["user_id"])
+    await _generate_estimate_pdf(estimate_id, admin["user_id"])
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.status_code == 200
+    assert get_response.json()["pdf_status"] == "ready"
+
+
+async def test_generate_estimate_pdf_actor_marks_failed_on_render_error(client, monkeypatch):
+    """Forced-failure scenario: `render_estimate_pdf` raising must land
+    `pdf_status` on `'failed'`, never leave it stuck on `'pending'`, and the
+    original exception must still propagate (so Dramatiq's own retry/
+    dead-letter handling still applies)."""
+    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-fail-admin@acme.test")
+    estimate_id = await _create_estimate_with_line_item(client, admin)
+
+    export = await client.post(f"/estimates/{estimate_id}/export", headers=admin["headers"])
+    assert export.status_code == 202, export.text
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("forced rendering failure")
+
+    monkeypatch.setattr("app.tasks.estimate_pdf.render_estimate_pdf", _raise)
+
+    with pytest.raises(RuntimeError, match="forced rendering failure"):
+        await _generate_estimate_pdf(estimate_id, admin["user_id"])
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.status_code == 200
+    body = get_response.json()
+    assert body["pdf_status"] == "failed"
+    assert body["pdf_storage_path"] is None
