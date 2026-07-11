@@ -17,10 +17,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, select
 
 from app.core.deps import CurrentUser, require_role
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, Project
+from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, MarkupProfile, Project
 from app.models.estimate import VALID_STATUSES
 from app.schemas.estimate import (
+    CategorySubtotal,
+    EstimateCalculationResponse,
     EstimateCreateRequest,
     EstimateDetailResponse,
     EstimateListResponse,
@@ -29,6 +32,7 @@ from app.schemas.estimate import (
 from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
+from app.services.estimate_calculation import calculate_estimate
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -76,10 +80,10 @@ _LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE = ("estimating", "qualified", "won")
 # INSERT — guarantees the value this handler returns in its own response
 # (built from the in-memory ORM object, never re-queried after flush)
 # always matches exactly what a subsequent `GET /estimates/{id}` would
-# read back from the DB. ROUND_HALF_UP (ties away from zero) matches
-# PostgreSQL's own NUMERIC rounding behavior for positive amounts, which
-# every quantity/rate in this domain is.
-_CENTS = Decimal("0.01")
+# read back from the DB. `CENTS` lives in `app/core/money.py`, not here —
+# `app/services/estimate_calculation.py` (Task 2.12) needs this same
+# constant, and a service importing it from a router would invert this
+# codebase's established dependency direction.
 
 
 async def _get_estimate_or_404(current: CurrentUser, estimate_id: uuid.UUID) -> Estimate:
@@ -112,13 +116,18 @@ async def create_estimate(
     along the pipeline to carry an Estimate at all
     (`_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE` above).
 
-    `markup_profile_id` is NOT validated against a real, visible
-    MarkupProfile here — deliberately out of this task's scope (see the
-    task's own resolved judgment calls): only `project_id`/`lead_id` get
-    explicit rejection tests in Task 2.10's own test list. An
-    invalid/cross-tenant `markup_profile_id` that somehow reached this far
-    would surface as a DB-level IntegrityError on flush rather than a clean
-    422/404 — left for a future task to tighten.
+    `markup_profile_id` IS validated against a real, visible MarkupProfile
+    here (added during Task 2.12's review, closing a gap Task 2.10 had
+    deliberately left open): the FK constraint alone only checks row
+    EXISTENCE, not RLS visibility, so a well-formed cross-tenant
+    `markup_profile_id` was previously accepted here with 201 and only
+    surfaced as an unhandled `NoResultFound` 500 the first time
+    `POST /estimates/{id}/calculate` (Task 2.12) tried to look the profile
+    up — a real, ordinary-API-reachable crash, not a theoretical edge case.
+    Closing it at creation time, the same "doesn't exist or isn't visible
+    to you" 404 every other referenced-id check in this route already
+    uses, is more correct than only catching the symptom later in
+    `calculate_estimate`.
     """
     # Both absent, or both present, are equally rejected — the rule is
     # "exactly one," not "at least one." Checked before either id is
@@ -157,6 +166,12 @@ async def create_estimate(
                 f"Lead must be in one of {_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE} status "
                 f"to create an Estimate against it, got '{lead.status}'",
             )
+
+    markup_result = await current.session.execute(
+        select(MarkupProfile).where(MarkupProfile.id == payload.markup_profile_id)
+    )
+    if markup_result.scalar_one_or_none() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
 
     estimate = Estimate(
         company_id=current.company_id,
@@ -352,10 +367,10 @@ async def replace_estimate_line_items(
     new_line_items: list[EstimateLineItem] = []
     for cost_catalog_item_id, quantity, catalog_item in resolved_lines:
         unit_rate_snapshot = catalog_item.unit_rate
-        # See `_CENTS`'s own module-level comment above for why this
+        # See `CENTS`'s own module-level comment above for why this
         # quantize() is required, not optional: unquantized Decimal
         # multiplication would return more than 2 decimal places.
-        line_total = (quantity * unit_rate_snapshot).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        line_total = (quantity * unit_rate_snapshot).quantize(CENTS, rounding=ROUND_HALF_UP)
         line_item = EstimateLineItem(
             estimate_id=estimate.id,
             company_id=current.company_id,
@@ -374,4 +389,68 @@ async def replace_estimate_line_items(
     return EstimateDetailResponse(
         **EstimateResponse.model_validate(estimate).model_dump(),
         line_items=[EstimateLineItemResponse.model_validate(li) for li in new_line_items],
+    )
+
+
+@router.post("/{estimate_id}/calculate", response_model=EstimateCalculationResponse)
+async def calculate_estimate_totals(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> EstimateCalculationResponse:
+    """Task 2.12: US-4.3's "I can trigger a recalculation" — runs
+    `app/services/estimate_calculation.py`'s fixed-order calculation engine
+    (docs/03-technical-architecture.md Section 6) against this Estimate's
+    CURRENT line items and MarkupProfile, then persists the result as the
+    authoritative `estimate.subtotal`/`estimate.total`. "Client-submitted
+    totals are always ignored in favor of a server-side recompute" (Section
+    6's own closing line) — this route takes no request body at all; there
+    is nothing for a client to submit here, the recompute is unconditional
+    and always server-derived.
+
+    **409 if `estimate.is_snapshotted`** — identical guard, identical
+    rationale, to `replace_estimate_line_items` above (design decision #4):
+    an approved/snapshotted Estimate's totals are as immutable as its line
+    items, and recomputing them would silently contradict the very
+    snapshot that was taken. Checked, and raised, BEFORE
+    `calculate_estimate` is ever called — a 409 here guarantees
+    `estimate.subtotal`/`total` are left completely untouched, same "one
+    transaction, one outcome" discipline as Task 2.11's own guard.
+
+    Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
+    same header + line_items shape `GET /estimates/{id}` returns, plus this
+    route's own `category_breakdown` (resolved judgment call #5): the
+    caller gets to see the just-recomputed totals, the line items they were
+    computed from, and the category-level view in one response, without a
+    follow-up `GET`.
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.is_snapshotted:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is snapshotted and its totals can no longer be recalculated",
+        )
+
+    calculation = await calculate_estimate(current.session, estimate)
+
+    estimate.subtotal = calculation.subtotal
+    estimate.total = calculation.total
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    line_items_result = await current.session.execute(
+        select(EstimateLineItem)
+        .where(EstimateLineItem.estimate_id == estimate.id)
+        .order_by(EstimateLineItem.id.asc())
+    )
+    line_items = list(line_items_result.scalars().all())
+
+    return EstimateCalculationResponse(
+        **EstimateResponse.model_validate(estimate).model_dump(),
+        line_items=[EstimateLineItemResponse.model_validate(li) for li in line_items],
+        category_breakdown=[
+            CategorySubtotal(category=entry.category, subtotal=entry.subtotal)
+            for entry in calculation.category_breakdown
+        ],
     )

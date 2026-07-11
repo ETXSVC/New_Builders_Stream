@@ -373,6 +373,43 @@ async def test_create_estimate_invalid_lead_id_returns_404(client):
     assert response.status_code == 404
 
 
+async def test_create_estimate_invalid_markup_profile_id_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "badmarkup-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+
+    response = await client.post(
+        "/estimates",
+        json={
+            "project_id": project["id"],
+            "markup_profile_id": "00000000-0000-0000-0000-000000000000",
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 404
+
+
+async def test_create_estimate_cross_tenant_markup_profile_id_returns_404(client):
+    """Regression test added during Task 2.12's review: the FK constraint on
+    `estimates.markup_profile_id` alone only checks row EXISTENCE, not RLS
+    visibility, so a well-formed cross-tenant markup_profile_id was
+    previously accepted here with 201 and only surfaced as an unhandled
+    `NoResultFound` 500 the first time `POST /estimates/{id}/calculate`
+    tried to look the profile up. Confirms it now 404s at creation time
+    instead, the same "doesn't exist or isn't visible to you" pattern every
+    other referenced-id check in this route already uses."""
+    a = await _register_and_login(client, "Company A", "crossmarkup-a@acme.test")
+    b = await _register_and_login(client, "Company B", "crossmarkup-b@acme.test")
+    project = await _create_project(client, a["headers"])
+    markup = await _create_markup_profile(client, b["headers"])
+
+    response = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=a["headers"],
+    )
+    assert response.status_code == 404
+
+
 async def test_create_estimate_cross_tenant_project_id_returns_404(client):
     a = await _register_and_login(client, "Company A", "cross-proj-a@acme.test")
     b = await _register_and_login(client, "Company B", "cross-proj-b@acme.test")

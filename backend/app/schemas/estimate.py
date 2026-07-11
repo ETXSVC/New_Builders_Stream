@@ -112,3 +112,42 @@ class EstimateDetailResponse(EstimateResponse):
     """
 
     line_items: list[EstimateLineItemResponse]
+
+
+class CategorySubtotal(BaseModel):
+    """One entry of `EstimateCalculationResponse.category_breakdown` (Task
+    2.12) — the display/reporting-only grouping of an Estimate's line items
+    by their catalog item's `category`, per
+    docs/03-technical-architecture.md Section 6's calculation-order step 2.
+    Not backed by any DB column: `app/services/estimate_calculation.py`
+    computes this fresh on every `POST /estimates/{id}/calculate` call, it
+    is never persisted.
+    """
+
+    category: str
+    subtotal: Decimal
+
+
+class EstimateCalculationResponse(EstimateDetailResponse):
+    """`POST /estimates/{id}/calculate`-only shape (Task 2.12) — a superset
+    of `EstimateDetailResponse` adding `category_breakdown`, following the
+    exact same subclass-extension pattern `EstimateDetailResponse` itself
+    established over `EstimateResponse` above (Task 2.10): a new schema is
+    warranted here, rather than reusing `EstimateDetailResponse` directly,
+    because `category_breakdown` is genuinely new information specific to
+    this one route's response — the same reasoning that justified
+    `EstimateDetailResponse` not being reused for `POST`/list `GET` in Task
+    2.10 (each route gets exactly the response shape it needs, no more, no
+    less).
+
+    Extends `EstimateDetailResponse` (rather than duplicating `line_items`
+    plus every header field) for the same anti-drift reason
+    `EstimateDetailResponse` extends `EstimateResponse`: by the time this
+    route runs, `subtotal`/`total` are freshly recomputed and no longer
+    `None` (unlike a never-calculated Estimate), and the caller gets the
+    current line items in the same response, exactly like `GET
+    /estimates/{id}` already provides — this route just adds the category
+    view on top.
+    """
+
+    category_breakdown: list[CategorySubtotal]
