@@ -11,13 +11,14 @@ legal thing to do against the current DB state" (router).
 """
 
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import Estimate, EstimateLineItem, Lead, Project
+from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, Project
 from app.models.estimate import VALID_STATUSES
 from app.schemas.estimate import (
     EstimateCreateRequest,
@@ -25,8 +26,9 @@ from app.schemas.estimate import (
     EstimateListResponse,
     EstimateResponse,
 )
-from app.schemas.estimate_line_item import EstimateLineItemResponse
+from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
 from app.services.audit import write_audit_log
+from app.services.catalog_resolution import resolve_visible_catalog_items
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -62,6 +64,22 @@ _READ_ROLES = ("admin", "project_manager", "accountant", "client")
 # `contacted` are excluded because they haven't reached `estimating` yet at
 # all.
 _LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE = ("estimating", "qualified", "won")
+
+# `EstimateLineItem.line_total`'s column is `Numeric(12, 2)`
+# (app/models/estimate_line_item.py) — but `quantity * unit_rate_snapshot`
+# in exact Decimal arithmetic does NOT stay at 2 decimal places on its own:
+# Decimal multiplication's result scale is the SUM of its operands' scales
+# (e.g. Decimal("10.00") * Decimal("45.00") -> Decimal("450.0000"), 4
+# decimal places, not 2), even though both operands individually came from
+# 2-decimal-place currency columns/fields. Quantizing explicitly to 2
+# places here — rather than relying on Postgres to silently round on
+# INSERT — guarantees the value this handler returns in its own response
+# (built from the in-memory ORM object, never re-queried after flush)
+# always matches exactly what a subsequent `GET /estimates/{id}` would
+# read back from the DB. ROUND_HALF_UP (ties away from zero) matches
+# PostgreSQL's own NUMERIC rounding behavior for positive amounts, which
+# every quantity/rate in this domain is.
+_CENTS = Decimal("0.01")
 
 
 async def _get_estimate_or_404(current: CurrentUser, estimate_id: uuid.UUID) -> Estimate:
@@ -232,4 +250,128 @@ async def get_estimate(
     return EstimateDetailResponse(
         **EstimateResponse.model_validate(estimate).model_dump(),
         line_items=[EstimateLineItemResponse.model_validate(li) for li in line_items],
+    )
+
+
+@router.put("/{estimate_id}/lines", response_model=EstimateDetailResponse)
+async def replace_estimate_line_items(
+    estimate_id: uuid.UUID,
+    payload: EstimateLineItemsReplaceRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> EstimateDetailResponse:
+    """Task 2.11: US-4.3's "As a Project Manager, I can add/edit line items
+    with quantities" — a full batch replace (API spec's own wording), not a
+    partial patch/append: every existing `EstimateLineItem` row for this
+    Estimate is deleted and the request body's `items` are inserted fresh,
+    in the same request. There is no natural key to diff old vs. new line
+    items against beyond `cost_catalog_item_id` (and the API spec doesn't
+    forbid duplicate `cost_catalog_item_id` entries in one request), so
+    delete-then-insert is the simplest reading of "full replace" that avoids
+    inventing an unrequested dedup/merge rule.
+
+    **Validate everything before mutating anything**, same "one transaction,
+    one outcome" discipline `update_lead`'s status-transition check
+    established in `app/routers/leads.py`: this handler never calls
+    `session.commit()` itself (Inherited Invariant #4 — `get_current_user`
+    commits once after the handler returns), so as long as nothing below
+    raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
+    guarantees the eventual commit never happens at all and the estimate's
+    line items are left completely untouched. Two independent checks, both
+    performed before any DELETE/INSERT is issued:
+      1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
+         snapshotted Estimate's line items are immutable).
+      2. Every input line's `cost_catalog_item_id` must resolve via
+         `resolve_visible_catalog_items` -> 422 on the FIRST one that
+         doesn't. Resolved (not raw-table-queried) so the rate captured
+         below respects inheritance/override resolution — a PM building an
+         estimate against an item their branch has overridden must get the
+         override's rate, not the ancestor's original, same reasoning
+         `create_catalog_item_override` (`app/routers/catalogs.py`) already
+         applies to its own `parent_catalog_item_id` visibility check.
+         `resolve_visible_catalog_items` is called ONCE for the whole
+         request (not once per input line) and the result turned into an
+         id-keyed dict for lookup, same shape `create_catalog_item_override`
+         uses for its own single-call/membership-check pattern.
+
+    `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
+    this moment, never a live reference (schema doc Section 9's historical-
+    immutability rule, `EstimateLineItem.unit_rate_snapshot`'s own docstring
+    in `app/models/estimate_line_item.py`) — a later edit to the catalog
+    item must not retroactively change what this Estimate shows. `line_total
+    = quantity * unit_rate_snapshot` is plain `Decimal` arithmetic (both
+    operands are already `Decimal` — `EstimateLineItemInput.quantity` and
+    `CostCatalogItem.unit_rate` are both `Numeric` columns / `Decimal`
+    schema fields, never `float`), matching Inherited Invariant #9.
+
+    Does NOT recompute `estimate.subtotal`/`total` — that is `POST
+    /estimates/{id}/calculate`'s job (Task 2.12), a deliberately separate,
+    explicit step per US-4.3's own "I can trigger a recalculation" framing.
+
+    `EstimateLineItem.company_id` is set to `current.company_id` on every
+    new row, matching `create_estimate`'s own convention of always sourcing
+    `company_id` from the current user rather than the parent row (the two
+    are guaranteed equal here, since `_get_estimate_or_404` already
+    RLS-scoped `estimate` to the caller's own tenant, but `current.company_id`
+    is used for consistency with every other create path in this codebase).
+
+    Returns `EstimateDetailResponse` (Task 2.10's `GET /estimates/{id}`
+    shape) rather than a bespoke response — the frontend needs to see the
+    resulting line items immediately after a replace, and this schema
+    already exists precisely for "header + current line items in one
+    response."
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.is_snapshotted:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is snapshotted and its line items can no longer be modified",
+        )
+
+    resolved_items = await resolve_visible_catalog_items(current.session, current.company_id)
+    resolved_by_id: dict[uuid.UUID, CostCatalogItem] = {item.id: item for item in resolved_items}
+
+    resolved_lines: list[tuple[uuid.UUID, Decimal, CostCatalogItem]] = []
+    for line in payload.items:
+        catalog_item = resolved_by_id.get(line.cost_catalog_item_id)
+        if catalog_item is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"cost_catalog_item_id {line.cost_catalog_item_id} does not resolve to a "
+                "visible catalog item for this company",
+            )
+        resolved_lines.append((line.cost_catalog_item_id, line.quantity, catalog_item))
+
+    # Nothing above this point has touched estimate_line_items — both
+    # failure modes (409, 422) raise before either the DELETE or any INSERT
+    # is issued.
+    await current.session.execute(
+        delete(EstimateLineItem).where(EstimateLineItem.estimate_id == estimate.id)
+    )
+
+    new_line_items: list[EstimateLineItem] = []
+    for cost_catalog_item_id, quantity, catalog_item in resolved_lines:
+        unit_rate_snapshot = catalog_item.unit_rate
+        # See `_CENTS`'s own module-level comment above for why this
+        # quantize() is required, not optional: unquantized Decimal
+        # multiplication would return more than 2 decimal places.
+        line_total = (quantity * unit_rate_snapshot).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        line_item = EstimateLineItem(
+            estimate_id=estimate.id,
+            company_id=current.company_id,
+            cost_catalog_item_id=cost_catalog_item_id,
+            quantity=quantity,
+            unit_rate_snapshot=unit_rate_snapshot,
+            line_total=line_total,
+        )
+        current.session.add(line_item)
+        new_line_items.append(line_item)
+
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    return EstimateDetailResponse(
+        **EstimateResponse.model_validate(estimate).model_dump(),
+        line_items=[EstimateLineItemResponse.model_validate(li) for li in new_line_items],
     )

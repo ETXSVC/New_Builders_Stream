@@ -153,6 +153,22 @@ async def _set_estimate_status_directly(estimate_id, status_value):
         await conn.close()
 
 
+async def _set_estimate_snapshotted_directly(estimate_id):
+    """Same rationale as `_set_estimate_status_directly` above:
+    `is_snapshotted` only legitimately becomes `true` via Task 2.19's
+    real approval flow (`send-for-signature` / approve), which doesn't
+    exist yet at this point in the plan. `_set_estimate_status_directly`
+    as written only touches `status`, not `is_snapshotted`, so this is a
+    small variant for the one column that helper doesn't cover."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "UPDATE estimates SET is_snapshotted = true WHERE id = $1", estimate_id
+        )
+    finally:
+        await conn.close()
+
+
 async def _insert_line_item_directly(
     estimate_id, company_id, cost_catalog_item_id, *, quantity, unit_rate_snapshot
 ):
@@ -198,6 +214,41 @@ async def _create_catalog_item(client, headers, **overrides):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+async def _add_membership_directly(user_id, company_id, role):
+    """See `test_cost_catalog.py`'s module docstring for the full
+    chicken-and-egg explanation this same helper closes there: no route
+    lets an existing user be added to a company they didn't register or get
+    invited into, which this file needs to let one admin token act as
+    either a parent or child company via `X-Tenant-ID`."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) "
+            "VALUES ($1, $2, $3, now())",
+            company_id,
+            user_id,
+            role,
+        )
+    finally:
+        await conn.close()
+
+
+async def _create_child_with_membership(client, parent, name, role="admin"):
+    """Creates a real child branch via the actual API route, then grants the
+    parent admin membership in it directly, so the SAME admin token can act
+    as either company via `X-Tenant-ID` — identical to `test_cost_catalog.py`'s
+    helper of the same name."""
+    create = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": name},
+        headers=parent["headers"],
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+    await _add_membership_directly(parent["user_id"], child_id, role)
+    return child_id
 
 
 # =============================================================================
@@ -593,3 +644,452 @@ async def test_field_crew_cannot_get_estimate(client):
         f"/estimates/{created.json()['id']}", headers=field_crew["headers"]
     )
     assert response.status_code == 403
+
+
+# =============================================================================
+# PUT /estimates/{id}/lines — batch replace (Task 2.11)
+# =============================================================================
+
+
+async def test_replace_line_items_fresh_set(client):
+    admin = await _register_and_login(client, "Acme Construction", "replace-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "10.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == estimate_id
+    line_items = body["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["cost_catalog_item_id"] == catalog_item["id"]
+    assert line_items[0]["quantity"] == "10.00"
+    assert line_items[0]["unit_rate_snapshot"] == "45.00"
+    assert line_items[0]["line_total"] == "450.00"
+
+    # GET reflects the same replaced set.
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.status_code == 200
+    assert len(get_response.json()["line_items"]) == 1
+
+
+async def test_replace_line_items_as_project_manager(client):
+    admin = await _register_and_login(client, "Acme Construction", "replace-pm-admin@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "replace-pm@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "2.00"}]},
+        headers=pm["headers"],
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_non_admin_pm_roles_blocked_on_replace_line_items(client):
+    admin = await _register_and_login(client, "Acme Construction", "replace-blocked-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "replace-crew@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "replace-client@acme.test")
+    accountant = await _invite_and_login_as(client, admin, "accountant", "replace-acct@acme.test")
+
+    for actor in (field_crew, client_role, accountant):
+        response = await client.put(
+            f"/estimates/{estimate_id}/lines",
+            json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "1.00"}]},
+            headers=actor["headers"],
+        )
+        assert response.status_code == 403
+
+
+async def test_replace_line_items_true_replace_clears_prior_lines(client):
+    """A true replace, not append: line items present before the call but
+    absent from the new request body must be gone afterward, and the final
+    set must be EXACTLY the new request body's items — proven by seeding
+    an out-of-band line item first (`_insert_line_item_directly`), then
+    replacing with a request body naming a DIFFERENT catalog item, and
+    asserting the old one is no longer present."""
+    admin = await _register_and_login(client, "Acme Construction", "truereplace-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    old_item = await _create_catalog_item(client, admin["headers"], name="Old Item")
+    new_item = await _create_catalog_item(client, admin["headers"], name="New Item")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    await _insert_line_item_directly(
+        estimate_id,
+        admin["company_id"],
+        old_item["id"],
+        quantity=Decimal("3.00"),
+        unit_rate_snapshot=Decimal("45.00"),
+    )
+    # Sanity check: the seeded line is actually there before the replace.
+    pre_get = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert len(pre_get.json()["line_items"]) == 1
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": new_item["id"], "quantity": "5.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    line_items = response.json()["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["cost_catalog_item_id"] == new_item["id"]
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    final_line_items = get_response.json()["line_items"]
+    assert len(final_line_items) == 1
+    assert final_line_items[0]["cost_catalog_item_id"] == new_item["id"]
+
+
+async def test_replace_line_items_snapshotted_estimate_returns_409_and_applies_nothing(client):
+    admin = await _register_and_login(client, "Acme Construction", "snapshot-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    existing_item = await _create_catalog_item(client, admin["headers"], name="Existing Item")
+    new_item = await _create_catalog_item(client, admin["headers"], name="Rejected Item")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    await _insert_line_item_directly(
+        estimate_id,
+        admin["company_id"],
+        existing_item["id"],
+        quantity=Decimal("2.00"),
+        unit_rate_snapshot=Decimal("45.00"),
+    )
+    await _set_estimate_snapshotted_directly(estimate_id)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": new_item["id"], "quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+
+    # Nothing was applied: the pre-existing line item is untouched, and the
+    # rejected new item never made it in.
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    line_items = get_response.json()["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["cost_catalog_item_id"] == existing_item["id"]
+    assert line_items[0]["quantity"] == "2.00"
+
+
+async def test_replace_line_items_invalid_catalog_item_id_returns_422(client):
+    admin = await _register_and_login(client, "Acme Construction", "invalidcat-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    valid_item = await _create_catalog_item(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {"cost_catalog_item_id": valid_item["id"], "quantity": "1.00"},
+                {
+                    "cost_catalog_item_id": "00000000-0000-0000-0000-000000000000",
+                    "quantity": "1.00",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422, response.text
+
+    # Nothing applied: not even the valid line preceding the invalid one.
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.json()["line_items"] == []
+
+
+async def test_replace_line_items_cross_tenant_catalog_item_returns_422(client):
+    """A `cost_catalog_item_id` belonging to a different, unrelated tenant
+    never appears in `resolve_visible_catalog_items`' output for this
+    company, so it is rejected the same way a nonexistent id is — 422, not
+    404 (this isn't a "does the estimate exist" check, it's "is this catalog
+    item usable in this estimate")."""
+    a = await _register_and_login(client, "Company A", "crosscat-a@acme.test")
+    b = await _register_and_login(client, "Company B", "crosscat-b@acme.test")
+    project = await _create_project(client, a["headers"])
+    markup = await _create_markup_profile(client, a["headers"])
+    other_tenant_item = await _create_catalog_item(client, b["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=a["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": other_tenant_item["id"], "quantity": "1.00"}]},
+        headers=a["headers"],
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_replace_line_items_uses_decimal_arithmetic_not_float(client):
+    """`quantity=Decimal("3")` * `unit_rate=Decimal("33.33")` — the exact
+    pair this task's own spec text recommends as a currency-scaled
+    precision probe (a multiplication analog of the classic `0.1 * 3 ==
+    0.30000000000000004` base-2-representation trap: a base-10 value with
+    a fractional part, multiplied by a small integer).
+
+    The mathematically correct, hand-computed `Decimal` product is exactly
+    `Decimal("99.99")` — `Decimal` multiplication's result scale is the SUM
+    of its operands' scales (0 + 2 = 2 decimal places here), computed
+    exactly, with no rounding needed. Asserting the API response's
+    `line_total` string is EXACTLY `"99.99"` (not `pytest.approx`, not
+    truncated/rounded to fewer digits) proves the server computed
+    `quantity * unit_rate_snapshot` using `Decimal` throughout.
+
+    Note: on this platform/build, `float(3) * float(Decimal("33.33"))`
+    happens to also land on exactly `99.99` (verified empirically, not
+    assumed) — this specific pair does not itself demonstrate float
+    drift the way `0.1 * 3` does for addition-shaped traps. It is kept
+    anyway because it is this task's own suggested concrete example, and
+    the assertion below is still a real, exact-value proof that Decimal
+    (not truncated/rounded float-shaped) arithmetic produced the result —
+    `pytest.approx` would silently accept several wrong-but-close values
+    this exact-string comparison does not.
+    """
+    assert Decimal("3") * Decimal("33.33") == Decimal("99.99")
+
+    admin = await _register_and_login(client, "Acme Construction", "decimal-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="33.33")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "3"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    line_items = response.json()["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["unit_rate_snapshot"] == "33.33"
+    assert line_items[0]["line_total"] == "99.99"
+
+
+async def test_replace_line_items_mixed_batch_preserves_pre_existing_lines_on_rejection(client):
+    """A stronger variant of `test_replace_line_items_invalid_catalog_item_id_returns_422`
+    above: that test starts from an EMPTY estimate, so it can only prove the
+    rejected batch itself never lands, not that a genuinely PRE-EXISTING
+    line item (from an earlier, successful `PUT`) survives untouched. Here,
+    a real line item is written via a first, successful `PUT`, then a
+    second `PUT` mixing one valid line with one invalid
+    `cost_catalog_item_id` must 422 and leave the first `PUT`'s line item
+    completely unchanged — proving "validate everything before mutating
+    anything" holds across the delete-then-insert boundary, not just within
+    a single failed request that never had anything to delete in the first
+    place."""
+    admin = await _register_and_login(client, "Acme Construction", "mixedbatch-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    surviving_item = await _create_catalog_item(client, admin["headers"], name="Surviving Item")
+    valid_item = await _create_catalog_item(client, admin["headers"], name="Valid Item")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    first_put = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": surviving_item["id"], "quantity": "4.00"}]},
+        headers=admin["headers"],
+    )
+    assert first_put.status_code == 200, first_put.text
+
+    second_put = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {"cost_catalog_item_id": valid_item["id"], "quantity": "1.00"},
+                {
+                    "cost_catalog_item_id": "00000000-0000-0000-0000-000000000000",
+                    "quantity": "1.00",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert second_put.status_code == 422, second_put.text
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    line_items = get_response.json()["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["cost_catalog_item_id"] == surviving_item["id"]
+    assert line_items[0]["quantity"] == "4.00"
+
+
+async def test_replace_line_items_uses_child_branch_override_rate(client):
+    """The "inheritance-aware rate resolution" this task is named for:
+    `resolve_visible_catalog_items` (Task 2.4), not a raw table lookup,
+    decides `unit_rate_snapshot`. A child branch overriding a parent's
+    catalog item must get ITS OWN override rate when building an estimate,
+    never the parent's original — and referencing the parent's original id
+    directly (bypassing the override) must be rejected, since that id no
+    longer appears in the child's own resolved view."""
+    parent = await _register_and_login(client, "Parent Co", "override-parent@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Branch")
+
+    parent_item = await _create_catalog_item(
+        client, parent["headers"], name="Shared Item", unit_rate="45.00"
+    )
+    override = await client.post(
+        f"/catalogs/items/{parent_item['id']}/override",
+        json=_catalog_item_payload(name="Shared Item", unit_rate="99.00"),
+        headers={**parent["headers"], "X-Tenant-ID": child_id},
+    )
+    assert override.status_code == 201, override.text
+    override_item = override.json()
+
+    project = await _create_project(client, {**parent["headers"], "X-Tenant-ID": child_id})
+    markup = await _create_markup_profile(client, {**parent["headers"], "X-Tenant-ID": child_id})
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers={**parent["headers"], "X-Tenant-ID": child_id},
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": override_item["id"], "quantity": "2.00"}]},
+        headers={**parent["headers"], "X-Tenant-ID": child_id},
+    )
+    assert response.status_code == 200, response.text
+    line_items = response.json()["line_items"]
+    assert line_items[0]["unit_rate_snapshot"] == "99.00"
+    assert line_items[0]["line_total"] == "198.00"
+
+    # The parent's original (pre-override) id no longer appears in the
+    # child's own resolved view — referencing it directly is rejected the
+    # same way a nonexistent id would be.
+    rejected = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": parent_item["id"], "quantity": "1.00"}]},
+        headers={**parent["headers"], "X-Tenant-ID": child_id},
+    )
+    assert rejected.status_code == 422, rejected.text
+
+
+async def test_replace_line_items_cross_tenant_estimate_returns_404(client):
+    """A genuinely cross-tenant `estimate_id` in the URL PATH (not a
+    cross-tenant `cost_catalog_item_id` inside the body, which
+    `test_replace_line_items_cross_tenant_catalog_item_returns_422` above
+    already covers as a distinct 422 case) must 404 via
+    `_get_estimate_or_404`'s ordinary RLS-backed existence check, the same
+    pattern `GET /estimates/{id}` uses."""
+    a = await _register_and_login(client, "Company A", "crossest-a@acme.test")
+    b = await _register_and_login(client, "Company B", "crossest-b@acme.test")
+    project = await _create_project(client, a["headers"])
+    markup = await _create_markup_profile(client, a["headers"])
+    catalog_item = await _create_catalog_item(client, b["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=a["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "1.00"}]},
+        headers=b["headers"],
+    )
+    assert response.status_code == 404, response.text
+
+
+async def test_replace_line_items_snapshotted_check_before_catalog_resolution(client):
+    """The 409 (is_snapshotted) check must fire even when the request body
+    ALSO contains an invalid cost_catalog_item_id — is_snapshotted is
+    checked first, before any catalog resolution happens at all."""
+    admin = await _register_and_login(client, "Acme Construction", "snapshotorder-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    await _set_estimate_snapshotted_directly(estimate_id)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "cost_catalog_item_id": "00000000-0000-0000-0000-000000000000",
+                    "quantity": "1.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+
+
+async def test_replace_line_items_nonexistent_estimate_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "replacemissing-admin@acme.test")
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+
+    response = await client.put(
+        "/estimates/00000000-0000-0000-0000-000000000000/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 404
