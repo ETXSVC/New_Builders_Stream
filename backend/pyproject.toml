@@ -33,6 +33,11 @@ dependencies = [
     # CSS), acceptable for this task's explicitly simple, no-logo,
     # no-custom-styling layout requirement.
     "xhtml2pdf>=0.2.17,<0.3",
+    # Task 2.14: the first real async task queue in this codebase (Phase 1's
+    # design decision #2 deliberately deferred this — LEAD_WON's
+    # single in-process, same-transaction consumer didn't need one). Pure
+    # Python, no native dependencies (confirmed by installing it).
+    "dramatiq[redis]>=2.2,<3.0",
 ]
 
 [project.optional-dependencies]
