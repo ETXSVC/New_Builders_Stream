@@ -4,7 +4,17 @@ from fastapi.responses import JSONResponse
 from app.core.event_handlers import register_event_handlers
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
-from app.routers import auth, catalogs, companies, estimates, invitations, leads, projects, tasks
+from app.routers import (
+    auth,
+    catalogs,
+    companies,
+    esignatures,
+    estimates,
+    invitations,
+    leads,
+    projects,
+    tasks,
+)
 
 app = FastAPI(title="Builders Stream API", version="0.1.0")
 app.add_middleware(TenantMiddleware)
@@ -16,6 +26,7 @@ app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(catalogs.router)
 app.include_router(estimates.router)
+app.include_router(esignatures.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called

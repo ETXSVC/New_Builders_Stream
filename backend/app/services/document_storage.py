@@ -220,3 +220,55 @@ def write_estimate_pdf_file(*, company_id: uuid.UUID, estimate_id: uuid.UUID, co
     absolute_path.write_bytes(content)
 
     return relative_path
+
+
+def write_esignature_artifact_file(*, company_id: uuid.UUID, esignature_id: uuid.UUID, content: bytes) -> str:
+    """Writes a captured e-signature artifact to
+    `{settings.storage_root}/{company_id}/esignatures/{esignature_id}.png`
+    and returns the RELATIVE storage_path
+    (`{company_id}/esignatures/{esignature_id}.png`, matching
+    `relative_document_path`'s "always relative to storage_root, forward
+    slashes" convention) to persist on `Esignature.signature_artifact_path`
+    (Task 2.18).
+
+    `.png` is a deliberate, fixed extension choice for this MVP, not an
+    oversight: `capture_esignature`'s own signature (Task 2.18's spec) takes
+    `document_type`, not an extension parameter, and
+    `docs/04-database-schema.md` Section 6's inline comment on
+    `signature_artifact_path` calls it a "rendered signature image/hash" —
+    PNG is the natural default for "signature image." If a future need
+    arises for a different artifact format, `capture_esignature` and this
+    function would both need an explicit extension parameter added to their
+    signatures; that's out of scope here since neither of this service's two
+    future callers (Estimate approval, Task 2.19; Change Order approval,
+    Task 2.22) are built yet to demand otherwise.
+
+    Mirrors `write_estimate_pdf_file`'s general shape (`Path(settings.storage_root)
+    / ...`, `.parent.mkdir(parents=True, exist_ok=True)`), but differs from it
+    in the opposite direction from how `write_estimate_pdf_file` itself differs
+    from `write_document_file`:
+
+    1. **Exclusive-create (`"xb"` mode), not always-overwrite.** Unlike an
+       Estimate PDF (one current PDF per estimate, always replaced on
+       re-export — see `write_estimate_pdf_file`'s own docstring), an
+       `Esignature` row is immutable from the moment it's created (migration
+       0006's `REVOKE UPDATE, DELETE ON esignatures FROM app_user`, design
+       decision #6) and its filename is derived from the row's own newly
+       generated id, not a stable parent id that could legitimately be
+       re-targeted. There is therefore no legitimate scenario where this
+       path is ever written to twice — a second attempt would mean either a
+       UUID collision (practically impossible) or a caller bug reusing an
+       id, and `"xb"` makes that fail loudly (`FileExistsError`) rather than
+       silently overwriting a legally retained signature artifact.
+    2. **No `validate_file_name()` call**, for the same reason
+       `write_estimate_pdf_file` skips it: the filename here (`{esignature_id}.png`)
+       is fully system-generated from a UUID, never user input.
+    """
+    relative_path = f"{company_id}/esignatures/{esignature_id}.png"
+    absolute_path = Path(settings.storage_root) / str(company_id) / "esignatures" / f"{esignature_id}.png"
+
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    with absolute_path.open("xb") as fh:
+        fh.write(content)
+
+    return relative_path
