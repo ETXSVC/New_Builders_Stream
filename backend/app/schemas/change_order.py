@@ -57,3 +57,21 @@ class ChangeOrderListResponse(BaseModel):
 
     items: list[ChangeOrderResponse]
     next_cursor: str | None = None
+
+
+class ChangeOrderRejectRequest(BaseModel):
+    """Body for `POST /change-orders/{id}/reject` (Task 2.22) — the exact
+    same shape as `EstimateRejectRequest` (`app/schemas/estimate.py`, Task
+    2.19): `reason` is the ONE required field, since a rejection with no
+    stated reason isn't what US-4.5's "reject it with a reason" (the same
+    story this router's own approve/reject flow reuses for Change Orders)
+    asks for. Plain `application/json`, unlike `approve`'s
+    `multipart/form-data` body — rejection carries no binary signature
+    artifact to submit here.
+
+    No length cap on `reason`, matching `EstimateRejectRequest`'s own
+    "free-text, no cap" convention — this is audit-log context, not a
+    bounded VARCHAR column.
+    """
+
+    reason: str
