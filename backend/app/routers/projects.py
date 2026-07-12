@@ -279,7 +279,20 @@ async def update_project_status(
     is admin/project_manager only), so the field_crew-scoping half of that
     helper is inert here — it's reused purely to avoid duplicating the
     existence/tenant-404 check, not because field_crew's assigned-only
-    visibility is relevant to this route."""
+    visibility is relevant to this route.
+
+    The audit log entry below uses `company_id=project.company_id`, not
+    `current.company_id` — same rationale as `upload_document`'s/
+    `create_daily_log`'s own fix (this router, above): a parent company's
+    session can legitimately transition a descendant branch's Project
+    without switching `X-Tenant-ID` first (`_get_project_or_404` already
+    makes the descendant's Project reachable via RLS's
+    `get_all_descendant_ids()` grant). Using `current.company_id` here
+    would record the `project.status_changed` audit entry under the
+    PARENT's company instead of the Project's own, making it invisible to
+    a session later scoped directly to the descendant branch auditing its
+    own Project's history.
+    """
     project = await _get_project_or_404(current, project_id)
 
     previous_status = project.status
@@ -347,7 +360,7 @@ async def update_project_status(
     if status_changing:
         await write_audit_log(
             current.session,
-            company_id=current.company_id,
+            company_id=project.company_id,
             actor_id=current.user.id,
             action="project.status_changed",
             entity_type="project",
@@ -381,6 +394,20 @@ async def upload_document(
     "not found" before "bad filename", never the other way around, so a
     cross-tenant probe can't be used to fish for filename-validation
     feedback.
+
+    `company_id=project.company_id`, not `current.company_id`: a parent
+    company's session can legitimately act on a descendant branch's Project
+    without switching `X-Tenant-ID` to that branch first (RLS's
+    `get_all_descendant_ids()` grant already makes the descendant's rows
+    visible/writable). Using `current.company_id` here would silently stamp
+    this Document — and the filesystem path it's written to, both derived
+    from the same `company_id` value below — with the PARENT's id instead
+    of the Project's own, producing a row whose `company_id` disagrees with
+    its own parent Project's `company_id`. A session later scoped directly
+    to the descendant branch (rather than the parent) would then find its
+    own Project's Document invisible under RLS. Fixed as part of a
+    dedicated post-Phase-2 audit of this exact pattern across every
+    nested-resource-creation route in this codebase.
     """
     project = await _get_project_or_404(current, project_id)
 
@@ -412,7 +439,7 @@ async def upload_document(
     content = await file.read()
     try:
         storage_path = write_document_file(
-            company_id=current.company_id,
+            company_id=project.company_id,
             project_id=project.id,
             version=version,
             file_name=file_name,
@@ -432,7 +459,7 @@ async def upload_document(
 
     document = Document(
         project_id=project.id,
-        company_id=current.company_id,
+        company_id=project.company_id,
         file_name=file_name,
         storage_path=storage_path,
         version=version,
@@ -562,12 +589,18 @@ async def create_daily_log(
     once submitted, matching US-3.3's acceptance criterion, the same
     two-layer discipline (no route + DB-level REVOKE) Task 1.7 established
     for communication_logs.
+
+    `company_id=project.company_id`, not `current.company_id` — see
+    `upload_document`'s docstring above for the full rationale (a parent
+    company's session acting on a descendant branch's Project, without
+    switching `X-Tenant-ID`, must not stamp this child row with the
+    parent's own company_id).
     """
     project = await _get_project_or_404(current, project_id)
 
     daily_log = DailyLog(
         project_id=project.id,
-        company_id=current.company_id,
+        company_id=project.company_id,
         author_id=current.user.id,
         log_date=payload.log_date,
         weather=payload.weather,

@@ -656,6 +656,88 @@ async def test_rls_policy_itself_blocks_cross_tenant_estimate_visibility(client)
             await owner_conn.close()
 
 
+# --- Post-Phase-2 gap closure: `markup_profiles` RLS-disable/re-enable proof -
+#
+# Task 2.6's own plan text assumed this proof already existed for
+# `markup_profiles` ("everything else in this phase shares the ordinary
+# Phase 1-style policy shape and doesn't need a second deep proof") — that
+# assumption was checked directly (grepped every test file in this codebase
+# for `DISABLE ROW LEVEL SECURITY` combined with `markup_profiles`) during a
+# later review and found to be false: no such proof exists anywhere.
+# `test_markup_profiles.py::test_list_markup_profiles_is_tenant_scoped` only
+# proves APPLICATION-layer scoping (the router's own query behaves
+# correctly) — it says nothing about whether the underlying RLS POLICY
+# itself, independent of any app-layer filtering, is what actually blocks
+# cross-tenant access. Closes that gap here, mirroring
+# `test_rls_policy_itself_blocks_cross_tenant_estimate_visibility` immediately
+# above exactly (`markup_profiles` shares the identical plain,
+# non-inherited `get_all_descendant_ids()`-only `tenant_isolation` policy
+# shape — migration 0005's own module docstring confirms this).
+
+
+async def test_rls_policy_itself_blocks_cross_tenant_markup_profile_visibility(client):
+    """Connects as app_user directly (bypassing the FastAPI app, and
+    therefore bypassing `list_markup_profiles`'s own RLS-backed query
+    entirely) to prove the POLICY itself — not application-layer
+    filtering — blocks a genuinely unrelated tenant from seeing another
+    tenant's markup profile row. Then disables RLS as the table owner and
+    confirms the identical query starts returning the row, showing the
+    policy, not luck, was responsible. Then ALWAYS restores RLS in a
+    finally, even if an assertion above fails partway through, so this test
+    can never leave the database in an insecure state for any test that
+    runs after it — same two-level try/finally discipline as every other
+    RLS-disable/re-enable proof in this codebase."""
+    a = await _register_and_login(client, "Company A", "rls-markup-a@acme.test")
+    b = await _register_and_login(client, "Company B", "rls-markup-b@acme.test")
+    markup_b = await _create_markup_profile(client, b["headers"])
+    markup_b_id = markup_b["id"]
+
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
+    try:
+        # set_config(), not `SET app.current_tenant = $1` — see
+        # set_current_tenant's docstring in app/db.py (Task 3) for why a
+        # bound parameter there is a syntax error.
+        await app_conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+        )
+        visible_as_a = await app_conn.fetchrow(
+            "SELECT id FROM markup_profiles WHERE id = $1", markup_b_id
+        )
+        assert visible_as_a is None, (
+            "RLS should block Company A's session from seeing Company B's "
+            "markup profile"
+        )
+    finally:
+        await app_conn.close()
+
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute("ALTER TABLE markup_profiles DISABLE ROW LEVEL SECURITY")
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
+        try:
+            await app_conn2.execute(
+                "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+            )
+            visible_with_rls_off = await app_conn2.fetchrow(
+                "SELECT id FROM markup_profiles WHERE id = $1", markup_b_id
+            )
+            assert visible_with_rls_off is not None, (
+                "Sanity check failed: Company B's markup profile row should "
+                "exist and be visible once RLS is off — if this fails, the "
+                "row itself is missing, which means the test setup (not the "
+                "policy) is broken."
+            )
+        finally:
+            await app_conn2.close()
+    finally:
+        # ALWAYS restore RLS even if the assertion above fails — see this
+        # test's own docstring for why this is a separate try/finally.
+        try:
+            await owner_conn.execute("ALTER TABLE markup_profiles ENABLE ROW LEVEL SECURITY")
+        finally:
+            await owner_conn.close()
+
+
 # --- Task 2.15 review gap closure: POST /estimates/{id}/export --------------
 
 
@@ -885,6 +967,21 @@ async def _approve_change_order(client, headers, change_order_id, **overrides):
         files={"signature_artifact": ("signature.png", b"fake-signature-bytes", "image/png")},
         headers=headers,
     )
+
+
+async def _fetch_audit_rows(company_id):
+    """Identical shape to test_change_orders.py's `_fetch_audit_rows` helper
+    of the same name — duplicated rather than imported, matching this
+    codebase's established each-test-file-owns-its-own-helper-set
+    convention."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        return await conn.fetch(
+            "SELECT action, entity_id, log_metadata FROM audit_log WHERE company_id = $1",
+            company_id,
+        )
+    finally:
+        await conn.close()
 
 
 # --- Header-spoofing, `esignatures` and `change_orders` ---------------------
@@ -1150,3 +1247,157 @@ async def test_sibling_branches_cannot_see_each_others_estimate_or_change_order(
         f"/change-orders/{change_order_a['id']}/send-for-signature", headers=headers_b
     )
     assert sfs_change_order_a_as_b.status_code == 404
+
+
+# --- `change_orders`: WRITE-side company_id sourcing --------------------------
+#
+# Post-Phase-2 fix: create_change_order (app/routers/change_orders.py) used to
+# stamp a new ChangeOrder with `current.company_id` (the ACTING session's own
+# company) rather than `project.company_id` (the Project it's actually being
+# created against). The scenario above only ever creates a ChangeOrder while
+# ALREADY acting as the owning branch (X-Tenant-ID switched to child_a/
+# child_b) — company_id happens to be correct there regardless of which of
+# the two sources is used, since they're identical in that case. This test
+# isolates the case where they genuinely diverge: the parent admin's own
+# default token (no X-Tenant-ID switch) creating a ChangeOrder against a REAL
+# child-branch Project, reachable purely via RLS's get_all_descendant_ids()
+# grant.
+
+
+async def test_creating_change_order_under_child_branch_project_uses_project_company_id(client):
+    parent = await _register_and_login(client, "Parent Co", "parent-co-write-admin@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+    await _advance_project_to_active(client, child_headers, project["id"])
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child — RLS alone makes the child's active Project visible/
+    # writable to this session.
+    change_order = await _create_change_order(client, parent["headers"], project["id"])
+    assert change_order["company_id"] == child_id, (
+        "ChangeOrder created against a child-branch Project must belong to "
+        "the PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {change_order['company_id']!r}, "
+        f"expected child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    list_response = await client.get(
+        f"/projects/{project['id']}/change-orders", headers=child_headers
+    )
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert change_order["id"] in ids
+
+
+async def test_approving_change_order_under_child_branch_uses_change_order_company_id(client):
+    """Same class of bug, in `approve_change_order`: `capture_esignature`'s
+    `company_id` and the `change_order.approved` audit log entry's
+    `company_id` both used to come from `current.company_id` rather than
+    `change_order.company_id`.
+
+    `require_role("client")` resolves `current.company_id`/`current.role`
+    from the caller's ACTIVE tenant context — either an explicit
+    `X-Tenant-ID` header, or (if absent) the JWT's own `default_company_id`
+    (`app/core/deps.py`'s `get_current_user`) — never from whichever
+    company the target row happens to belong to. So the only way for
+    `current.company_id` to genuinely diverge from `change_order.company_id`
+    WITHOUT an explicit `X-Tenant-ID` switch is for the client's own
+    DEFAULT company to be an ANCESTOR of the ChangeOrder's company: the
+    client here is invited as `"client"` into the PARENT (their default
+    company becomes the parent), while the ChangeOrder itself is created
+    under a CHILD branch of that same parent. RLS's
+    `get_all_descendant_ids()` grant then lets this parent-scoped client
+    see and act on the descendant's ChangeOrder, `require_role("client")`
+    passes (their role for their own default/parent company IS `"client"`),
+    and the bug becomes reachable: `current.company_id` resolves to the
+    PARENT, while `change_order.company_id` is the CHILD."""
+    parent = await _register_and_login(client, "Parent Co", "parent-co-approve-admin@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+    await _advance_project_to_active(client, child_headers, project["id"])
+    change_order = await _create_change_order(client, child_headers, project["id"])
+    assert change_order["company_id"] == child_id
+
+    # Invited into the PARENT (not the child) — this user's default company
+    # becomes the parent, with role="client" there.
+    client_role = await _invite_and_login_as(
+        client, parent, "client", "parent-co-approve-client@acme.test"
+    )
+
+    approve = await client.post(
+        f"/change-orders/{change_order['id']}/approve",
+        data={"signer_name": "Jane Client", "signer_email": "parent-co-approve-client@acme.test"},
+        files={"signature_artifact": ("signature.png", b"fake-signature-bytes", "image/png")},
+        headers=client_role["headers"],  # no X-Tenant-ID — resolves to the PARENT (default company)
+    )
+    assert approve.status_code == 200, approve.text
+    esignature_id = approve.json()["esignature_id"]
+    assert esignature_id is not None
+
+    esignature_response = await client.get(
+        f"/esignatures/{esignature_id}", headers=child_headers
+    )
+    assert esignature_response.status_code == 200, esignature_response.text
+    assert esignature_response.json()["company_id"] == child_id, (
+        "The Esignature captured by approving a child-branch ChangeOrder "
+        "must belong to the CHANGE ORDER's own company (the child), not "
+        f"the approving session's home company — got "
+        f"{esignature_response.json()['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    audit_rows = await _fetch_audit_rows(child_id)
+    matching = [row for row in audit_rows if row["action"] == "change_order.approved"]
+    assert len(matching) == 1, (
+        "The change_order.approved audit log entry must be recorded under "
+        "the CHANGE ORDER's own company (the child), not the approving "
+        "session's home company — found 0 matching rows scoped to the "
+        "child company"
+    )
+    assert str(matching[0]["entity_id"]) == change_order["id"]
+
+
+async def test_rejecting_change_order_under_child_branch_uses_change_order_company_id(client):
+    """Same class of bug as `approve_change_order` above, in
+    `reject_change_order`: the `change_order.rejected` audit log entry's
+    `company_id` used to come from `current.company_id` rather than
+    `change_order.company_id`. Same hierarchy construction as the approve
+    test above — the client is invited into the PARENT (their default
+    company), rejecting a CHILD branch's ChangeOrder without switching
+    `X-Tenant-ID`."""
+    parent = await _register_and_login(client, "Parent Co", "parent-co-reject-admin@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+    await _advance_project_to_active(client, child_headers, project["id"])
+    change_order = await _create_change_order(client, child_headers, project["id"])
+    assert change_order["company_id"] == child_id
+
+    client_role = await _invite_and_login_as(
+        client, parent, "client", "parent-co-reject-client@acme.test"
+    )
+
+    reject = await client.post(
+        f"/change-orders/{change_order['id']}/reject",
+        json={"reason": "Budget concerns"},
+        headers=client_role["headers"],  # no X-Tenant-ID — resolves to the PARENT (default company)
+    )
+    assert reject.status_code == 200, reject.text
+    assert reject.json()["status"] == "rejected"
+
+    audit_rows = await _fetch_audit_rows(child_id)
+    matching = [row for row in audit_rows if row["action"] == "change_order.rejected"]
+    assert len(matching) == 1, (
+        "The change_order.rejected audit log entry must be recorded under "
+        "the CHANGE ORDER's own company (the child), not the rejecting "
+        "session's home company — found 0 matching rows scoped to the "
+        "child company"
+    )
+    assert str(matching[0]["entity_id"]) == change_order["id"]
