@@ -1,10 +1,27 @@
 """Full-stack E2E regression check. Run against a live `docker compose up -d`
 stack — hits real HTTP ports, not the in-process ASGI transport the pytest
 suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
-Task 19 for the original checks, and
+Task 19 for the original checks,
 docs/superpowers/plans/2026-07-08-phase-1-crm-project-management.md,
 Task 19 for the Lead-to-Won-to-Project exit-criterion block added later
-in this file."""
+in this file, and docs/superpowers/plans/2026-07-09-phase-2-estimation-esignature.md,
+Task 2.25 for the Estimate-to-Approval exit-criterion block added after that.
+
+Task 2.25 note on the `worker` service: this script deliberately does NOT
+bring up the `worker` container (Dramatiq's PDF-export consumer) and does
+NOT exercise `POST /estimates/{id}/export` / poll for `pdf_status=='ready'`.
+This is an explicit, considered deferral, not a silent coverage gap: bringing
+up and reliably waiting on `worker` inside this smoke-test script has already
+proven disproportionately flaky on this host (a Docker Desktop crash during a
+`worker` image build was hit earlier in this same effort, and the `worker`'s
+Redis dependency was separately found to have been missing from CI entirely
+until a later fix). Task 2.15's own backend unit test
+(`backend/tests/test_estimate_pdf_export.py`) already exercises the full
+async PDF pipeline in-process, so that coverage isn't lost — it just lives
+there instead of here. `redis` IS still brought up for this script, though:
+the `backend` container imports `app.tasks.broker` at module scope (Task
+2.14), so the API process itself won't even start without a reachable Redis,
+even though nothing in this test enqueues a job."""
 
 import re
 import sys
@@ -226,6 +243,147 @@ def run() -> None:
         checks_passed.append(
             "client-role GET /projects/{id} returns sanitized dashboard shape "
             "over real HTTP with no lead_id key present"
+        )
+
+        # --- Phase 2 exit criterion: Estimate -> Calculate -> Approve, over real HTTP ---
+        # Fresh company so this block is self-contained and independent of the
+        # Phase 0/1 checks above.
+        company_d = register(client, "E2E Company D", f"admin-d-{run_id}@e2e.example")
+        token_d = login(client, f"admin-d-{run_id}@e2e.example")["access_token"]
+        headers_d = {"Authorization": f"Bearer {token_d}"}
+        checks_passed.append("company D (Estimate-to-Approval flow) registered and logged in over real HTTP")
+
+        estimate_project = client.post(
+            "/projects",
+            json={"name": f"E2E Estimate Project {run_id}", "site_address": "456 E2E Ave"},
+            headers=headers_d,
+        )
+        assert estimate_project.status_code == 201, estimate_project.text
+        estimate_project_id = estimate_project.json()["id"]
+        checks_passed.append("Project created over real HTTP for Estimate flow")
+
+        # Hand-verifiable numbers, chosen so the expected total requires no
+        # rounding-edge-case reasoning: subtotal = 2.00 * 100.00 = 200.00;
+        # total = round(200.00 * 1.10 * 1.15, 2) = 253.00 exactly.
+        markup_profile = client.post(
+            "/markup-profiles",
+            json={"name": f"E2E Markup {run_id}", "overhead_pct": "10.00", "profit_pct": "15.00"},
+            headers=headers_d,
+        )
+        assert markup_profile.status_code == 201, markup_profile.text
+        markup_profile_id = markup_profile.json()["id"]
+        checks_passed.append("Markup Profile created over real HTTP (overhead_pct=10.00, profit_pct=15.00)")
+
+        catalog_item = client.post(
+            "/catalogs/items",
+            json={
+                "category": "framing",
+                "name": f"E2E Lumber {run_id}",
+                "unit": "each",
+                "unit_rate": "100.00",
+            },
+            headers=headers_d,
+        )
+        assert catalog_item.status_code == 201, catalog_item.text
+        catalog_item_id = catalog_item.json()["id"]
+        checks_passed.append("Cost Catalog item created over real HTTP (unit_rate=100.00)")
+
+        estimate = client.post(
+            "/estimates",
+            json={"project_id": estimate_project_id, "markup_profile_id": markup_profile_id},
+            headers=headers_d,
+        )
+        assert estimate.status_code == 201, estimate.text
+        estimate_id = estimate.json()["id"]
+        checks_passed.append("Estimate created over real HTTP against the Project")
+
+        lines = client.put(
+            f"/estimates/{estimate_id}/lines",
+            json={"items": [{"cost_catalog_item_id": catalog_item_id, "quantity": "2.00"}]},
+            headers=headers_d,
+        )
+        assert lines.status_code == 200, lines.text
+        checks_passed.append("Estimate line items replaced over real HTTP (quantity=2.00)")
+
+        calculated = client.post(f"/estimates/{estimate_id}/calculate", headers=headers_d)
+        assert calculated.status_code == 200, calculated.text
+        calculated_body = calculated.json()
+        assert calculated_body["subtotal"] == "200.00", (
+            f"expected subtotal='200.00', got {calculated_body['subtotal']!r}"
+        )
+        assert calculated_body["total"] == "253.00", (
+            f"expected total='253.00' (200.00 * 1.10 * 1.15), got {calculated_body['total']!r}"
+        )
+        checks_passed.append(
+            "Estimate calculated over real HTTP with hand-verifiable subtotal=200.00, total=253.00"
+        )
+
+        sent = client.post(f"/estimates/{estimate_id}/send-for-signature", headers=headers_d)
+        assert sent.status_code == 200, sent.text
+        assert sent.json()["status"] == "sent", f"expected status='sent', got {sent.json()['status']!r}"
+        checks_passed.append("Estimate sent for signature over real HTTP (status=sent)")
+
+        client_email = f"client-est-{run_id}@e2e.example"
+        client_invite = client.post(
+            "/invitations", json={"email": client_email, "role": "client"}, headers=headers_d
+        )
+        assert client_invite.status_code == 201, client_invite.text
+        client_accept = client.post(
+            f"/invitations/{client_invite.json()['id']}/accept",
+            json={"full_name": "E2E Estimate Client", "password": PASSWORD},
+        )
+        assert client_accept.status_code == 200, client_accept.text
+        client_est_token = login(client, client_email)["access_token"]
+        client_est_headers = {"Authorization": f"Bearer {client_est_token}"}
+        checks_passed.append("client-role user invited and accepted over real HTTP for Estimate approval")
+
+        signer_name = "E2E Estimate Client"
+        signer_email = client_email
+        approved = client.post(
+            f"/estimates/{estimate_id}/approve",
+            data={"signer_name": signer_name, "signer_email": signer_email},
+            files={"signature_artifact": ("signature.png", b"fake-e2e-signature-bytes", "image/png")},
+            headers=client_est_headers,
+        )
+        assert approved.status_code == 200, approved.text
+        approved_body = approved.json()
+        assert approved_body["is_snapshotted"] is True, (
+            f"expected is_snapshotted=True after approval, got {approved_body['is_snapshotted']!r}"
+        )
+        assert approved_body["status"] == "approved", (
+            f"expected status='approved', got {approved_body['status']!r}"
+        )
+        assert approved_body["esignature_id"] is not None, "expected esignature_id to be set after approval"
+        # Still the exact same hand-verifiable values as after calculate() —
+        # proves is_snapshotted genuinely locks the totals, not just that the
+        # flag itself got set.
+        assert approved_body["subtotal"] == "200.00", (
+            f"expected subtotal still '200.00' after approval, got {approved_body['subtotal']!r}"
+        )
+        assert approved_body["total"] == "253.00", (
+            f"expected total still '253.00' after approval, got {approved_body['total']!r}"
+        )
+        checks_passed.append(
+            "Estimate approved by client-role user over real HTTP with a captured e-signature "
+            "(status=approved, is_snapshotted=True, totals unchanged from calculate())"
+        )
+
+        esignature_id = approved_body["esignature_id"]
+        esignature = client.get(f"/esignatures/{esignature_id}", headers=client_est_headers)
+        assert esignature.status_code == 200, esignature.text
+        esignature_body = esignature.json()
+        assert esignature_body["document_type"] == "estimate", (
+            f"expected document_type='estimate', got {esignature_body['document_type']!r}"
+        )
+        assert esignature_body["signer_name"] == signer_name, (
+            f"expected signer_name={signer_name!r}, got {esignature_body['signer_name']!r}"
+        )
+        assert esignature_body["signer_email"] == signer_email, (
+            f"expected signer_email={signer_email!r}, got {esignature_body['signer_email']!r}"
+        )
+        checks_passed.append(
+            "GET /esignatures/{id} over real HTTP returns the real, persisted signature record "
+            "matching what was submitted"
         )
 
     with httpx.Client(timeout=10.0) as client:

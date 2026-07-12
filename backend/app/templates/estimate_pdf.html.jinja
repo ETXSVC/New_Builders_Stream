@@ -1,0 +1,172 @@
+<!--
+  Task 2.13: Estimate PDF export template.
+
+  Rendered by app/services/pdf_export.py's render_estimate_html(), then
+  converted to PDF bytes by xhtml2pdf (substituted for the plan doc's named
+  WeasyPrint — see the substitution comment in backend/pyproject.toml's
+  `dependencies` list for the full rationale: WeasyPrint's GTK3/Pango/Cairo
+  native runtime has no simple pip-installable path on this project's
+  Windows dev machine).
+
+  xhtml2pdf's CSS support is a practical CSS 2.1-ish subset (built on
+  reportlab), not full modern CSS — no flexbox, no grid. This template
+  sticks to plain block elements and <table> for the line-items grid, which
+  is also simply the correct, most semantic HTML shape for tabular data
+  regardless of the renderer.
+
+  Deliberately NOT attempting a logo or custom color scheme: per the plan
+  doc's "Explicitly Out of Scope for Phase 2" section, "A logo-upload / true
+  visual branding system for PDF proposals... 'Branded PDF proposal' (US-4.4)
+  is satisfied with a clean, consistent, company-name-labeled template — no
+  `companies.logo_path` column exists in the schema doc, and adding one plus
+  an upload flow is its own small feature, not required by any Phase 2 user
+  story's acceptance criteria." This template is intentionally plain:
+  monochrome, table-based, no images.
+
+  All monetary/percentage strings arriving in this template's context are
+  ALREADY formatted Python strings (e.g. "$1,234.56", "10.00%") — no Jinja2
+  expression here does currency math or Decimal formatting itself, per this
+  task's own "keeps currency formatting logic in Python, testable" rule.
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 11pt;
+    color: #222222;
+  }
+  h1 {
+    font-size: 18pt;
+    margin-bottom: 0;
+  }
+  .subtitle {
+    font-size: 10pt;
+    color: #555555;
+    margin-top: 2px;
+    margin-bottom: 18px;
+  }
+  table.line-items {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 18px;
+  }
+  table.line-items th,
+  table.line-items td {
+    border: 1px solid #cccccc;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  table.line-items th {
+    background-color: #eeeeee;
+  }
+  td.numeric,
+  th.numeric {
+    text-align: right;
+  }
+  table.category-breakdown {
+    width: 60%;
+    border-collapse: collapse;
+    margin-bottom: 18px;
+  }
+  table.category-breakdown td {
+    padding: 4px 8px;
+  }
+  table.category-breakdown td.numeric {
+    text-align: right;
+  }
+  table.summary {
+    width: 60%;
+    border-collapse: collapse;
+  }
+  table.summary td {
+    padding: 4px 8px;
+  }
+  table.summary td.numeric {
+    text-align: right;
+  }
+  table.summary tr.total td {
+    border-top: 2px solid #222222;
+    font-weight: bold;
+    font-size: 13pt;
+  }
+  .empty-note {
+    color: #777777;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+  <h1>{{ company_name }}</h1>
+  <div class="subtitle">Estimate Proposal</div>
+
+  <h2>Line Items</h2>
+  {% if line_items %}
+  <table class="line-items">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Item</th>
+        <th class="numeric">Quantity</th>
+        <th class="numeric">Unit Rate</th>
+        <th class="numeric">Line Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in line_items %}
+      <tr>
+        <td>{{ row.category }}</td>
+        <td>{{ row.name }}</td>
+        <td class="numeric">{{ row.quantity_display }}</td>
+        <td class="numeric">{{ row.unit_rate_display }}</td>
+        <td class="numeric">{{ row.line_total_display }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-note">No line items have been added to this estimate yet.</p>
+  {% endif %}
+
+  <h2>Category Subtotals</h2>
+  {% if category_breakdown %}
+  <table class="category-breakdown">
+    {% for entry in category_breakdown %}
+    <tr>
+      <td>{{ entry.category }}</td>
+      <td class="numeric">{{ entry.subtotal_display }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="empty-note">No category subtotals to display.</p>
+  {% endif %}
+
+  <h2>Summary</h2>
+  <table class="summary">
+    <tr>
+      <td>Subtotal</td>
+      <td class="numeric">{{ subtotal_display }}</td>
+    </tr>
+    <tr>
+      <td>{{ overhead_label }}</td>
+      <td class="numeric">{{ overhead_display }}</td>
+    </tr>
+    <tr>
+      <td>{{ profit_label }}</td>
+      <td class="numeric">{{ profit_display }}</td>
+    </tr>
+    <tr>
+      <td>{{ tax_label }}</td>
+      <td class="numeric">{{ tax_display }}</td>
+    </tr>
+    <tr class="total">
+      <td>Total</td>
+      <td class="numeric">{{ total_display }}</td>
+    </tr>
+  </table>
+
+</body>
+</html>

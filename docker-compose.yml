@@ -45,6 +45,34 @@ services:
       - documents_data:/data/documents
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  worker:
+    # Design decision #2 (Phase 2 plan): the Dramatiq worker for async jobs
+    # (PDF export, Task 2.15). Same image as `backend` — the worker imports
+    # the exact same `app/` package, just runs a different entrypoint
+    # against it. Not a request handler, so it does NOT get
+    # `current.session` from an enqueuing request; it opens its own
+    # `AsyncSession` and calls `set_current_tenant()`/`set_current_user()`
+    # explicitly per job.
+    build: ./backend
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No `ports:` — this process is not HTTP-reachable, it only consumes
+    # jobs from the Redis-backed queue.
+    volumes:
+      - ./backend:/app
+      # Task 2.15: generate_estimate_pdf writes to the same
+      # settings.storage_root path Documents use (Task 1.15) — the SAME
+      # named volume as `backend`'s own mount above, not a second, separate
+      # one, so a PDF this worker writes is actually visible/persisted for
+      # a later request-handling process to read/serve, rather than landing
+      # in this container's own ephemeral filesystem.
+      - documents_data:/data/documents
+    command: dramatiq app.tasks.estimate_pdf
+
   frontend:
     build: ./frontend
     depends_on:

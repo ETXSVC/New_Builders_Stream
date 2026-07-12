@@ -36,20 +36,19 @@ a "suspend/resume" mechanism. `suspended -> completed` is also legal, so a
 suspended Project can either resume (`-> active`) or proceed to completion
 (`-> completed`) directly, without needing to un-suspend first.
 
-**Change Orders business rule — deferred, not implemented:**
+**Change Orders business rule — implemented, but not here (Task 2.23):**
 [Functional Requirements](../../docs/02-functional-requirements.md) Section 3
 states "A Project cannot move to Completed while it has open (non-approved)
-Change Orders." This is NOT enforced here: `change_orders` doesn't exist as a
-table/model in Phase 1 (explicitly out of scope — see the top of the Phase 1
-plan doc). When Change Orders ships in Phase 2, BOTH edges landing on
-`completed` — `active -> completed` AND `suspended -> completed` (and any
-further edge added later that also lands on `completed`) — need an
-additional application-layer check — querying for any non-approved Change
-Order rows against this project and rejecting the transition (409) if any
-exist — layered on top of (not replacing) the table-driven check below. Do
-not forget to add this when Change Orders lands, and do not key the check
-off "coming from suspended" specifically — that would silently miss the
-(more common) `active -> completed` path; nothing here enforces it yet.
+Change Orders." This table-driven module stays pure data (no DB queries), so
+that business rule is enforced one layer up, in
+`update_project_status` (`app/routers/projects.py`) — same "state-machine
+table stays pure, side-effect/business-rule checks live in the router" split
+Task 1.18 established for the `LEAD_WON` event. Look there, not here, for the
+actual enforcement logic (it queries for any `pending` Change Order against
+the project and rejects with 409 before the transition is applied, gated on
+`requested_status == "completed"` only — not on which status the project is
+coming FROM, so it applies uniformly to both `active -> completed` and
+`suspended -> completed`).
 
 `archived` has no legal outgoing transition (terminal), same as Lead's
 `won`/`lost`. `draft` has no legal incoming transition (it's the only status

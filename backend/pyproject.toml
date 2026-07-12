@@ -16,6 +16,28 @@ dependencies = [
     # Required by FastAPI's Form()/File() (Task 1.15's multipart/form-data
     # document upload) — FastAPI doesn't vendor multipart parsing itself.
     "python-multipart>=0.0.12,<0.1",
+    "jinja2>=3.1,<4.0",
+    # Task 2.13 (PDF export): the plan document names WeasyPrint, but
+    # WeasyPrint requires the GTK3/Pango/Cairo native runtime, which has no
+    # simple pip-installable path on Windows as of WeasyPrint 69 (the
+    # current official docs require a full MSYS2 toolchain install, not
+    # just a small runtime installer) — a genuine local-dev-environment
+    # blocker for this project's Windows-based development/test loop, not
+    # a coding concern. xhtml2pdf is a deliberate substitution, made with
+    # the user's explicit approval: pure Python (built on reportlab/pypdf,
+    # zero native dependencies), same "render HTML via Jinja2, convert HTML
+    # to PDF" architecture the task spec calls for, same `%PDF-` magic-byte
+    # output contract every test in this task checks against. CSS support
+    # is a real, accepted tradeoff versus WeasyPrint (less complete —
+    # xhtml2pdf supports a practical CSS 2.1-ish subset, not full modern
+    # CSS), acceptable for this task's explicitly simple, no-logo,
+    # no-custom-styling layout requirement.
+    "xhtml2pdf>=0.2.17,<0.3",
+    # Task 2.14: the first real async task queue in this codebase (Phase 1's
+    # design decision #2 deliberately deferred this — LEAD_WON's
+    # single in-process, same-transaction consumer didn't need one). Pure
+    # Python, no native dependencies (confirmed by installing it).
+    "dramatiq[redis]>=2.2,<3.0",
 ]
 
 [project.optional-dependencies]
