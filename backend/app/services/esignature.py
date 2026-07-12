@@ -1,7 +1,8 @@
 """Task 2.18: shared e-signature capture service.
 
-This is the ONE function both Estimate approval (Task 2.19) and Change
-Order approval (Task 2.22) will call to record an e-signature — design
+This is the ONE function both Estimate approval (`POST /estimates/{id}/approve`,
+`app/routers/estimates.py`, live as of Task 2.19) and Change Order approval
+(Task 2.22, not yet built) call/will call to record an e-signature — design
 decision #3/#6's "reuses the e-signature capability" made concrete as
 actual shared code, not two independent implementations that happen to
 look similar.
@@ -17,8 +18,8 @@ docstring below for why neither is ever accepted from client input.
 Division of responsibility mirrors `app/services/catalog_resolution.py` /
 `app/services/estimate_calculation.py`: this module does its own writing
 (artifact file + `Esignature` row) and returns the fully-populated object,
-but never commits (Inherited Invariant #3 — the caller, i.e. the future
-approval endpoint, owns the transaction) and never writes an `audit_log`
+but never commits (Inherited Invariant #3 — the caller, i.e. the Estimate/
+Change Order approval endpoint, owns the transaction) and never writes an `audit_log`
 entry itself. docs/07-security-compliance.md Section 5 enumerates
 "Estimate approval, Change Order approval" as the audit-worthy actions, not
 e-signature capture in isolation — that matches this codebase's established
@@ -53,8 +54,8 @@ async def capture_esignature(
     see that function's own docstring for why `.png` is a deliberate fixed
     choice and why it exclusive-creates rather than overwrites), inserts the
     new `Esignature` row, and returns it. Does NOT commit — the caller (the
-    future Estimate/Change Order approval endpoint) owns the transaction,
-    same Inherited Invariant #3 as every other service function in this
+    Estimate/Change Order approval endpoint) owns the transaction, same
+    Inherited Invariant #3 as every other service function in this
     codebase.
 
     `ip_address`: the caller is expected to pass the REAL, server-observed

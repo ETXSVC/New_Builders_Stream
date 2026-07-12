@@ -128,6 +128,24 @@ class CategorySubtotal(BaseModel):
     subtotal: Decimal
 
 
+class EstimateRejectRequest(BaseModel):
+    """Body for `POST /estimates/{id}/reject` (Task 2.19) — US-4.5's "As a
+    Client, I can ... reject it with a reason" made concrete: `reason` is
+    the ONE required field, since a rejection with no stated reason isn't
+    what the user story asks for. Plain `application/json`, unlike
+    `approve`'s `multipart/form-data` body — rejection carries no binary
+    signature artifact to submit, so there's nothing that needs multipart
+    encoding here.
+
+    No length cap on `reason`, matching `Lead.notes`'s and
+    `ProjectStatusUpdateRequest.reason`'s existing "free-text, no cap"
+    convention (`app/schemas/lead.py`, `app/schemas/project.py`) — this is
+    audit-log context, not a bounded VARCHAR column.
+    """
+
+    reason: str
+
+
 class EstimateCalculationResponse(EstimateDetailResponse):
     """`POST /estimates/{id}/calculate`-only shape (Task 2.12) — a superset
     of `EstimateDetailResponse` adding `category_breakdown`, following the

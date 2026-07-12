@@ -13,10 +13,11 @@ legal thing to do against the current DB state" (router).
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import delete, select
 
 from app.core.deps import CurrentUser, require_role
+from app.core.events import publish
 from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, MarkupProfile, Project
@@ -27,11 +28,13 @@ from app.schemas.estimate import (
     EstimateCreateRequest,
     EstimateDetailResponse,
     EstimateListResponse,
+    EstimateRejectRequest,
     EstimateResponse,
 )
 from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
+from app.services.esignature import capture_esignature
 from app.services.estimate_calculation import calculate_estimate
 from app.tasks.estimate_pdf import generate_estimate_pdf
 
@@ -101,6 +104,20 @@ async def _get_estimate_or_404(current: CurrentUser, estimate_id: uuid.UUID) -> 
     if estimate is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Estimate not found")
     return estimate
+
+
+def _require_estimate_sent(estimate: Estimate) -> None:
+    """Task 2.19: `approve`/`reject` share an identical "only legal from
+    status='sent'" precondition — extracted here rather than duplicated
+    inline in both routes, matching this router's existing "small shared
+    helper for a check used more than once" precedent (`_get_estimate_or_404`
+    itself). Raises 409 if `estimate.status` isn't `'sent'`; a no-op
+    otherwise."""
+    if estimate.status != "sent":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate must be in 'sent' status to approve/reject, got '{estimate.status}'",
+        )
 
 
 @router.post("", response_model=EstimateResponse, status_code=status.HTTP_201_CREATED)
@@ -503,5 +520,184 @@ async def export_estimate_pdf(
     # commits current.session once, after this handler returns.
 
     generate_estimate_pdf.send(str(estimate.id), str(current.user.id))
+
+    return EstimateResponse.model_validate(estimate)
+
+
+@router.post("/{estimate_id}/send-for-signature", response_model=EstimateResponse)
+async def send_estimate_for_signature(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> EstimateResponse:
+    """Task 2.19: US-4.5's send-for-signature step — marks an Estimate as
+    awaiting the client's approve/reject action. No e-signature is captured
+    here at all; this route only flips `status` to `'sent'` so the estimate
+    becomes visible to `client`-role callers (`list_estimates`'s own
+    `status='sent'` scoping) and eligible for the `approve`/`reject` routes
+    below, both of which require `status='sent'` as their own precondition.
+
+    **409 if `estimate.total IS NULL`**: `total`
+    only becomes non-NULL after at least one successful
+    `POST /estimates/{id}/calculate` run — sending an un-calculated estimate
+    for the client's signature makes no sense, there is nothing meaningful
+    for them to review yet. Checked AFTER `_get_estimate_or_404` (existence/
+    tenant before semantic validation, the same ordering
+    `calculate_estimate_totals`'s own `is_snapshotted` check uses above).
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.total is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate has not been calculated yet and cannot be sent for signature",
+        )
+
+    estimate.status = "sent"
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    return EstimateResponse.model_validate(estimate)
+
+
+@router.post("/{estimate_id}/approve", response_model=EstimateResponse)
+async def approve_estimate(
+    estimate_id: uuid.UUID,
+    request: Request,
+    signer_name: str = Form(...),
+    signer_email: str = Form(...),
+    signature_artifact: UploadFile = File(...),
+    current: CurrentUser = Depends(require_role("client")),
+) -> EstimateResponse:
+    """Task 2.19: US-4.5's "As a Client, I can review an emailed Estimate
+    and approve it with an e-signature." `require_role("client")` only
+    (design decision #3's authenticated-in-app-client model) — Admin/PM/
+    Accountant never approve their own estimate on a client's behalf.
+
+    Only legal from `status='sent'` (`_require_estimate_sent`, 409
+    otherwise) — checked immediately after `_get_estimate_or_404`, before
+    the uploaded file is even read, so an illegal-state call never touches
+    the filesystem.
+
+    `multipart/form-data`, matching `upload_document`'s exact precedent
+    (`app/routers/projects.py`) — `signer_name`/`signer_email` as `Form(...)`
+    fields, `signature_artifact` as `File(...)`, read via `.read()` into raw
+    bytes. No content-type/extension validation on the uploaded file:
+    `write_esignature_artifact_file` already hardcodes a `.png` extension
+    regardless of what was actually uploaded (Task 2.18), so there is
+    nothing meaningful to validate here.
+
+    Side effects, in order: capture the e-signature (`capture_esignature`,
+    Task 2.18, `document_type="estimate"` — a valid member of
+    `VALID_DOCUMENT_TYPES`, `app/models/esignature.py`), link it onto this
+    Estimate, flip `status='approved'` and **`is_snapshotted=True`** (design
+    decision #4 — from this instant forward, `PUT /estimates/{id}/lines` and
+    `POST /estimates/{id}/calculate` both 409 on this estimate permanently),
+    write an `estimate.approved` audit log entry, then publish
+    `ESTIMATE_APPROVED`.
+
+    `ip_address`: `request.client.host` if `request.client` is not `None`,
+    else the literal string `"unknown"` — defensive against the rare ASGI
+    scope where `request.client` is `None`; `capture_esignature`'s
+    `ip_address` parameter is a non-optional `str` matching
+    `Esignature.ip_address`'s non-nullable column, so some value must
+    always be passed.
+
+    `ESTIMATE_APPROVED`'s payload includes `project_id`, which **may be
+    `None`** — an Estimate created against a bare Lead (no Project yet) has
+    no `project_id` at all (`Estimate.project_id`'s own nullable column).
+    This is intentional and expected, not an oversight: Phase 3's eventual
+    consumer of this event must handle a `None` project_id itself; this task
+    deliberately does not add a NOT NULL constraint or an artificial
+    Project requirement just to make this field always populated. No
+    handler is registered for `ESTIMATE_APPROVED` yet (matching `LEAD_WON`'s
+    own Task 1.5 -> Task 1.18 gap) — `publish()` is a real, wired-up call
+    dispatching to zero registered handlers, a no-op in practice today.
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+    _require_estimate_sent(estimate)
+
+    signature_artifact_bytes = await signature_artifact.read()
+    ip_address = request.client.host if request.client else "unknown"
+
+    esignature = await capture_esignature(
+        current.session,
+        company_id=current.company_id,
+        signer_name=signer_name,
+        signer_email=signer_email,
+        ip_address=ip_address,
+        document_type="estimate",
+        signature_artifact_bytes=signature_artifact_bytes,
+    )
+
+    estimate.esignature_id = esignature.id
+    estimate.status = "approved"
+    estimate.is_snapshotted = True
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="estimate.approved",
+        entity_type="estimate",
+        entity_id=estimate.id,
+    )
+
+    # project_id may be None — see this route's own docstring above for why
+    # that's intentional and Phase 3's job to handle, not this task's.
+    await publish(
+        "ESTIMATE_APPROVED",
+        estimate_id=estimate.id,
+        project_id=estimate.project_id,
+        company_id=estimate.company_id,
+        approved_total=estimate.total,
+    )
+
+    return EstimateResponse.model_validate(estimate)
+
+
+@router.post("/{estimate_id}/reject", response_model=EstimateResponse)
+async def reject_estimate(
+    estimate_id: uuid.UUID,
+    payload: EstimateRejectRequest,
+    current: CurrentUser = Depends(require_role("client")),
+) -> EstimateResponse:
+    """Task 2.19: US-4.5's "or reject it with a reason." Same `client`-only
+    role gate and `status='sent'` precondition (`_require_estimate_sent`,
+    409 otherwise) as `approve` above — both routes share the exact same
+    check via that one helper.
+
+    No e-signature is captured and `is_snapshotted` stays `False`: a
+    rejection isn't a signed document, so there is nothing to snapshot and
+    nothing decoupling this Estimate's line items/totals from live catalog
+    data. `PUT /estimates/{id}/lines` and `POST /estimates/{id}/calculate`
+    both remain legal on a rejected estimate — this route only records the
+    rejection (`status='rejected'` plus an `estimate.rejected` audit log
+    entry carrying `{reason}`), it does not otherwise lock the estimate.
+
+    `EstimateRejectRequest` (`app/schemas/estimate.py`) is a plain JSON
+    body, not `multipart/form-data` — unlike `approve`, there is no binary
+    signature artifact to submit here.
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+    _require_estimate_sent(estimate)
+
+    estimate.status = "rejected"
+    await current.session.flush()
+    # No explicit commit here — get_current_user (Inherited Invariant #4)
+    # commits current.session once, after this handler returns.
+
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="estimate.rejected",
+        entity_type="estimate",
+        entity_id=estimate.id,
+        metadata={"reason": payload.reason},
+    )
 
     return EstimateResponse.model_validate(estimate)

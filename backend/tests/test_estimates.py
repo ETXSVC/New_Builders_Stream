@@ -15,6 +15,7 @@ from decimal import Decimal
 
 import asyncpg
 
+from app.core import events
 from tests.conftest import TEST_DATABASE_URL
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
@@ -1130,3 +1131,351 @@ async def test_replace_line_items_nonexistent_estimate_returns_404(client):
         headers=admin["headers"],
     )
     assert response.status_code == 404
+
+
+# =============================================================================
+# POST /estimates/{id}/send-for-signature, /approve, /reject (Task 2.19)
+# =============================================================================
+
+
+async def _create_calculated_estimate(client, admin, *, unit_rate="45.00", quantity="10.00"):
+    """Full real-route setup: project + markup profile + catalog item +
+    estimate + a line item + a successful `calculate` run, so `total` is
+    non-NULL and `send-for-signature` is legal. Returns the freshly
+    calculated estimate body."""
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate=unit_rate)
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert created.status_code == 201, created.text
+    estimate_id = created.json()["id"]
+
+    put_response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": quantity}]},
+        headers=admin["headers"],
+    )
+    assert put_response.status_code == 200, put_response.text
+
+    calc_response = await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    assert calc_response.status_code == 200, calc_response.text
+
+    return calc_response.json(), project, catalog_item
+
+
+async def _advance_to_sent(client, admin, *, unit_rate="45.00", quantity="10.00"):
+    """Builds a fully calculated estimate, then sends it for signature via
+    the real route, returning the resulting (status='sent') estimate body
+    plus the underlying project/catalog_item for callers that need them."""
+    estimate, project, catalog_item = await _create_calculated_estimate(
+        client, admin, unit_rate=unit_rate, quantity=quantity
+    )
+    response = await client.post(
+        f"/estimates/{estimate['id']}/send-for-signature", headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    return response.json(), project, catalog_item
+
+
+async def _approve_estimate(
+    client,
+    headers,
+    estimate_id,
+    *,
+    signer_name="Jane Client",
+    signer_email="jane-client@example.test",
+    content=b"fake-signature-bytes",
+):
+    return await client.post(
+        f"/estimates/{estimate_id}/approve",
+        data={"signer_name": signer_name, "signer_email": signer_email},
+        files={"signature_artifact": ("signature.png", content, "image/png")},
+        headers=headers,
+    )
+
+
+async def test_send_for_signature_requires_prior_calculation(client):
+    admin = await _register_and_login(client, "Acme Construction", "sfs-uncalc-admin@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.post(
+        f"/estimates/{estimate_id}/send-for-signature", headers=admin["headers"]
+    )
+    assert response.status_code == 409, response.text
+
+    # Status is untouched — still 'draft', never became 'sent'.
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert get_response.json()["status"] == "draft"
+
+
+async def test_send_for_signature_succeeds_after_calculation(client):
+    admin = await _register_and_login(client, "Acme Construction", "sfs-ok-admin@acme.test")
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    assert sent_estimate["status"] == "sent"
+
+    get_response = await client.get(
+        f"/estimates/{sent_estimate['id']}", headers=admin["headers"]
+    )
+    assert get_response.json()["status"] == "sent"
+
+
+async def test_non_write_roles_cannot_send_for_signature(client):
+    """`send-for-signature` is `_WRITE_ROLES` (admin/PM) only — client,
+    accountant, and field_crew must all get 403, matching this router's
+    existing RBAC coverage pattern for its other `_WRITE_ROLES`-gated
+    routes (e.g. `test_replace_line_items_...` above)."""
+    admin = await _register_and_login(client, "Acme Construction", "sfs-rbac-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "sfs-rbac-client@acme.test")
+    accountant = await _invite_and_login_as(
+        client, admin, "accountant", "sfs-rbac-accountant@acme.test"
+    )
+    field_crew = await _invite_and_login_as(
+        client, admin, "field_crew", "sfs-rbac-crew@acme.test"
+    )
+
+    for actor in (client_role, accountant, field_crew):
+        estimate, _project, _catalog_item = await _create_calculated_estimate(client, admin)
+        response = await client.post(
+            f"/estimates/{estimate['id']}/send-for-signature", headers=actor["headers"]
+        )
+        assert response.status_code == 403, response.text
+
+
+async def test_approve_captures_esignature_and_snapshots(client):
+    admin = await _register_and_login(client, "Acme Construction", "approve-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "approve-client@acme.test")
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    response = await _approve_estimate(
+        client,
+        client_role["headers"],
+        sent_estimate["id"],
+        signer_name="Jane Client",
+        signer_email="jane-client@example.test",
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "approved"
+    assert body["is_snapshotted"] is True
+    assert body["esignature_id"] is not None
+
+    # The e-signature is a REAL, persisted record — not just a set FK.
+    esignature_response = await client.get(
+        f"/esignatures/{body['esignature_id']}", headers=admin["headers"]
+    )
+    assert esignature_response.status_code == 200, esignature_response.text
+    esignature_body = esignature_response.json()
+    assert esignature_body["signer_name"] == "Jane Client"
+    assert esignature_body["signer_email"] == "jane-client@example.test"
+    assert esignature_body["document_type"] == "estimate"
+    assert esignature_body["company_id"] == admin["company_id"]
+
+    audit_rows = await _fetch_audit_rows(admin["company_id"])
+    matching = [row for row in audit_rows if row["action"] == "estimate.approved"]
+    assert len(matching) == 1
+    assert str(matching[0]["entity_id"]) == sent_estimate["id"]
+
+
+async def test_approve_publishes_estimate_approved_with_expected_payload(client):
+    """Same pattern `test_lead_state_machine.py`'s
+    `test_transition_into_won_calls_publish_with_the_expected_payload` uses
+    for `LEAD_WON`: register a temporary handler on the live
+    `app.core.events` dispatcher and confirm it fires with the right
+    payload — proving `publish("ESTIMATE_APPROVED", ...)` is a real, wired
+    call, not a comment/TODO."""
+    admin = await _register_and_login(client, "Acme Construction", "publish-est-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "publish-est-client@acme.test")
+    sent_estimate, project, _catalog_item = await _advance_to_sent(client, admin)
+
+    received: list[dict] = []
+
+    async def _capture_handler(**payload):
+        received.append(payload)
+
+    events.register("ESTIMATE_APPROVED", _capture_handler)
+    response = await _approve_estimate(client, client_role["headers"], sent_estimate["id"])
+    assert response.status_code == 200, response.text
+    approved_total = response.json()["total"]
+
+    assert len(received) == 1
+    payload = received[0]
+    assert str(payload["estimate_id"]) == sent_estimate["id"]
+    assert str(payload["project_id"]) == project["id"]
+    assert str(payload["company_id"]) == admin["company_id"]
+    assert str(payload["approved_total"]) == approved_total
+
+
+async def test_approve_publishes_estimate_approved_with_null_project_id_for_lead_scoped_estimate(
+    client,
+):
+    """`project_id` is documented as nullable in the `ESTIMATE_APPROVED`
+    payload — an estimate created against a bare Lead (no Project yet) must
+    still publish successfully, with `project_id=None`."""
+    admin = await _register_and_login(client, "Acme Construction", "publish-lead-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "publish-lead-client@acme.test")
+    lead = await _create_lead(client, admin["headers"])
+    await _advance_lead_to(client, admin["headers"], lead["id"], "estimating")
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"lead_id": lead["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert created.status_code == 201, created.text
+    estimate_id = created.json()["id"]
+    await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    sent = await client.post(
+        f"/estimates/{estimate_id}/send-for-signature", headers=admin["headers"]
+    )
+    assert sent.status_code == 200, sent.text
+
+    received: list[dict] = []
+
+    async def _capture_handler(**payload):
+        received.append(payload)
+
+    events.register("ESTIMATE_APPROVED", _capture_handler)
+    response = await _approve_estimate(client, client_role["headers"], estimate_id)
+    assert response.status_code == 200, response.text
+
+    assert len(received) == 1
+    assert received[0]["project_id"] is None
+
+
+async def test_approve_requires_sent_status(client):
+    admin = await _register_and_login(client, "Acme Construction", "approve-status-admin@acme.test")
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "approve-status-client@acme.test"
+    )
+    estimate, _project, _catalog_item = await _create_calculated_estimate(client, admin)
+    # Deliberately not sent-for-signature: estimate is still 'draft'.
+
+    response = await _approve_estimate(client, client_role["headers"], estimate["id"])
+    assert response.status_code == 409, response.text
+
+
+async def test_reject_requires_a_reason(client):
+    admin = await _register_and_login(client, "Acme Construction", "reject-noreason-admin@acme.test")
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "reject-noreason-client@acme.test"
+    )
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.post(
+        f"/estimates/{sent_estimate['id']}/reject", json={}, headers=client_role["headers"]
+    )
+    assert response.status_code == 422, response.text
+
+    # Untouched: still 'sent', not 'rejected'.
+    get_response = await client.get(
+        f"/estimates/{sent_estimate['id']}", headers=admin["headers"]
+    )
+    assert get_response.json()["status"] == "sent"
+
+
+async def test_reject_with_reason_succeeds_and_does_not_snapshot(client):
+    admin = await _register_and_login(client, "Acme Construction", "reject-ok-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "reject-ok-client@acme.test")
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.post(
+        f"/estimates/{sent_estimate['id']}/reject",
+        json={"reason": "Price is too high for our budget"},
+        headers=client_role["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "rejected"
+    assert body["is_snapshotted"] is False
+    assert body["esignature_id"] is None
+
+    audit_rows = await _fetch_audit_rows(admin["company_id"])
+    matching = [row for row in audit_rows if row["action"] == "estimate.rejected"]
+    assert len(matching) == 1
+    assert str(matching[0]["entity_id"]) == sent_estimate["id"]
+    metadata = matching[0]["log_metadata"]
+    import json as _json
+
+    decoded = _json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert decoded == {"reason": "Price is too high for our budget"}
+
+
+async def test_reject_requires_sent_status(client):
+    admin = await _register_and_login(client, "Acme Construction", "reject-status-admin@acme.test")
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "reject-status-client@acme.test"
+    )
+    estimate, _project, _catalog_item = await _create_calculated_estimate(client, admin)
+    # Deliberately not sent-for-signature: estimate is still 'draft'.
+
+    response = await client.post(
+        f"/estimates/{estimate['id']}/reject",
+        json={"reason": "irrelevant"},
+        headers=client_role["headers"],
+    )
+    assert response.status_code == 409, response.text
+
+
+async def test_non_client_roles_cannot_approve_or_reject(client):
+    admin = await _register_and_login(client, "Acme Construction", "noclient-admin@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "noclient-pm@acme.test")
+    accountant = await _invite_and_login_as(client, admin, "accountant", "noclient-acct@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "noclient-crew@acme.test")
+
+    for actor in (admin, pm, accountant, field_crew):
+        sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+        approve_response = await _approve_estimate(client, actor["headers"], sent_estimate["id"])
+        assert approve_response.status_code == 403, approve_response.text
+
+        reject_response = await client.post(
+            f"/estimates/{sent_estimate['id']}/reject",
+            json={"reason": "should be blocked"},
+            headers=actor["headers"],
+        )
+        assert reject_response.status_code == 403, reject_response.text
+
+
+async def test_approved_and_snapshotted_estimate_blocks_lines_and_calculate_via_real_flow(client):
+    """Task 2.11/2.12 already cover the `is_snapshotted` 409 guard in
+    general via `_set_estimate_snapshotted_directly` (a direct SQL
+    shortcut). This test goes through the REAL `send-for-signature` ->
+    `approve` flow instead, proving the guard actually fires once an
+    estimate has been snapshotted the legitimate way, not just when the
+    flag is poked directly."""
+    admin = await _register_and_login(client, "Acme Construction", "realflow-admin@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "realflow-client@acme.test")
+    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+
+    approve_response = await _approve_estimate(client, client_role["headers"], sent_estimate["id"])
+    assert approve_response.status_code == 200, approve_response.text
+
+    put_response = await client.put(
+        f"/estimates/{sent_estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "99.00"}]},
+        headers=admin["headers"],
+    )
+    assert put_response.status_code == 409, put_response.text
+
+    calc_response = await client.post(
+        f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
+    )
+    assert calc_response.status_code == 409, calc_response.text
