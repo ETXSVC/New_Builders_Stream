@@ -6,7 +6,7 @@ from sqlalchemy.orm import aliased
 
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import DailyLog, Document, Phase, Project, Task
+from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
 from app.models.project import VALID_STATUSES
 from app.schemas.daily_log import DailyLogCreateRequest, DailyLogListResponse, DailyLogResponse
 from app.schemas.document import DocumentListResponse, DocumentResponse
@@ -299,14 +299,45 @@ async def update_project_status(
             f"Illegal project status transition: {previous_status} -> {requested_status}",
         )
 
+    # Task 2.23: Change Orders business rule (Functional Requirements
+    # Section 3: "A Project cannot move to Completed while it has open
+    # (non-approved) Change Orders"), layered on top of (not replacing) the
+    # is_legal_transition() check above. Deliberately lives here, not in
+    # project_transitions.is_legal_transition() — same "table-driven check
+    # vs. business-rule check in the router" split Task 1.18 established for
+    # the LEAD_WON event; the transition table stays pure data with no DB
+    # queries.
+    #
+    # Gated on `requested_status == "completed"` ONLY — not on
+    # `previous_status`, so this applies uniformly to both
+    # `active -> completed` and `suspended -> completed` (and any future
+    # edge that also lands on `completed`), per the plan's explicit warning
+    # against keying the check off "coming from suspended" specifically.
+    #
+    # Judgment call on "open (non-approved)": the functional requirement's
+    # literal wording is ambiguous between "pending only" and "pending or
+    # rejected" (both are, strictly, "non-approved"). Read the query as
+    # `status == "pending"` ONLY — a `rejected` Change Order is a resolved/
+    # closed item, not "open" in any reasonable sense; it sits in the same
+    # "no longer blocking" category as `approved` for the purpose of "is
+    # there still open work standing between this Project and completion."
+    # Only `pending` Change Orders count as open.
+    if status_changing and requested_status == "completed":
+        pending_count = (
+            await current.session.scalar(
+                select(func.count())
+                .select_from(ChangeOrder)
+                .where(ChangeOrder.project_id == project.id, ChangeOrder.status == "pending")
+            )
+            or 0
+        )
+        if pending_count:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Cannot complete project: {pending_count} Change Order(s) pending approval",
+            )
+
     if status_changing:
-        # Change Orders business rule (Functional Requirements Section 3:
-        # "A Project cannot move to Completed while it has open (non-approved)
-        # Change Orders") is NOT enforced here — `change_orders` doesn't exist
-        # in Phase 1 (out of scope). See project_transitions.py's module
-        # docstring for the full note on what needs to be added here, layered
-        # on top of (not replacing) the is_legal_transition() check above,
-        # once Change Orders ships in Phase 2. Do not forget this.
         project.status = requested_status
 
     # updated_at bumps automatically via UpdatedAtMixin's onupdate=utcnow the
