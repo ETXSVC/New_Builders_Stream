@@ -7,6 +7,7 @@ from app.core.pagination import InvalidCursorError
 from app.routers import (
     auth,
     catalogs,
+    change_orders,
     companies,
     esignatures,
     estimates,
@@ -27,6 +28,7 @@ app.include_router(tasks.router)
 app.include_router(catalogs.router)
 app.include_router(estimates.router)
 app.include_router(esignatures.router)
+app.include_router(change_orders.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called
