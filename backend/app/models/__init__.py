@@ -14,6 +14,7 @@ from app.models.cost_catalog_item import CostCatalogItem
 from app.models.estimate import Estimate
 from app.models.estimate_line_item import EstimateLineItem
 from app.models.esignature import Esignature
+from app.models.change_order import ChangeOrder
 
 __all__ = [
     "Base",
@@ -34,4 +35,5 @@ __all__ = [
     "Estimate",
     "EstimateLineItem",
     "Esignature",
+    "ChangeOrder",
 ]
