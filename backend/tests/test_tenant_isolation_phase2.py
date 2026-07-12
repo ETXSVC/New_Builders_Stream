@@ -709,3 +709,444 @@ async def test_export_estimate_pdf_genuinely_cross_tenant_returns_404(client):
 
     response = await client.post(f"/estimates/{estimate_a['id']}/export", headers=b["headers"])
     assert response.status_code == 404
+
+
+# =============================================================================
+# Task 2.24: Esignatures / Change Orders tenant-isolation regression tests
+# =============================================================================
+#
+# Extends this file rather than starting a new one — same module (Phase 2
+# tenant-isolation regression coverage), same helper shape
+# (_register_and_login/_add_membership_directly/_create_child_with_membership),
+# just a different pair of tables. Follows this file's own Task 2.16 section's
+# append convention exactly: a new commented banner at the end, not a
+# rewritten module docstring.
+#
+# Per migration 0006's (`esignatures`) and 0008's (`change_orders`) own module
+# docstrings — both re-read as part of this task, not assumed — each is a
+# plain, flat, company-scoped table with its OWN separate ordinary
+# `tenant_isolation` policy: the same `get_all_descendant_ids()`-only shape
+# `leads`/`projects`/`estimates`/`markup_profiles` use, NOT `cost_catalog_items`'
+# bidirectional OR-of-two-clauses shape (0005). The sibling-branch upward-
+# visibility probe this file's Task 2.6 section applies to `cost_catalog_items`
+# is therefore NOT replicated here either, for the same reason the Task 2.16
+# section already gives.
+#
+# What this section deliberately does NOT re-derive:
+#   - `Esignature`'s own immutability/REVOKE guarantee (raw UPDATE/DELETE
+#     rejected as app_user) and the `document_type` CHECK constraint —
+#     covered by test_esignatures.py (Task 2.17/2.18). This section is
+#     tenant-isolation ONLY.
+#   - `change_orders`' own RBAC coverage (admin/PM write-gating,
+#     client-only approve/reject, non-write-role rejection) and its state
+#     machine (409 on illegal create/approve/reject, `send-for-signature`'s
+#     no-mutation contract) — covered by test_change_orders.py (Tasks
+#     2.21/2.22). Also tenant-isolation ONLY here.
+#   - Cross-tenant 404 on `GET /esignatures/{id}` — already proven by
+#     test_esignatures.py::test_get_esignature_cross_tenant_returns_404
+#     (Task 2.18), which drives a genuinely unrelated Company A/Company B
+#     pair through this exact route with no header-spoofing involved.
+#     Checked here (judgment call #4 in this task's own spec) rather than
+#     assumed: that test exists and covers exactly this scenario, so it is
+#     cited rather than duplicated.
+#   - Cross-tenant 404 on `POST /projects/{id}/change-orders` (create) and
+#     `GET /projects/{id}/change-orders` (list) — already proven by
+#     test_change_orders.py::test_create_change_order_cross_tenant_project_returns_404
+#     and ::test_list_change_orders_cross_tenant_project_returns_404 (Task
+#     2.21). Both of those go through `_get_project_or_404` — a DIFFERENT
+#     code path than the one this section's own new
+#     `test_change_order_send_for_signature_genuinely_cross_tenant_returns_404`
+#     test below closes a gap for (see that test's own docstring).
+#
+# What IS new here:
+#   - test_esignature_header_spoofing_via_x_tenant_id_is_blocked — the
+#     X-Tenant-ID membership check confirmed explicitly on an
+#     Esignatures-scoped route, mirroring this file's own
+#     test_estimate_header_spoofing_via_x_tenant_id_is_blocked. Drives a
+#     real Esignature into existence via the ChangeOrder approve flow
+#     (judgment call #2 in this task's own spec: the lightest path anywhere
+#     in this codebase to a real, persisted Esignature row — the Estimate
+#     approval path needs a MarkupProfile, a CostCatalogItem, line items,
+#     and a `calculate` call first; ChangeOrder approval needs none of
+#     that).
+#   - test_change_order_send_for_signature_header_spoofing_via_x_tenant_id_is_blocked —
+#     the same X-Tenant-ID membership-check confirmation, on
+#     `POST /change-orders/{id}/send-for-signature` (judgment call #5:
+#     `change_orders` has no singular `GET /{id}` route, and
+#     `send-for-signature` is `_WRITE_ROLES`-gated and — per Task 2.22 — a
+#     pure validation gate with no side effects even on success, making it
+#     safe to call without any state cleanup concern).
+#   - test_change_order_send_for_signature_genuinely_cross_tenant_returns_404 —
+#     closes a genuine coverage gap (judgment call #6, confirmed by reading
+#     test_change_orders.py in full): its three existing 404 tests for this
+#     route family
+#     (test_send_for_signature_nonexistent_change_order_returns_404,
+#     test_approve_nonexistent_change_order_returns_404,
+#     test_reject_nonexistent_change_order_returns_404) all use the
+#     all-zeros nonexistent UUID, never a real, unrelated company's
+#     change_order id — so `_get_change_order_or_404`'s own cross-tenant
+#     behavior (as distinct from `_get_project_or_404`'s, already proven for
+#     create/list) had never actually been exercised. Closes here rather
+#     than in test_change_orders.py, matching Task 2.16's own precedent of
+#     closing Task 2.15's review gap in this same tenant-isolation file
+#     rather than the router's own primary test file.
+#   - test_rls_policy_itself_blocks_cross_tenant_change_order_visibility —
+#     the ONE new RLS-disable/re-enable proof this task's spec calls for,
+#     applied to `change_orders` (judgment call #7). Per the plan's own
+#     text, this is meant to stand in as representative of the shared plain
+#     policy shape across `esignatures`/`estimates`/`change_orders`/
+#     `markup_profiles` — `estimates` already has its own such proof (this
+#     file's Task 2.16 section, test_rls_policy_itself_blocks_cross_tenant_estimate_visibility),
+#     which only left `esignatures`/`change_orders`/`markup_profiles`
+#     unproven at the raw-policy layer. This task's own scope is explicitly
+#     "one proof, on change_orders" — not esignatures, not a second one for
+#     markup_profiles. **Discrepancy found and flagged rather than silently
+#     assumed**: the plan's text asserts `markup_profiles` "already got its
+#     own proof in Task 2.6" — checked directly (grepped
+#     test_markup_profiles.py and every other test file for
+#     `DISABLE ROW LEVEL SECURITY`/`markup_profiles`) and no such proof
+#     exists anywhere in this codebase; test_markup_profiles.py's own
+#     `test_list_markup_profiles_is_tenant_scoped` only proves app-layer
+#     scoping, not the raw-policy-level guarantee. `markup_profiles`
+#     therefore remains genuinely unproven at that layer after this task —
+#     out of this task's own explicit scope to fix, so left as-is here, but
+#     recorded for whoever picks up that gap next.
+#   - test_parent_admin_can_see_child_branch_estimate_and_change_order and
+#     test_sibling_branches_cannot_see_each_others_estimate_or_change_order
+#     (judgment call #8) — the parent/child hierarchy visibility case for
+#     `estimates`/`change_orders`, mirroring
+#     test_tenant_isolation_phase1.py's Task 1.17
+#     test_parent_admin_can_see_child_branch_leads/
+#     test_sibling_branches_cannot_see_each_others_leads precedent. Built
+#     through the REAL create routes (Project -> MarkupProfile -> Estimate,
+#     Project -> ChangeOrder) acting as the child/sibling branch via
+#     X-Tenant-ID header switching against a REAL company_users membership
+#     row (_create_child_with_membership) — NOT header-spoofing, and NOT
+#     phase1's `_insert_lead_directly` raw-SQL shortcut, which exists there
+#     only because `leads` has few required fields; `estimates`/
+#     `change_orders` have real FK dependency chains (Project,
+#     MarkupProfile) far more naturally built through the real API, matching
+#     this file's own Task 2.6 sibling-branch catalog test's approach.
+#     Confirmed by reading test_estimates.py in full first: it already uses
+#     X-Tenant-ID branch-switching for an unrelated purpose (child-branch
+#     catalog-override rate resolution,
+#     test_replace_line_items_uses_child_branch_override_rate) but has no
+#     parent-sees-child or sibling-invisibility test for Estimate rows
+#     themselves — a genuine gap, closed here.
+
+
+async def _advance_project_to_active(client, headers, project_id):
+    """Shortest legal transition path from a freshly created (`draft`)
+    Project to `active` — copied from test_change_orders.py's own
+    `_PRECONDITION_PATH["active"]` (`["pre_construction", "active"]`), the
+    only path this section needs (Change Orders are only legal to create
+    against an active Project)."""
+    for step_status in ("pre_construction", "active"):
+        response = await client.patch(
+            f"/projects/{project_id}/status", json={"status": step_status}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+
+
+def _change_order_payload(**overrides):
+    payload = {
+        "description": "Add a skylight in the master bath",
+        "cost_delta": "1500.00",
+        "schedule_impact_days": 3,
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_change_order(client, headers, project_id, **overrides):
+    response = await client.post(
+        f"/projects/{project_id}/change-orders",
+        json=_change_order_payload(**overrides),
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _approve_change_order(client, headers, change_order_id, **overrides):
+    """Identical shape to test_change_orders.py's `_approve_change_order`
+    helper of the same name — duplicated rather than imported, matching
+    this codebase's established each-test-file-owns-its-own-helper-set
+    convention. This is (judgment call #2) the lightest path anywhere in
+    this codebase to a real, persisted Esignature row."""
+    payload = {
+        "signer_name": "Jane Client",
+        "signer_email": "jane-client@example.test",
+    }
+    payload.update(overrides)
+    return await client.post(
+        f"/change-orders/{change_order_id}/approve",
+        data=payload,
+        files={"signature_artifact": ("signature.png", b"fake-signature-bytes", "image/png")},
+        headers=headers,
+    )
+
+
+# --- Header-spoofing, `esignatures` and `change_orders` ---------------------
+
+
+async def test_esignature_header_spoofing_via_x_tenant_id_is_blocked(client):
+    """Mirrors this file's own
+    test_estimate_header_spoofing_via_x_tenant_id_is_blocked, through an
+    Esignatures-scoped route. The X-Tenant-ID membership check in
+    app/core/deps.py is route-agnostic and runs before any RLS policy is
+    evaluated, so this is expected to already hold — confirming it
+    explicitly here matters because /esignatures is its own router with its
+    own dependency wiring, not yet exercised by any prior task's isolation
+    coverage. Drives a real Esignature into existence via Company B's
+    ChangeOrder approve flow (judgment call #2)."""
+    a = await _register_and_login(client, "Company A", "spoof-esig-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-esig-b@acme.test")
+    client_b = await _invite_and_login_as(client, b, "client", "spoof-esig-b-client@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    await _advance_project_to_active(client, b["headers"], project_b["id"])
+    change_order_b = await _create_change_order(client, b["headers"], project_b["id"])
+    approve = await _approve_change_order(client, client_b["headers"], change_order_b["id"])
+    assert approve.status_code == 200, approve.text
+    esignature_id = approve.json()["esignature_id"]
+
+    response = await client.get(
+        f"/esignatures/{esignature_id}",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+async def test_change_order_send_for_signature_header_spoofing_via_x_tenant_id_is_blocked(client):
+    """Mirrors test_esignature_header_spoofing_via_x_tenant_id_is_blocked
+    above, through `POST /change-orders/{id}/send-for-signature` instead —
+    the only ID-addressed change_orders route available for this check
+    (judgment call #5: no singular `GET /change-orders/{id}` route exists),
+    and safe to call with no side effects even on success (Task 2.22's own
+    "pure validation gate" design)."""
+    a = await _register_and_login(client, "Company A", "spoof-co-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-co-b@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    await _advance_project_to_active(client, b["headers"], project_b["id"])
+    change_order_b = await _create_change_order(client, b["headers"], project_b["id"])
+
+    response = await client.post(
+        f"/change-orders/{change_order_b['id']}/send-for-signature",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+async def test_change_order_send_for_signature_genuinely_cross_tenant_returns_404(client):
+    """Closes the gap judgment call #6 identifies: test_change_orders.py's
+    three 404 tests for the send-for-signature/approve/reject route family
+    all use the all-zeros nonexistent UUID, never a real, unrelated
+    company's change_order id — so `_get_change_order_or_404`'s own
+    cross-tenant behavior (a distinct code path from `_get_project_or_404`,
+    already proven for create/list) had never actually been exercised.
+    Company A, with its own legitimate (non-spoofed) headers, attempts
+    send-for-signature against Company B's real change_order id."""
+    a = await _register_and_login(client, "Company A", "cross-co-sfs-a@acme.test")
+    b = await _register_and_login(client, "Company B", "cross-co-sfs-b@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    await _advance_project_to_active(client, b["headers"], project_b["id"])
+    change_order_b = await _create_change_order(client, b["headers"], project_b["id"])
+
+    response = await client.post(
+        f"/change-orders/{change_order_b['id']}/send-for-signature",
+        headers=a["headers"],
+    )
+    assert response.status_code == 404
+
+
+# --- RLS-disable/re-enable proof, `change_orders` only (judgment call #7) ---
+
+
+async def test_rls_policy_itself_blocks_cross_tenant_change_order_visibility(client):
+    """Mirrors test_rls_policy_itself_blocks_cross_tenant_estimate_visibility
+    (this file's own Task 2.16 section) exactly, adapted to
+    `change_orders` — the ONE new RLS-disable/re-enable proof this task's
+    spec calls for (see this section's own header comment for the
+    "representative of the shared policy shape, and the markup_profiles
+    discrepancy" rationale). Connects as app_user directly (bypassing the
+    FastAPI app, and therefore `_get_change_order_or_404` entirely) to
+    prove the POLICY itself, not application-layer filtering, blocks a
+    genuinely unrelated tenant from seeing another tenant's change_order
+    row. Then disables RLS as the table owner and confirms the identical
+    query starts returning the row, showing the policy, not luck, was
+    responsible. Then ALWAYS restores RLS in a finally, even if an
+    assertion above fails partway through, so this test can never leave the
+    database in an insecure state for any test that runs after it — same
+    two-level try/finally discipline as every other RLS-disable/re-enable
+    proof in this codebase."""
+    a = await _register_and_login(client, "Company A", "rls-co-a@acme.test")
+    b = await _register_and_login(client, "Company B", "rls-co-b@acme.test")
+    project_b = await _create_project(client, b["headers"])
+    await _advance_project_to_active(client, b["headers"], project_b["id"])
+    change_order_b = await _create_change_order(client, b["headers"], project_b["id"])
+    change_order_b_id = change_order_b["id"]
+
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
+    try:
+        # set_config(), not `SET app.current_tenant = $1` — see
+        # set_current_tenant's docstring in app/db.py (Task 3) for why a
+        # bound parameter there is a syntax error.
+        await app_conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+        )
+        visible_as_a = await app_conn.fetchrow(
+            "SELECT id FROM change_orders WHERE id = $1", change_order_b_id
+        )
+        assert visible_as_a is None, (
+            "RLS should block Company A's session from seeing Company B's "
+            "change_order"
+        )
+    finally:
+        await app_conn.close()
+
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute("ALTER TABLE change_orders DISABLE ROW LEVEL SECURITY")
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
+        try:
+            await app_conn2.execute(
+                "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+            )
+            visible_with_rls_off = await app_conn2.fetchrow(
+                "SELECT id FROM change_orders WHERE id = $1", change_order_b_id
+            )
+            assert visible_with_rls_off is not None, (
+                "Sanity check failed: Company B's change_order row should "
+                "exist and be visible once RLS is off — if this fails, the "
+                "row itself is missing, which means the test setup (not the "
+                "policy) is broken."
+            )
+        finally:
+            await app_conn2.close()
+    finally:
+        # ALWAYS restore RLS even if the assertion above fails — see this
+        # test's own docstring for why this is a separate try/finally.
+        try:
+            await owner_conn.execute("ALTER TABLE change_orders ENABLE ROW LEVEL SECURITY")
+        finally:
+            await owner_conn.close()
+
+
+# --- Parent/child hierarchy visibility, `estimates` and `change_orders` -----
+# (judgment call #8, Phase 1's Task 1.17 precedent) --------------------------
+
+
+async def test_parent_admin_can_see_child_branch_estimate_and_change_order(client):
+    """Task 2.7's/2.20's migrations gave `estimates`/`change_orders` the
+    identical `get_all_descendant_ids()` tenant_isolation policy shape used
+    for `leads`/`projects`, but nothing has exercised that mechanism for
+    either table specifically until this task. Builds a real Project,
+    MarkupProfile, Estimate, and ChangeOrder through the real API, acting AS
+    the child branch (X-Tenant-ID, backed by a genuine company_users row
+    from `_create_child_with_membership` — not header-spoofing). Then
+    confirms the parent admin's own token — still scoped to the parent's
+    own company_id, no header switching involved — can see both rows via
+    `GET /estimates/{id}` and `GET /projects/{id}/change-orders` (list).
+    Mirrors test_tenant_isolation_phase1.py's
+    test_parent_admin_can_see_child_branch_leads."""
+    parent = await _register_and_login(client, "Parent Co", "parent-hier-admin@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+    await _advance_project_to_active(client, child_headers, project["id"])
+    markup = await _create_markup_profile(client, child_headers)
+    estimate = await _create_estimate(
+        client, child_headers, project_id=project["id"], markup_profile_id=markup["id"]
+    )
+    change_order = await _create_change_order(client, child_headers, project["id"])
+
+    get_estimate = await client.get(f"/estimates/{estimate['id']}", headers=parent["headers"])
+    assert get_estimate.status_code == 200, get_estimate.text
+    assert get_estimate.json()["id"] == estimate["id"]
+
+    list_change_orders = await client.get(
+        f"/projects/{project['id']}/change-orders", headers=parent["headers"]
+    )
+    assert list_change_orders.status_code == 200, list_change_orders.text
+    ids = {item["id"] for item in list_change_orders.json()["items"]}
+    assert change_order["id"] in ids
+
+
+async def test_sibling_branches_cannot_see_each_others_estimate_or_change_order(client):
+    """Grants the parent admin real company_users rows in BOTH sibling
+    branches directly via SQL (`_create_child_with_membership`, twice) so
+    X-Tenant-ID genuinely switches the active tenant context to either
+    branch rather than merely attempting to spoof it — same setup this
+    file's own Task 2.6 sibling-branch catalog test and
+    test_tenant_isolation_phase1.py's
+    test_sibling_branches_cannot_see_each_others_leads use. Each branch
+    builds its own Project/MarkupProfile/Estimate/ChangeOrder through the
+    real API. Acting as Branch A, Branch B's Estimate is invisible (404 via
+    `GET /estimates/{id}`), and Branch B's Project — and therefore its
+    Change Order list nested under it — is equally invisible (404): the
+    project itself 404s before the change_orders table's own RLS check is
+    ever reached, the same "nested resource 404s on the invisible parent"
+    pattern every other nested route in this codebase follows.
+
+    The ChangeOrder half additionally probes `POST
+    /change-orders/{id}/send-for-signature` (`_get_change_order_or_404`)
+    directly against Branch B's own change_order id, not just the
+    list-nested-under-an-invisible-project path above — this is the same
+    singular, ID-addressed route
+    `test_change_order_send_for_signature_genuinely_cross_tenant_returns_404`
+    already uses elsewhere in this file, and including it here brings the
+    ChangeOrder half of this test to the same rigor as the Estimate half
+    (which goes through `GET /estimates/{id}`'s own RLS-backed path
+    directly, not just a nested list). Checked symmetrically in both
+    directions."""
+    parent = await _register_and_login(client, "Parent Co", "sib-hier-admin@acme.test")
+    child_a_id = await _create_child_with_membership(client, parent, "Branch A")
+    child_b_id = await _create_child_with_membership(client, parent, "Branch B")
+    headers_a = {**parent["headers"], "X-Tenant-ID": child_a_id}
+    headers_b = {**parent["headers"], "X-Tenant-ID": child_b_id}
+
+    project_a = await _create_project(client, headers_a)
+    await _advance_project_to_active(client, headers_a, project_a["id"])
+    markup_a = await _create_markup_profile(client, headers_a)
+    estimate_a = await _create_estimate(
+        client, headers_a, project_id=project_a["id"], markup_profile_id=markup_a["id"]
+    )
+    change_order_a = await _create_change_order(client, headers_a, project_a["id"])
+
+    project_b = await _create_project(client, headers_b)
+    await _advance_project_to_active(client, headers_b, project_b["id"])
+    markup_b = await _create_markup_profile(client, headers_b)
+    estimate_b = await _create_estimate(
+        client, headers_b, project_id=project_b["id"], markup_profile_id=markup_b["id"]
+    )
+    change_order_b = await _create_change_order(client, headers_b, project_b["id"])
+
+    # --- Acting as Branch A: Branch B's rows are invisible. -----------------
+    get_estimate_b_as_a = await client.get(f"/estimates/{estimate_b['id']}", headers=headers_a)
+    assert get_estimate_b_as_a.status_code == 404
+
+    list_change_orders_b_as_a = await client.get(
+        f"/projects/{project_b['id']}/change-orders", headers=headers_a
+    )
+    assert list_change_orders_b_as_a.status_code == 404
+
+    sfs_change_order_b_as_a = await client.post(
+        f"/change-orders/{change_order_b['id']}/send-for-signature", headers=headers_a
+    )
+    assert sfs_change_order_b_as_a.status_code == 404
+
+    # --- Symmetric: acting as Branch B, Branch A's rows are equally
+    # invisible. ---------------------------------------------------------
+    get_estimate_a_as_b = await client.get(f"/estimates/{estimate_a['id']}", headers=headers_b)
+    assert get_estimate_a_as_b.status_code == 404
+
+    list_change_orders_a_as_b = await client.get(
+        f"/projects/{project_a['id']}/change-orders", headers=headers_b
+    )
+    assert list_change_orders_a_as_b.status_code == 404
+
+    sfs_change_order_a_as_b = await client.post(
+        f"/change-orders/{change_order_a['id']}/send-for-signature", headers=headers_b
+    )
+    assert sfs_change_order_a_as_b.status_code == 404
