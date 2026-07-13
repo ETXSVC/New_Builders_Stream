@@ -245,6 +245,14 @@ async def dismiss_compliance_notification(
         .where(ComplianceDocument.id == notification.compliance_document_id)
     )
     result = await current.session.execute(document_query)
+    # .one() (not .one_or_none()): a notification can never outlive its
+    # document — compliance_notifications.compliance_document_id has
+    # ondelete="CASCADE" (Task 3.1), and compliance_documents has UPDATE/
+    # DELETE revoked from app_user with no delete route anywhere in this
+    # codebase (migration 0009) — so a row reachable via _get_notification_or_404
+    # always has a real, joinable document. If that invariant is ever
+    # relaxed (a future delete route added to compliance_documents), this
+    # call needs to become .one_or_none() with a real error path.
     document, subcontractor = result.one()
 
     return ComplianceNotificationEntry(

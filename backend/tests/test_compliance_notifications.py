@@ -118,7 +118,20 @@ async def _seed_notifications(client, admin, *, days_out=5, name="Ace Plumbing C
     entirely: the connection is opened, used, committed, and physically
     closed before this function returns, so nothing from it can still be
     outstanding by the time the caller's next `client` request — or the next
-    fixture's `TRUNCATE` in conftest.py's `_clean_tables` — runs."""
+    fixture's `TRUNCATE` in conftest.py's `_clean_tables` — runs.
+
+    This mitigates a symptom (`asyncpg.exceptions.DeadlockDetectedError` in
+    `_clean_tables`) that was, on investigation, ultimately traced to a
+    SEPARATE root cause — every git worktree on this machine sharing one
+    hardcoded test database name (`tests/conftest.py`'s `TEST_DB_NAME`),
+    confirmed via `docker logs`' own deadlock records pairing this file's
+    queries against queries no single sequential test run could have issued
+    itself. See this file's own commit message (`git log --grep
+    "compliance notification listing and dismissal"`) for the full
+    root-cause investigation, and the "Namespace the test database per
+    worktree/process" follow-up task for the actual fix. This hardening is
+    still worth keeping regardless — it closes a real, narrower window of
+    its own — but it is not itself what makes the deadlock symptom rare."""
     subcontractor_id = await _create_subcontractor(client, admin, name=name)
     expires_on = (date.today() + timedelta(days=days_out)).isoformat()
     document_id = await _upload_compliance_document(
