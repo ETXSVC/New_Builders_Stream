@@ -4,8 +4,10 @@ suite uses. See docs/superpowers/plans/2026-07-07-phase-0-foundation.md,
 Task 19 for the original checks,
 docs/superpowers/plans/2026-07-08-phase-1-crm-project-management.md,
 Task 19 for the Lead-to-Won-to-Project exit-criterion block added later
-in this file, and docs/superpowers/plans/2026-07-09-phase-2-estimation-esignature.md,
-Task 2.25 for the Estimate-to-Approval exit-criterion block added after that.
+in this file, docs/superpowers/plans/2026-07-09-phase-2-estimation-esignature.md,
+Task 2.25 for the Estimate-to-Approval exit-criterion block added after that,
+and docs/superpowers/plans/2026-07-13-compliance-tracking.md, Task 3.13 for
+the Compliance Tracking exit-criterion block added last.
 
 Task 2.25 note on the `worker` service: this script deliberately does NOT
 bring up the `worker` container (Dramatiq's PDF-export consumer) and does
@@ -21,12 +23,27 @@ async PDF pipeline in-process, so that coverage isn't lost — it just lives
 there instead of here. `redis` IS still brought up for this script, though:
 the `backend` container imports `app.tasks.broker` at module scope (Task
 2.14), so the API process itself won't even start without a reachable Redis,
-even though nothing in this test enqueues a job."""
+even though nothing in this test enqueues a job.
+
+Task 3.13 note on the `scheduler` service, matching Task 2.25's own
+deferral above exactly: this script deliberately does NOT attempt to
+exercise the `scheduler` service's actual daily firing
+(`check_compliance_expiry`'s real message flow, `app/scheduler.py` /
+`app/tasks/compliance_expiry.py`). Reliably waiting on a real
+cron-scheduled background job inside a smoke-test script is
+disproportionately flaky for what this test needs to prove, and
+`backend/tests/test_compliance_expiry_task.py` already exercises that
+logic directly and thoroughly (plus Task 3.9's own live-verification pass
+already exercised the real scheduler->worker->DB chain once). `scheduler`
+IS still brought up alongside the rest of the stack when this script is
+run against the live stack (confirmed to start cleanly), but nothing
+below talks to it."""
 
 import re
 import sys
 import time
 import uuid
+from datetime import date, timedelta
 
 import httpx
 
@@ -384,6 +401,168 @@ def run() -> None:
         checks_passed.append(
             "GET /esignatures/{id} over real HTTP returns the real, persisted signature record "
             "matching what was submitted"
+        )
+
+        # --- Phase 3 exit criterion: Compliance Tracking, over real HTTP ---
+        # Fresh company so this block is self-contained and independent of the
+        # Phase 0/1/2 checks above. See this module's own docstring for why
+        # the `scheduler` service's real daily firing is deliberately NOT
+        # exercised here.
+        company_e = register(client, "E2E Company E", f"admin-e-{run_id}@e2e.example")
+        token_e = login(client, f"admin-e-{run_id}@e2e.example")["access_token"]
+        headers_e = {"Authorization": f"Bearer {token_e}"}
+        checks_passed.append("company E (Compliance Tracking flow) registered and logged in over real HTTP")
+
+        compliance_project = client.post(
+            "/projects",
+            json={"name": f"E2E Compliance Project {run_id}", "site_address": "789 E2E Blvd"},
+            headers=headers_e,
+        )
+        assert compliance_project.status_code == 201, compliance_project.text
+        compliance_project_id = compliance_project.json()["id"]
+        checks_passed.append("Project created over real HTTP for Compliance flow")
+
+        # Subcontractor #1 gets an "expiring soon" document: expires_on =
+        # today + 20 days, computed here (not a hardcoded calendar date that
+        # would go stale) — falls inside the dashboard's inclusive 0-30-day
+        # "expiring soon" window (app/routers/compliance.py's
+        # _EXPIRING_SOON_WINDOW).
+        expiring_subcontractor = client.post(
+            "/subcontractors",
+            json={"name": f"E2E Expiring Sub {run_id}", "trade": "electrical"},
+            headers=headers_e,
+        )
+        assert expiring_subcontractor.status_code == 201, expiring_subcontractor.text
+        expiring_subcontractor_id = expiring_subcontractor.json()["id"]
+        checks_passed.append("Subcontractor created over real HTTP (expiring-soon scenario)")
+
+        expires_soon_on = (date.today() + timedelta(days=20)).isoformat()
+        expiring_doc = client.post(
+            f"/subcontractors/{expiring_subcontractor_id}/compliance-documents",
+            data={"doc_type": "insurance_certificate", "expires_on": expires_soon_on},
+            files={"file": ("insurance.pdf", b"fake-e2e-insurance-bytes", "application/pdf")},
+            headers=headers_e,
+        )
+        assert expiring_doc.status_code == 201, expiring_doc.text
+        expiring_doc_id = expiring_doc.json()["id"]
+        checks_passed.append(
+            f"Compliance document uploaded over real HTTP with expires_on={expires_soon_on} "
+            "(today + 20 days, within the 30-day expiring-soon window)"
+        )
+
+        dashboard = client.get("/compliance/dashboard", headers=headers_e)
+        assert dashboard.status_code == 200, dashboard.text
+        dashboard_entries = [
+            entry
+            for entry in dashboard.json()["items"]
+            if entry["compliance_document_id"] == expiring_doc_id
+        ]
+        assert len(dashboard_entries) == 1, (
+            f"expected exactly one dashboard entry for compliance_document_id="
+            f"{expiring_doc_id!r}, found {len(dashboard_entries)}: {dashboard.json()['items']}"
+        )
+        assert dashboard_entries[0]["status"] == "expiring_soon", (
+            f"expected status='expiring_soon', got {dashboard_entries[0]['status']!r}"
+        )
+        assert dashboard_entries[0]["subcontractor_id"] == expiring_subcontractor_id, (
+            f"expected subcontractor_id={expiring_subcontractor_id!r}, got "
+            f"{dashboard_entries[0]['subcontractor_id']!r}"
+        )
+        checks_passed.append(
+            "GET /compliance/dashboard over real HTTP shows the newly-uploaded document "
+            "with status='expiring_soon'"
+        )
+
+        # Subcontractor #2 is a SEPARATE subcontractor with a
+        # separately-uploaded ALREADY-EXPIRED document (today - 10 days),
+        # used for the assignment-block scenario below — kept distinct from
+        # the expiring-soon subcontractor above so the dashboard assertions
+        # above aren't muddied by a second entry.
+        expired_subcontractor = client.post(
+            "/subcontractors",
+            json={"name": f"E2E Expired Sub {run_id}", "trade": "plumbing"},
+            headers=headers_e,
+        )
+        assert expired_subcontractor.status_code == 201, expired_subcontractor.text
+        expired_subcontractor_id = expired_subcontractor.json()["id"]
+        checks_passed.append("Subcontractor created over real HTTP (already-expired scenario)")
+
+        expired_on = (date.today() - timedelta(days=10)).isoformat()
+        expired_doc = client.post(
+            f"/subcontractors/{expired_subcontractor_id}/compliance-documents",
+            data={"doc_type": "license", "expires_on": expired_on},
+            files={"file": ("license.pdf", b"fake-e2e-license-bytes", "application/pdf")},
+            headers=headers_e,
+        )
+        assert expired_doc.status_code == 201, expired_doc.text
+        checks_passed.append(
+            f"Compliance document uploaded over real HTTP with expires_on={expired_on} "
+            "(today - 10 days, already expired)"
+        )
+
+        pm_email = f"pm-{run_id}@e2e.example"
+        pm_invite = client.post(
+            "/invitations", json={"email": pm_email, "role": "project_manager"}, headers=headers_e
+        )
+        assert pm_invite.status_code == 201, pm_invite.text
+        pm_accept = client.post(
+            f"/invitations/{pm_invite.json()['id']}/accept",
+            json={"full_name": "E2E Project Manager", "password": PASSWORD},
+        )
+        assert pm_accept.status_code == 200, pm_accept.text
+        pm_token = login(client, pm_email)["access_token"]
+        pm_headers = {"Authorization": f"Bearer {pm_token}"}
+        checks_passed.append("project_manager-role user invited and accepted over real HTTP")
+
+        pm_assignment_attempt = client.post(
+            f"/projects/{compliance_project_id}/subcontractor-assignments",
+            json={"subcontractor_id": expired_subcontractor_id},
+            headers=pm_headers,
+        )
+        assert pm_assignment_attempt.status_code == 409, (
+            "expected 409 when a project_manager assigns a subcontractor with an expired "
+            f"compliance document, got {pm_assignment_attempt.status_code}: {pm_assignment_attempt.text}"
+        )
+        checks_passed.append(
+            "project_manager assignment of a subcontractor with an expired compliance "
+            "document correctly rejected with 409 over real HTTP"
+        )
+
+        override_reason = "E2E verified override: emergency crew needed"
+        admin_assignment = client.post(
+            f"/projects/{compliance_project_id}/subcontractor-assignments",
+            json={"subcontractor_id": expired_subcontractor_id, "override_reason": override_reason},
+            headers=headers_e,
+        )
+        assert admin_assignment.status_code == 201, (
+            "expected 201 when an admin assigns a subcontractor with an expired compliance "
+            f"document AND supplies an override_reason, got {admin_assignment.status_code}: "
+            f"{admin_assignment.text}"
+        )
+        admin_assignment_body = admin_assignment.json()
+        assert admin_assignment_body["override_reason"] == override_reason, (
+            f"expected override_reason={override_reason!r}, got "
+            f"{admin_assignment_body['override_reason']!r}"
+        )
+        assert admin_assignment_body["subcontractor_id"] == expired_subcontractor_id
+        assert admin_assignment_body["project_id"] == compliance_project_id
+        checks_passed.append(
+            "admin override of an expired-compliance subcontractor assignment succeeds over "
+            "real HTTP (201) with override_reason persisted on the response"
+        )
+        # Audit log CONTENT verification (action='subcontractor.assigned_with_expired_docs',
+        # entity_type, log_metadata) is already covered by the backend's own pytest suite
+        # (backend/tests/test_subcontractor_assignments.py::
+        # test_admin_override_writes_audit_log_entry_verified_via_raw_sql), which reads the
+        # row directly via raw SQL against the owner DB connection. There is no
+        # audit-log-read HTTP endpoint anywhere in this API (no GET route exists for
+        # `audit_log` in any router), so this script's own check is deliberately limited to
+        # confirming the 201 success path itself — it does not invent a fake verification
+        # mechanism for the audit log entry's content.
+        checks_passed.append(
+            "audit log entry for the override is written server-side on the 201 success "
+            "path (its content is verified live over raw SQL by the backend's own pytest "
+            "suite; no audit-log-read HTTP endpoint exists for this script to check it)"
         )
 
     with httpx.Client(timeout=10.0) as client:

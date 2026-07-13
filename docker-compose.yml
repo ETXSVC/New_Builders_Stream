@@ -55,6 +55,25 @@ services:
     # explicitly per job.
     build: ./backend
     env_file: .env
+    environment:
+      # Task 3.9 live-verification finding: `MIGRATIONS_DATABASE_URL` in
+      # `.env` is deliberately `localhost:5432` (see that file's own
+      # comment) because it was, until this task, only ever read by
+      # host-side processes (Alembic, pytest). `_check_compliance_expiry`'s
+      # owner-role engine (Task 3.8, `app/tasks/compliance_expiry.py`) also
+      # reads it, and this container's own `localhost` does not resolve to
+      # the `postgres` service — confirmed empirically: without this
+      # override, `check_compliance_expiry()` messages reached this worker
+      # and were dispatched correctly (proving the Dramatiq wiring above is
+      # right), but then failed with `OSError: Connect call failed
+      # ('127.0.0.1', 5432)` every time. `environment:` here overrides the
+      # `env_file:` value for this service only (Compose's own documented
+      # precedence) — same Docker-network-hostname pattern `DATABASE_URL`
+      # above already uses for the identical reason, built from the same
+      # `${POSTGRES_USER}`/`${POSTGRES_PASSWORD}`/`${POSTGRES_DB}`
+      # variables `postgres:`'s own `environment:` block uses, rather than
+      # duplicating literal credentials here.
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,7 +90,43 @@ services:
       # a later request-handling process to read/serve, rather than landing
       # in this container's own ephemeral filesystem.
       - documents_data:/data/documents
-    command: dramatiq app.tasks.estimate_pdf
+    # Task 3.9 fix: the Dramatiq CLI only imports the module(s) named on its
+    # own command line to discover `@dramatiq.actor`-decorated functions
+    # (`dramatiq --help`'s own "Import extra modules" example confirms
+    # multiple modules are accepted as additional positional args). Without
+    # `app.tasks.compliance_expiry` listed here too, `check_compliance_expiry`
+    # would never be registered with this worker process — a message the
+    # scheduler enqueues for it would sit in the Redis queue with nothing
+    # able to consume it, not error loudly.
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry
+
+  scheduler:
+    # Task 3.9: fires `check_compliance_expiry.send()` (Task 3.8) once daily
+    # via APScheduler's `BlockingScheduler` (`app/scheduler.py`). Same image
+    # as `backend`/`worker` — it only needs the `app` package importable,
+    # not a different runtime. This process itself never touches the
+    # database or Redis's queue contents directly; it only publishes one
+    # message a day for `worker` (which DOES import
+    # `app.tasks.compliance_expiry`, see that service's `command` above) to
+    # pick up and execute.
+    build: ./backend
+    env_file: .env
+    # Kept for defensive startup ordering even though this process itself
+    # never queries postgres or redis directly (see the comment block
+    # above) — Redis IS the thing `.send()` actually publishes to, and
+    # requiring it healthy first avoids this container's very first
+    # `add_job(...)` firing before Redis is reachable. Postgres is included
+    # for consistency with every other service's own health-gated startup
+    # in this file, not because this container queries it.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No `ports:` — same reasoning as `worker`: not HTTP-reachable.
+    volumes:
+      - ./backend:/app
+    command: python -m app.scheduler
 
   frontend:
     build: ./frontend
