@@ -123,6 +123,16 @@ async def _check_compliance_expiry(
     """
     today = date.today()
 
+    # Both queries below are unfiltered full-table scans, by design at the
+    # current scale (code-quality review of this task flagged this
+    # explicitly as a future scaling cliff, not a defect): every
+    # ComplianceDocument and every historical ComplianceNotification ever
+    # fired, across every tenant, loads into memory on each daily run. At
+    # today's data volume this is far cheaper than N per-document
+    # existence queries; once real notification-table volume is known, a
+    # natural follow-up is windowing the `already_fired` prefetch (e.g. to
+    # documents not yet expired, since an already-expired document's
+    # thresholds have necessarily all fired already).
     async with session_factory() as session:
         documents_result = await session.execute(select(ComplianceDocument))
         documents = documents_result.scalars().all()

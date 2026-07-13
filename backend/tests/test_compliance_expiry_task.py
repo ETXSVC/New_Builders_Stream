@@ -116,7 +116,7 @@ def test_owner_engine_points_at_test_database_not_dev_database():
 # =============================================================================
 
 
-async def test_single_threshold_crossing_creates_one_notification(client):
+async def test_document_5_days_out_fires_all_three_thresholds_simultaneously(client):
     admin = await _register_and_login(client, "Acme Construction", "expiry-single@acme.test")
     subcontractor_id = await _create_subcontractor(client, admin)
     expires_on = (date.today() + timedelta(days=5)).isoformat()
