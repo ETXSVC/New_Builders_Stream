@@ -143,10 +143,19 @@ async def test_single_threshold_crossing_creates_one_notification(client):
 
 async def test_second_run_does_not_duplicate_notification():
     """Uses a fixture-free, directly-constructed ComplianceDocument (owner
-    connection, real company row) so the UniqueConstraint added in Task 3.1
-    is genuinely exercised by two full runs of the actor against the exact
-    same row — not merely trusted to exist. A second run producing the same
-    row count (not just "no exception raised") is the actual proof."""
+    connection, real company row) so two full runs of the actor against the
+    exact same row are proven not to duplicate a notification — a second run
+    producing the SAME row ids (not just the same row count, which could
+    mask a duplicate-then-somehow-deduplicated bug) is the actual proof.
+
+    Spec-compliance review of this task noted this test proves the
+    application-level `already_fired` pre-check prevents the duplicate
+    INSERT from ever being attempted — it does not itself trigger the DB
+    `UniqueConstraint` (Task 3.1)'s own `IntegrityError` path, since this
+    single-threaded, sequential test never races two concurrent scanner
+    runs against each other. That constraint remains the actual backstop
+    for a genuinely concurrent scenario (e.g. two overlapping scheduler
+    runs); it just isn't the mechanism THIS particular test exercises."""
     from app.models.company import Company
     from app.models.compliance_document import ComplianceDocument
     from app.models.subcontractor import Subcontractor
