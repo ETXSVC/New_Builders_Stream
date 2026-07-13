@@ -59,8 +59,9 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
             #    same transaction as the rows above — a trial-less root
             #    company isn't a state this feature tolerates; if the Stripe
             #    call fails, the whole registration transaction rolls back
-            #    (session_scope()'s own transaction-context behavior), no
-            #    retry/fallback path.
+            #    (the enclosing `async with session.begin():` above — not
+            #    session_scope() itself, which is a bare passthrough with no
+            #    commit/rollback of its own), no retry/fallback path.
             stripe_client = get_stripe_client()
             stripe_customer_id = await stripe_client.create_customer(
                 email=payload.admin_email, name=payload.company_name

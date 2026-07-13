@@ -1,3 +1,10 @@
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.models import Subscription
+from tests.conftest import TEST_DATABASE_URL
+
+
 async def test_register_creates_company_and_admin_user(client):
     response = await client.post(
         "/auth/register",
@@ -69,12 +76,6 @@ async def test_login_rejects_unknown_email(client):
 
 
 async def test_register_creates_a_trialing_pro_subscription(client):
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-    from app.models import Subscription
-    from tests.conftest import TEST_DATABASE_URL
-
     response = await client.post(
         "/auth/register",
         json={
