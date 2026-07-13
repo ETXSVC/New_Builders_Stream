@@ -13,3 +13,7 @@ class SubscriptionResponse(BaseModel):
     status: str
     included_seats: int
     current_period_end: datetime | None
+
+
+class PortalSessionResponse(BaseModel):
+    url: str
