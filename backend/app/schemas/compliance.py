@@ -1,5 +1,5 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -34,3 +34,33 @@ class ComplianceDashboardResponse(BaseModel):
     expected to be a bounded, glanceable list)."""
 
     items: list[ComplianceDashboardEntry]
+
+
+# Task 3.10. Same "plain keyword construction, not `from_attributes=True`"
+# rationale as `ComplianceDashboardEntry` above: `ComplianceNotificationEntry`
+# is assembled in `app/routers/compliance.py` from a joined
+# `(ComplianceNotification, ComplianceDocument, Subcontractor)` row triple.
+# `ComplianceNotification` itself only carries `id`, `compliance_document_id`,
+# `company_id`, `threshold`, `fired_at`, `read_at` — `subcontractor_name`,
+# `doc_type`, and `expires_on` all come from the two JOINED tables, not from
+# `ComplianceNotification` itself, so there is no single ORM object
+# `.model_validate()` could point at here either.
+
+
+class ComplianceNotificationEntry(BaseModel):
+    """One compliance notification, joined with its owning compliance
+    document's and subcontractor's display fields."""
+
+    id: uuid.UUID
+    compliance_document_id: uuid.UUID
+    subcontractor_name: str
+    doc_type: str
+    expires_on: date
+    threshold: str
+    fired_at: datetime
+    read_at: datetime | None
+
+
+class ComplianceNotificationListResponse(BaseModel):
+    items: list[ComplianceNotificationEntry]
+    next_cursor: str | None
