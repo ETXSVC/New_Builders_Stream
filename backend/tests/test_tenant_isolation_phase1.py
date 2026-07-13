@@ -741,3 +741,158 @@ async def test_parent_admin_can_see_child_branch_daily_log(client):
     assert list_response.status_code == 200, list_response.text
     ids = {item["id"] for item in list_response.json()["items"]}
     assert child_log_id in ids
+
+
+# --- `documents`/`daily_logs`: WRITE-side company_id sourcing -----------------
+#
+# The two tests above prove parent -> child READ visibility for rows whose
+# company_id was hand-set correctly by _insert_document_directly/
+# _insert_daily_log_directly — they never exercise upload_document's/
+# create_daily_log's own company_id-assignment logic at all. These two new
+# tests close that gap: the parent admin's own token (still scoped to the
+# PARENT's own company_id, no X-Tenant-ID switching) creates a Document/
+# DailyLog against a REAL child-branch Project via the actual
+# POST /projects/{id}/documents / POST /projects/{id}/daily-logs routes —
+# RLS's get_all_descendant_ids() grant lets this succeed even without
+# switching tenant context, exactly the scenario that surfaced a bug: both
+# routes used to stamp the new row with `current.company_id` (the PARENT's
+# id) instead of `project.company_id` (the child's own id), so the
+# resulting Document/DailyLog silently belonged to the wrong company —
+# invisible to a session later scoped directly to the child branch, despite
+# hanging off that branch's own Project. Fixed by deriving company_id from
+# the parent Project row instead of the acting session.
+
+
+async def test_creating_document_under_child_branch_project_uses_project_company_id(client):
+    parent = await _register_and_login(client, "Parent Co", "parent-doc-write-admin@acme.test")
+    create_child = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": "Seattle Branch"},
+        headers=parent["headers"],
+    )
+    assert create_child.status_code == 201
+    child_id = create_child.json()["id"]
+
+    child_project_id = await _insert_project_directly(child_id, name="Seattle Kitchen")
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child — RLS alone (get_all_descendant_ids()) makes the child's
+    # Project visible/writable to this session.
+    upload = await client.post(
+        f"/projects/{child_project_id}/documents",
+        data={"file_name": "seattle-blueprint.pdf"},
+        files={"file": ("seattle-blueprint.pdf", b"fake-pdf-bytes", "application/pdf")},
+        headers=parent["headers"],
+    )
+    assert upload.status_code == 201, upload.text
+    assert upload.json()["company_id"] == child_id, (
+        "Document created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {upload.json()['company_id']!r}, "
+        f"expected child_id={child_id!r}"
+    )
+
+    # Read it back — still the parent's own default headers, no X-Tenant-ID
+    # switch (the parent has no `company_users` membership in the child at
+    # all; only RLS's get_all_descendant_ids() grant makes the child's rows
+    # visible to a parent-scoped session, the same mechanism the write above
+    # relied on) — confirming the row is genuinely persisted and visible,
+    # not just correctly labeled in the create response.
+    list_response = await client.get(
+        f"/projects/{child_project_id}/documents", headers=parent["headers"]
+    )
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert upload.json()["id"] in ids
+
+
+async def test_creating_daily_log_under_child_branch_project_uses_project_company_id(client):
+    parent = await _register_and_login(client, "Parent Co", "parent-dl-write-admin@acme.test")
+    create_child = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": "Seattle Branch"},
+        headers=parent["headers"],
+    )
+    assert create_child.status_code == 201
+    child_id = create_child.json()["id"]
+
+    child_project_id = await _insert_project_directly(child_id, name="Seattle Kitchen")
+
+    daily_log = await client.post(
+        f"/projects/{child_project_id}/daily-logs",
+        json={"log_date": "2026-01-01", "notes": "Seattle site notes"},
+        headers=parent["headers"],  # parent's own default headers, no X-Tenant-ID switch
+    )
+    assert daily_log.status_code == 201, daily_log.text
+    assert daily_log.json()["company_id"] == child_id, (
+        "DailyLog created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {daily_log.json()['company_id']!r}, "
+        f"expected child_id={child_id!r}"
+    )
+
+    # Read it back — same "parent's own default headers, no X-Tenant-ID
+    # switch" reasoning as the Document test above.
+    list_response = await client.get(
+        f"/projects/{child_project_id}/daily-logs", headers=parent["headers"]
+    )
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert daily_log.json()["id"] in ids
+
+
+async def _fetch_audit_rows(company_id):
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        return await conn.fetch(
+            "SELECT action, entity_id, log_metadata FROM audit_log WHERE company_id = $1",
+            company_id,
+        )
+    finally:
+        await conn.close()
+
+
+async def test_changing_status_of_child_branch_project_uses_project_company_id_in_audit_log(
+    client,
+):
+    """Same class of bug as the Document/DailyLog tests above, in
+    `update_project_status`: the `project.status_changed` audit log entry
+    used to come from `current.company_id` rather than
+    `project.company_id`. `_get_project_or_404` already makes a
+    child-branch Project reachable via RLS's `get_all_descendant_ids()`
+    grant without switching `X-Tenant-ID`, so a parent admin's own default
+    session can legally transition a descendant branch's Project — and the
+    resulting audit entry must be recorded under the PROJECT's own company
+    (the child), not the acting session's (the parent), or a session later
+    scoped directly to the child branch auditing its own Project's history
+    would see nothing for a status change the parent made."""
+    parent = await _register_and_login(client, "Parent Co", "parent-status-write-admin@acme.test")
+    create_child = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": "Seattle Branch"},
+        headers=parent["headers"],
+    )
+    assert create_child.status_code == 201
+    child_id = create_child.json()["id"]
+
+    child_project_id = await _insert_project_directly(child_id, name="Seattle Kitchen")
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child — RLS alone makes the child's Project visible/writable.
+    transition = await client.patch(
+        f"/projects/{child_project_id}/status",
+        json={"status": "pre_construction"},
+        headers=parent["headers"],
+    )
+    assert transition.status_code == 200, transition.text
+    assert transition.json()["status"] == "pre_construction"
+
+    audit_rows = await _fetch_audit_rows(child_id)
+    matching = [row for row in audit_rows if row["action"] == "project.status_changed"]
+    assert len(matching) == 1, (
+        "The project.status_changed audit log entry must be recorded under "
+        "the PROJECT's own company (the child), not the acting session's "
+        "company (the parent) — found 0 matching rows scoped to the child "
+        "company"
+    )
+    assert str(matching[0]["entity_id"]) == child_project_id

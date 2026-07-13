@@ -129,13 +129,22 @@ async def create_change_order(
     category of conflict `update_project_status`'s illegal-transition check
     uses 409 for.
 
-    `company_id=current.company_id`, not `project.company_id` — matching the
-    established precedent this codebase's own nested-resource-creation
-    routes actually use: `upload_document` and `create_daily_log`
-    (app/routers/projects.py) both set `company_id=current.company_id` on
-    the child row they create, not `company_id=project.company_id`. Followed
-    here for consistency with that precedent rather than introducing a new
-    one.
+    `company_id=project.company_id`, not `current.company_id`: a parent
+    company's session can legitimately act on a descendant branch's Project
+    without switching `X-Tenant-ID` to that branch first (RLS's
+    `get_all_descendant_ids()` grant already makes the descendant's rows
+    visible/writable). Using `current.company_id` here would silently stamp
+    this ChangeOrder with the PARENT's id instead of the Project's own,
+    producing a row whose `company_id` disagrees with its own parent
+    Project's `company_id` — a session later scoped directly to the
+    descendant branch would then find its own Project's ChangeOrder
+    invisible under RLS. `upload_document`/`create_daily_log`
+    (app/routers/projects.py) had the identical bug and are fixed
+    alongside this route, in a dedicated post-Phase-2 audit of this exact
+    pattern across every nested-resource-creation route in this codebase —
+    this docstring previously (incorrectly) cited those two routes'
+    `current.company_id` usage as an established precedent to follow; that
+    was itself the bug, not a precedent worth matching.
 
     `status="pending"` always — `ChangeOrderCreateRequest` has no `status`
     field (see its own docstring), so a caller cannot set it via payload.
@@ -159,7 +168,7 @@ async def create_change_order(
 
     change_order = ChangeOrder(
         project_id=project.id,
-        company_id=current.company_id,
+        company_id=project.company_id,
         description=payload.description,
         cost_delta=payload.cost_delta,
         schedule_impact_days=payload.schedule_impact_days,
@@ -282,6 +291,16 @@ async def approve_change_order(
     `signer_name`/`signer_email` as `Form(...)` fields, `signature_artifact`
     as `File(...)`, read via `.read()` into raw bytes.
 
+    `company_id=change_order.company_id`, not `current.company_id`, for
+    both the captured `Esignature` and the audit log entry below — same
+    rationale as `create_change_order`'s own fix (this router's module):
+    the acting `client` could in principle hold membership in a parent
+    company acting on a descendant's ChangeOrder without switching
+    `X-Tenant-ID`, and the resulting `Esignature`/`audit_log` rows must
+    stay co-located (same `company_id`) with the `ChangeOrder` they
+    evidence, not drift to whatever company the acting session happens to
+    be in at that moment.
+
     Side effects, in order: capture the e-signature, link it onto this
     ChangeOrder (`esignature_id`), flip `status='approved'`, write a
     `change_order.approved` audit log entry. **No `is_snapshotted` flag** —
@@ -308,7 +327,7 @@ async def approve_change_order(
 
     esignature = await capture_esignature(
         current.session,
-        company_id=current.company_id,
+        company_id=change_order.company_id,
         signer_name=signer_name,
         signer_email=signer_email,
         ip_address=ip_address,
@@ -324,7 +343,7 @@ async def approve_change_order(
 
     await write_audit_log(
         current.session,
-        company_id=current.company_id,
+        company_id=change_order.company_id,
         actor_id=current.user.id,
         action="change_order.approved",
         entity_type="change_order",
@@ -355,6 +374,10 @@ async def reject_change_order(
     `ChangeOrderRejectRequest` (`app/schemas/change_order.py`) is a plain
     JSON body, not `multipart/form-data` — unlike `approve`, there is no
     binary signature artifact to submit here.
+
+    `company_id=change_order.company_id`, not `current.company_id`, for the
+    audit log entry — see `approve_change_order`'s docstring above for the
+    full rationale.
     """
     change_order = await _get_change_order_or_404(current, change_order_id)
     _require_change_order_pending(change_order)
@@ -366,7 +389,7 @@ async def reject_change_order(
 
     await write_audit_log(
         current.session,
-        company_id=current.company_id,
+        company_id=change_order.company_id,
         actor_id=current.user.id,
         action="change_order.rejected",
         entity_type="change_order",
