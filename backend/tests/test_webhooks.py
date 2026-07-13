@@ -125,3 +125,28 @@ async def test_tampered_signature_is_rejected(client):
     )
 
     assert response.status_code == 400
+
+
+async def test_unknown_subscription_id_is_acknowledged_and_ignored(client):
+    payload = json.dumps(
+        {
+            "type": "customer.subscription.updated",
+            "data": {"object": {"id": "sub_does_not_exist", "status": "active"}},
+        }
+    ).encode()
+
+    response = await client.post(
+        "/webhooks/stripe", content=payload, headers={"Stripe-Signature": _sign(payload)}
+    )
+
+    assert response.status_code == 200
+
+
+async def test_validly_signed_non_json_body_is_rejected_not_a_500(client):
+    payload = b"this is not json"
+
+    response = await client.post(
+        "/webhooks/stripe", content=payload, headers={"Stripe-Signature": _sign(payload)}
+    )
+
+    assert response.status_code == 400

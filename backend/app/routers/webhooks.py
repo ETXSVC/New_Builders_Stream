@@ -59,27 +59,42 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
         event = stripe_client.verify_webhook_signature(payload=payload, signature_header=signature)
     except StripeSignatureError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid webhook signature")
+    except (TypeError, ValueError, AttributeError):
+        # An anonymous, unauthenticated caller controls every input to this
+        # route (body + every header) — a non-ASCII Stripe-Signature header
+        # makes hmac.compare_digest itself raise TypeError before any
+        # signature comparison happens, and a validly-signed-but-malformed
+        # (non-JSON, or JSON that isn't an object) body raises from
+        # json.loads or the dict-shaped access below. Both must 400, not
+        # leak an unhandled 500 with a stack trace on a public endpoint.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed webhook request")
 
-    event_type = event.get("type")
-    obj = event.get("data", {}).get("object", {})
+    event_type = event.get("type") if isinstance(event, dict) else None
+    obj = event.get("data", {}).get("object", {}) if isinstance(event, dict) else {}
 
-    if event_type == "customer.subscription.updated":
-        await _sync_subscription(
-            stripe_subscription_id=obj["id"],
-            new_status=obj["status"],
-            current_period_end=obj.get("current_period_end"),
-        )
-    elif event_type == "customer.subscription.deleted":
-        await _sync_subscription(
-            stripe_subscription_id=obj["id"], new_status="canceled", current_period_end=None
-        )
-    elif event_type == "invoice.payment_failed":
-        await _sync_subscription(
-            stripe_subscription_id=obj["subscription"],
-            new_status="past_due",
-            current_period_end=None,
-        )
-    # Any other event type: acknowledged, ignored — out of scope.
+    try:
+        if event_type == "customer.subscription.updated":
+            await _sync_subscription(
+                stripe_subscription_id=obj["id"],
+                new_status=obj["status"],
+                current_period_end=obj.get("current_period_end"),
+            )
+        elif event_type == "customer.subscription.deleted":
+            await _sync_subscription(
+                stripe_subscription_id=obj["id"], new_status="canceled", current_period_end=None
+            )
+        elif event_type == "invoice.payment_failed":
+            await _sync_subscription(
+                stripe_subscription_id=obj["subscription"],
+                new_status="past_due",
+                current_period_end=None,
+            )
+        # Any other event type: acknowledged, ignored — out of scope.
+    except KeyError:
+        # A validly-signed event of a type we handle, but missing a field
+        # our own handling for that type requires (a shape mismatch, not a
+        # signature problem) — 400, not an unhandled 500.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed webhook event payload")
 
     return {"received": True}
 
@@ -123,9 +138,14 @@ async def _sync_subscription(
                 )
 
             if previous_status == new_status:
-                # No actual status change — a duplicate/redelivered webhook
-                # for a status we already recorded. Skip the audit entry so
-                # it only fires on real transitions, not every redelivery.
+                # No actual status change — could be a genuine redelivery,
+                # or a legitimate renewal event that only advances
+                # current_period_end (already persisted above) without
+                # changing status. Either way, per design spec Section 4:
+                # audit entries fire on status transitions only, not on
+                # routine current_period_end-only refreshes — so no
+                # write_audit_log call here is the correct, deliberate
+                # behavior, not a gap.
                 return
 
             subscription.status = new_status

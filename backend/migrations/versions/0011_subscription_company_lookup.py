@@ -39,7 +39,7 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        CREATE OR REPLACE FUNCTION get_subscription_company_id(target_stripe_subscription_id VARCHAR)
+        CREATE OR REPLACE FUNCTION get_subscription_company_id(target_stripe_subscription_id VARCHAR(255))
         RETURNS UUID
         LANGUAGE sql
         STABLE
@@ -51,10 +51,10 @@ def upgrade() -> None:
         $$;
         """
     )
-    op.execute("REVOKE EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR) FROM PUBLIC")
-    op.execute("GRANT EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR) TO app_user")
+    op.execute("REVOKE EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR(255)) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR(255)) TO app_user")
 
 
 def downgrade() -> None:
-    op.execute("REVOKE EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR) FROM app_user")
-    op.execute("DROP FUNCTION IF EXISTS get_subscription_company_id(VARCHAR)")
+    op.execute("REVOKE EXECUTE ON FUNCTION get_subscription_company_id(VARCHAR(255)) FROM app_user")
+    op.execute("DROP FUNCTION IF EXISTS get_subscription_company_id(VARCHAR(255))")
