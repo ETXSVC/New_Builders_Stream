@@ -36,7 +36,7 @@ Implemented against the [roadmap](docs/09-roadmap-implementation-plan.md), on `m
 | 3 — Accounting/Billing | ⬜ Not started | Own future spec, per roadmap decomposition |
 | 4 — External Integrations | ⬜ Not started | |
 
-Backend test suite (`main`): 448 passing tests across 33 test files, including a dedicated tenant-isolation regression suite that gates every merge (per [10-test-strategy.md](docs/10-test-strategy.md) Section 2). CI runs on GitHub Actions ([.github/workflows/backend-ci.yml](.github/workflows/backend-ci.yml)).
+Backend test suite (`main`): 448 passing tests across 31 test files, including a dedicated tenant-isolation regression suite that gates every merge (per [10-test-strategy.md](docs/10-test-strategy.md) Section 2). CI runs on GitHub Actions ([.github/workflows/backend-ci.yml](.github/workflows/backend-ci.yml)).
 
 **Known gaps versus the documented design** (tracked as follow-up work, not silently dropped):
 - **Frontend:** every phase so far has been scoped backend-only — the product frontend (client dashboards, e-signature capture UI, project views) described in the PRD/Technical Architecture has not been built. `frontend/` currently holds a minimal scaffold plus some marketing-site pages; it is not the application UI.
