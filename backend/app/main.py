@@ -19,6 +19,7 @@ from app.routers import (
     subcontractors,
     subscriptions,
     tasks,
+    webhooks,
 )
 
 app = FastAPI(title="Builders Stream API", version="0.1.0")
@@ -37,6 +38,7 @@ app.include_router(subcontractors.router)
 app.include_router(subcontractor_assignments.router)
 app.include_router(compliance.router)
 app.include_router(subscriptions.router)
+app.include_router(webhooks.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called
