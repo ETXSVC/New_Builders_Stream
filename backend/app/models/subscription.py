@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, UUIDPKMixin
 
 VALID_TIERS = ("starter", "pro", "enterprise")
+_TIER_CHECK_SQL = "tier IN (" + ",".join(f"'{t}'" for t in VALID_TIERS) + ")"
 
 
 class Subscription(Base, UUIDPKMixin):
@@ -38,7 +39,12 @@ class Subscription(Base, UUIDPKMixin):
     )
 
     __table_args__ = (
-        CheckConstraint(f"tier IN {VALID_TIERS!r}", name="ck_subscriptions_tier"),
+        # Manual join, not f"tier IN {VALID_TIERS!r}": repr() of a 1-element
+        # tuple has a trailing comma ("('x',)"), which is invalid inside a
+        # SQL IN (...) list — same _X_CHECK_SQL convention every other
+        # status/enum-like column in this codebase already uses (lead.py,
+        # user.py, project.py, task.py, ...).
+        CheckConstraint(_TIER_CHECK_SQL, name="ck_subscriptions_tier"),
         UniqueConstraint("company_id", name="uq_subscriptions_company_id"),
         UniqueConstraint("stripe_subscription_id", name="uq_subscriptions_stripe_subscription_id"),
     )

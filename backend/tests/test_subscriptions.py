@@ -10,7 +10,7 @@ from app.models import Subscription
 from tests.conftest import TEST_DATABASE_URL
 
 
-async def test_subscription_model_round_trips_all_columns(client):
+async def test_subscription_model_round_trips_all_columns():
     # No HTTP route exists yet (this task is model/migration only) — insert
     # directly via a raw owner-role connection the same way
     # test_tenant_isolation_phase3.py's own helpers do, to prove the table

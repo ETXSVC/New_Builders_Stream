@@ -32,6 +32,13 @@ row whose company_id equals get_root_company_id(current_tenant) — which is
 its own row if the session's tenant IS root (matching
 get_all_descendant_ids()'s own base-case convention of including the
 starting id).
+
+Cyclic-data caveat (inherited, not new): like get_all_descendant_ids(),
+this recursive CTE has no CYCLE clause and would loop indefinitely against
+a corrupted parent_id chain (a company that is its own ancestor) — nothing
+in the schema prevents that today. Not a regression introduced here; the
+same limitation already exists in get_all_descendant_ids() (migration
+0001), walking the same graph in the other direction.
 """
 from alembic import op
 import sqlalchemy as sa
