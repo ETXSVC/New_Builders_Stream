@@ -9,11 +9,14 @@ from app.routers import (
     catalogs,
     change_orders,
     companies,
+    compliance,
     esignatures,
     estimates,
     invitations,
     leads,
     projects,
+    subcontractor_assignments,
+    subcontractors,
     tasks,
 )
 
@@ -29,6 +32,9 @@ app.include_router(catalogs.router)
 app.include_router(estimates.router)
 app.include_router(esignatures.router)
 app.include_router(change_orders.router)
+app.include_router(subcontractors.router)
+app.include_router(subcontractor_assignments.router)
+app.include_router(compliance.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called

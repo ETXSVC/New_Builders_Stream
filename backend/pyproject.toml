@@ -38,6 +38,12 @@ dependencies = [
     # single in-process, same-transaction consumer didn't need one). Pure
     # Python, no native dependencies (confirmed by installing it).
     "dramatiq[redis]>=2.2,<3.0",
+    # Task 3.9: the scheduler service (`app/scheduler.py`) that fires
+    # `check_compliance_expiry.send()` (Task 3.8) once daily. Core
+    # dependency, not dev-only: it must be present in the real container
+    # image the `scheduler` Docker Compose service runs from, not just this
+    # venv's own test-time dependencies.
+    "apscheduler>=3.10,<4.0",
 ]
 
 [project.optional-dependencies]
