@@ -15,6 +15,7 @@ from app.routers import (
     invitations,
     leads,
     projects,
+    subcontractor_assignments,
     subcontractors,
     tasks,
 )
@@ -32,6 +33,7 @@ app.include_router(estimates.router)
 app.include_router(esignatures.router)
 app.include_router(change_orders.router)
 app.include_router(subcontractors.router)
+app.include_router(subcontractor_assignments.router)
 app.include_router(compliance.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
