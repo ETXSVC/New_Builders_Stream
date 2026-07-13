@@ -3,22 +3,19 @@ More coverage (endpoints, RBAC, trial creation) is added in later tasks in
 this same file."""
 import uuid
 
-import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import Subscription
+from tests.conftest import TEST_DATABASE_URL
 
 
-@pytest.mark.anyio
 async def test_subscription_model_round_trips_all_columns(client):
     # No HTTP route exists yet (this task is model/migration only) — insert
     # directly via a raw owner-role connection the same way
     # test_tenant_isolation_phase3.py's own helpers do, to prove the table
     # and its columns exist and accept the values the design spec requires,
     # before any endpoint is built on top of it.
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from tests.conftest import TEST_DATABASE_URL
-
     engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:
@@ -27,9 +24,7 @@ async def test_subscription_model_round_trips_all_columns(client):
             # table's own ownership rule.
             company_id = uuid.uuid4()
             await session.execute(
-                __import__("sqlalchemy").text(
-                    "INSERT INTO companies (id, parent_id, name) VALUES (:id, NULL, 'Root Co')"
-                ),
+                text("INSERT INTO companies (id, parent_id, name) VALUES (:id, NULL, 'Root Co')"),
                 {"id": company_id},
             )
             subscription_id = uuid.uuid4()
