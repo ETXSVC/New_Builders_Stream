@@ -274,6 +274,34 @@ def write_esignature_artifact_file(*, company_id: uuid.UUID, esignature_id: uuid
     return relative_path
 
 
+# A handful of characters is enough for any real extension (".jpeg",
+# ".docx", ".xlsx"); `Path.suffix` only ever returns the text after the
+# LAST "." in the final path component, so even a multi-part name like
+# "cert.tar.gz" yields just ".gz", not the whole tail. 20 is generous
+# headroom over that, while still well short of a filesystem's own
+# NAME_MAX before the (company_id/subcontractor_id/compliance_document_id
+# stem)+ext concatenation could plausibly approach it.
+MAX_EXTENSION_LENGTH = 20
+
+
+def _validate_extension(ext: str) -> None:
+    """Rejects (never sanitizes) an `ext` (`Path(...).suffix`, see
+    `write_compliance_document_file`'s docstring for the two concrete crash
+    cases this guards against) that could reach the filesystem write below
+    unsafely — same "reject outright" instinct `validate_file_name` applies
+    to `file_name`, just scoped to the one caller-derived piece of this
+    function's own path. An empty `ext` (`original_filename` had no
+    extension, or was empty) is legal and passes through untouched."""
+    if any(ord(char) < 0x20 for char in ext):
+        raise InvalidFileNameError(
+            "uploaded file's extension must not contain control characters"
+        )
+    if len(ext) > MAX_EXTENSION_LENGTH:
+        raise InvalidFileNameError(
+            f"uploaded file's extension must not exceed {MAX_EXTENSION_LENGTH} characters"
+        )
+
+
 def write_compliance_document_file(
     *,
     company_id: uuid.UUID,
@@ -346,15 +374,33 @@ def write_compliance_document_file(
     `write_estimate_pdf_file`/`write_esignature_artifact_file` skip it: the
     filename here (`{compliance_document_id}{ext}`) is system-generated
     from a UUID, never user input — only the EXTENSION is caller-derived,
-    and it's used unvalidated as documented above, never as a full path
-    component a caller could inject traversal characters into on its own
-    (it's concatenated onto a UUID-derived stem, not used as a standalone
-    filename, and `Path.suffix` never returns a value containing a path
-    separator — it's the text after the LAST `.` in the final path
-    component, e.g. `Path("../../evil").suffix == ""` and
-    `Path("a/b.txt").suffix == ".txt"`, never `"/evil"` or similar).
+    and `Path.suffix` never returns a value containing a path separator —
+    it's the text after the LAST `.` in the final path component, e.g.
+    `Path("../../evil").suffix == ""` and `Path("a/b.txt").suffix == ".txt"`,
+    never `"/evil"` or similar, so it can never be used as a traversal
+    vector.
+
+    `ext` IS still bounded/validated before use, though — a raw,
+    completely-unvalidated `ext` is exactly the class of gap
+    `validate_file_name`'s own `MAX_FILE_NAME_LENGTH`/control-character
+    checks exist to close for `file_name` (see that function's docstring,
+    "found during this task's code-quality review" for both checks): an
+    embedded NUL byte in `original_filename` (e.g. `"evil.p\x00ng"`)
+    produces a suffix containing that NUL, and `Path.open()` on a path
+    containing one raises an uncaught `ValueError: embedded null character`;
+    an oversized extension (trivially crafted in a multipart
+    `Content-Disposition: filename=...` header, not bounded by any header-
+    size limit the way an HTTP header itself might be) can exceed the
+    filesystem's `NAME_MAX`, raising an uncaught `OSError`. Both would
+    otherwise surface as an unhandled 500, contradicting this module's own
+    "reject, don't let it crash downstream" instinct. `_validate_extension`
+    below closes this the same way `validate_file_name` closes it for
+    `file_name`: reject outright (raise `InvalidFileNameError`, the router
+    maps it to 422), never sanitize-and-proceed. Found during this task's
+    own code-quality review.
     """
     ext = Path(original_filename).suffix
+    _validate_extension(ext)
 
     relative_path = f"{company_id}/subcontractors/{subcontractor_id}/{compliance_document_id}{ext}"
     absolute_path = (

@@ -6,9 +6,13 @@ the established per-test-file convention (see test_change_orders.py,
 test_leads.py, test_projects.py) rather than sharing them via conftest.py.
 """
 
+import uuid
 from pathlib import Path
 
+import pytest
+
 from app.config import settings
+from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
 
 
 async def _register_and_login(client, company_name, email):
@@ -381,6 +385,55 @@ async def test_upload_compliance_document_invalid_doc_type_returns_422_no_orphan
     # same "fail before any side effect" reasoning as capture_esignature's
     # own VALID_DOCUMENT_TYPES check (app/services/esignature.py).
     assert not subcontractor_dir.exists() or not any(subcontractor_dir.iterdir())
+
+
+def test_write_compliance_document_file_rejects_control_character_extension():
+    # Code-quality review of Task 3.5 found an embedded-NUL extension
+    # (e.g. from "evil.p\x00ng") crashed with an unhandled ValueError from
+    # Path.open(), not a clean rejection. Exercised as a direct unit test
+    # on the storage function rather than through the full HTTP client: a
+    # NUL byte in a multipart file part's `Content-Disposition: filename=`
+    # attribute is invalid HTTP header syntax that httpx's own multipart
+    # encoder refuses to send at all (unlike `file_name`'s own
+    # control-character test in test_documents.py, which travels as a
+    # plain Form(...) field's body content, not a header value, and so
+    # isn't subject to this same transport-level restriction) — so this
+    # specific case genuinely cannot be exercised end-to-end through a
+    # standard-conforming HTTP client, only unit-tested directly.
+    with pytest.raises(InvalidFileNameError):
+        write_compliance_document_file(
+            company_id=uuid.uuid4(),
+            subcontractor_id=uuid.uuid4(),
+            compliance_document_id=uuid.uuid4(),
+            original_filename="evil.p\x00ng",
+            content=b"malicious",
+        )
+
+
+async def test_upload_compliance_document_oversized_extension_returns_422(client):
+    # Same review finding: an extension well past MAX_EXTENSION_LENGTH could
+    # exceed the filesystem's own NAME_MAX and raise an unhandled OSError.
+    admin = await _register_and_login(client, "Acme Construction", "cd-long-ext@acme.test")
+    create = await _create_subcontractor(client, admin)
+    assert create.status_code == 201, create.text
+    subcontractor_id = create.json()["id"]
+
+    response = await _upload_compliance_document(
+        client, admin, subcontractor_id, file_name="cert." + ("x" * 100)
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_upload_compliance_document_malformed_expires_on_returns_422(client):
+    admin = await _register_and_login(client, "Acme Construction", "cd-bad-date@acme.test")
+    create = await _create_subcontractor(client, admin)
+    assert create.status_code == 201, create.text
+    subcontractor_id = create.json()["id"]
+
+    response = await _upload_compliance_document(
+        client, admin, subcontractor_id, expires_on="not-a-date"
+    )
+    assert response.status_code == 422, response.text
 
 
 async def test_upload_compliance_document_cross_tenant_subcontractor_returns_404(client):

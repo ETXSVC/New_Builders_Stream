@@ -32,7 +32,7 @@ from app.schemas.subcontractor import (
     SubcontractorListResponse,
     SubcontractorResponse,
 )
-from app.services.document_storage import write_compliance_document_file
+from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
 
 router = APIRouter(prefix="/subcontractors", tags=["subcontractors"])
 
@@ -185,13 +185,24 @@ async def upload_compliance_document(
     compliance_document_id = uuid.uuid4()
     content = await file.read()
 
-    storage_path = write_compliance_document_file(
-        company_id=subcontractor.company_id,
-        subcontractor_id=subcontractor.id,
-        compliance_document_id=compliance_document_id,
-        original_filename=file.filename or "",
-        content=content,
-    )
+    try:
+        storage_path = write_compliance_document_file(
+            company_id=subcontractor.company_id,
+            subcontractor_id=subcontractor.id,
+            compliance_document_id=compliance_document_id,
+            original_filename=file.filename or "",
+            content=content,
+        )
+    except InvalidFileNameError as exc:
+        # 422, not 400/403/500: `write_compliance_document_file`'s own
+        # `_validate_extension` rejects a control-character-containing or
+        # oversized extension outright (see that function's docstring for
+        # the two concrete unhandled-500 cases this closes) — same
+        # `InvalidFileNameError` -> 422 mapping `upload_document`
+        # (app/routers/projects.py) uses for `validate_file_name`. Raised
+        # AFTER `content = await file.read()` but BEFORE any bytes reach
+        # disk, so an invalid extension never leaves an orphaned file.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     compliance_document = ComplianceDocument(
         id=compliance_document_id,
