@@ -83,9 +83,59 @@ Helper duplication (`_register_and_login`, `_create_subcontractor`,
 `_create_child_with_membership`) follows the established per-test-file
 convention (test_subcontractors.py's own module docstring; also
 test_tenant_isolation_phase2.py) rather than sharing them via conftest.py.
-"""
-import asyncpg
 
+Task 3.12 extends this SAME file (per that task's own spec) with the
+equivalent coverage for `compliance_notifications` and
+`subcontractor_assignments` — the two Compliance tables Task 3.7 above
+deliberately left uncovered (see this file's own (a)-(d) docstrings, which
+scope themselves to `subcontractors`/`compliance_documents` only). What Task
+3.12 adds, and what it deliberately does NOT re-derive:
+  - `test_compliance_notifications.py` (Task 3.10) already covers cross-tenant
+    404 on the dismiss route and full RBAC for both notification routes.
+  - `test_subcontractor_assignments.py` (Task 3.11) already covers
+    cross-tenant 404 for `project_id` (both routes) and `subcontractor_id`
+    (POST body), full RBAC, and the write-side `company_id`-sourcing
+    empirical test (parent session acting on a child-branch Project/
+    Subcontractor without switching `X-Tenant-ID`).
+  - Neither of those files' own cross-tenant coverage is a header-spoofing
+    proof (a genuinely unrelated tenant attempting `X-Tenant-ID` spoofing,
+    rejected at the app/core/deps.py membership-check layer, BEFORE any
+    RLS policy or route-specific existence check ever runs) — sections (e)
+    and (f) below add that, for `compliance_notifications` (via both the
+    list and dismiss routes) and `subcontractor_assignments` (via the list
+    route), mirroring (a) above exactly.
+  - Neither file exercises the parent/child hierarchy case (a parent
+    admin's own unswitched token seeing a child branch's rows; two sibling
+    branches of the same parent NOT seeing each other's) for
+    `subcontractor_assignments` — section (g) below adds that, mirroring
+    (c) above.
+  - No second RLS-disable/re-enable proof is added for
+    `compliance_notifications` or `subcontractor_assignments`: per this
+    task's own spec, (b) above already proves the shared plain
+    `tenant_isolation` policy shape all four Compliance tables use
+    (migration `0009`'s own docstring), and one proof per distinct policy
+    shape is this codebase's established convention (see (b)'s own
+    docstring for the full citation chain).
+  - `compliance_notifications` does NOT get its own parent/child hierarchy
+    test: the task's own spec text scopes that case to
+    `subcontractor_assignments` specifically ("Parent/child hierarchy
+    visibility for `subcontractor_assignments`", singular), and exercising
+    it for notifications would require duplicating
+    `test_compliance_notifications.py`'s own `_seed_notifications` helper
+    (a real background-job run via a fresh, single-use owner-role engine,
+    deliberately scoped that way to avoid reintroducing a deadlock this
+    codebase already root-caused — see that helper's own docstring) purely
+    to prove a case section (e) below already establishes at the
+    membership-check layer for this same table. That's substantial new
+    plumbing for marginal additional coverage, not a cheap in-spirit
+    extension, so it's left out per the task's own explicit guidance.
+"""
+from datetime import date, timedelta
+
+import asyncpg
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.tasks.compliance_expiry import _check_compliance_expiry
 from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
 
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
@@ -176,6 +226,79 @@ async def _upload_compliance_document(
         f"/subcontractors/{subcontractor_id}/compliance-documents",
         data={"doc_type": doc_type, "expires_on": expires_on},
         files={"file": (file_name, content, "application/octet-stream")},
+        headers=actor["headers"],
+    )
+
+
+async def _seed_notifications(client, admin, *, days_out=5, name="Ace Plumbing Co"):
+    """Duplicated from test_compliance_notifications.py's own helper of the
+    same name (Task 3.10) — identical rationale and identical fresh,
+    single-use owner-role engine per call (NOT a shared module-level pooled
+    engine), to avoid reintroducing the `asyncpg.exceptions.DeadlockDetectedError`
+    that helper's own docstring documents root-causing. See that docstring
+    for the full investigation; the short version is that a connection left
+    idle in a shared pool until a file-level teardown fixture runs can still
+    be outstanding when this test's own subsequent `client` requests or the
+    next test's `_clean_tables` TRUNCATE run, and scoping the engine to a
+    single call's lifetime removes that window entirely.
+
+    Creates a subcontractor + compliance document `days_out` days from
+    expiry, then runs the real `_check_compliance_expiry` background job so
+    real `ComplianceNotification` rows exist (5 days out fires all three
+    thresholds at once, per test_compliance_expiry_task.py's own
+    `test_document_5_days_out_fires_all_three_thresholds_simultaneously`).
+    Returns `(subcontractor_id, document_id)`. Only used by this file's
+    header-spoofing test for the notification dismiss route, which needs a
+    REAL notification id belonging to the genuinely-unrelated company being
+    spoofed into — a well-formed but nonexistent UUID would also 403 at the
+    membership-check layer (that check runs before any row lookup at all),
+    but a real row makes the proof strictly stronger: even a target id that
+    unambiguously exists and belongs to the spoofed-into company is still
+    rejected before ever being evaluated."""
+    subcontractor = await _create_subcontractor(client, admin, name=name)
+    subcontractor_id = subcontractor["id"]
+    expires_on = (date.today() + timedelta(days=days_out)).isoformat()
+    upload = await _upload_compliance_document(
+        client, admin, subcontractor_id, expires_on=expires_on
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    owner_session_factory = async_sessionmaker(
+        owner_engine, expire_on_commit=False, class_=AsyncSession
+    )
+    try:
+        await _check_compliance_expiry(session_factory=owner_session_factory)
+    finally:
+        await owner_engine.dispose()
+
+    return subcontractor_id, document_id
+
+
+def _project_payload(**overrides):
+    payload = {
+        "name": "Kitchen Remodel",
+        "site_address": "123 Main St",
+        "projected_start_date": "2026-08-01",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_project(client, actor, **overrides):
+    response = await client.post(
+        "/projects", json=_project_payload(**overrides), headers=actor["headers"]
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+async def _assign(client, actor, project_id, subcontractor_id, **overrides):
+    payload = {"subcontractor_id": subcontractor_id, **overrides}
+    return await client.post(
+        f"/projects/{project_id}/subcontractor-assignments",
+        json=payload,
         headers=actor["headers"],
     )
 
@@ -429,3 +552,183 @@ async def test_creating_compliance_document_under_child_branch_subcontractor_use
     assert list_response.status_code == 200, list_response.text
     ids = {item["id"] for item in list_response.json()["items"]}
     assert compliance_document["id"] in ids
+
+
+# =============================================================================
+# Task 3.12
+# (e) Header-spoofing via X-Tenant-ID, genuinely unrelated tenant —
+# `compliance_notifications` (list AND dismiss routes).
+# =============================================================================
+
+
+async def test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked_for_compliance_notifications_list(
+    client,
+):
+    """Mirrors (a) above (the `subcontractors` header-spoofing test),
+    adapted to `GET /compliance/notifications`. This route takes no
+    path-scoped resource at all — `compliance_notifications` is filtered
+    purely by RLS off `app.current_tenant`, with no nested id to 404 on —
+    so this is, if anything, an even more direct proof that the membership
+    guard in app/core/deps.py fires before ANY route-specific logic runs,
+    not merely before a nested-resource existence check. Company A (the
+    registering admin, so it holds the `admin` role `_NOTIFICATION_ROLES`
+    requires) has no `company_users` row in Company B — a genuinely
+    unrelated company, not a parent/child of A — so the spoofed
+    `X-Tenant-ID` claim is rejected outright."""
+    a = await _register_and_login(client, "Company A", "spoof-notif-list-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-notif-list-b@acme.test")
+
+    response = await client.get(
+        "/compliance/notifications",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+async def test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked_for_compliance_notifications_dismiss(
+    client,
+):
+    """Same proof as the list test directly above, through
+    `POST /compliance/notifications/{id}/dismiss` instead. Uses a REAL
+    notification id genuinely belonging to Company B (via `_seed_notifications`,
+    a real background-job run) rather than a nonexistent UUID, so the test
+    proves something strictly stronger: even a target id that unambiguously
+    exists and belongs to the company being spoofed into is still rejected
+    at the membership-check layer, BEFORE `_get_notification_or_404`
+    (app/routers/compliance.py) ever runs — the row's existence is
+    irrelevant to the 403, which is exactly the point."""
+    a = await _register_and_login(client, "Company A", "spoof-notif-dismiss-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-notif-dismiss-b@acme.test")
+    _subcontractor_id, _document_id = await _seed_notifications(
+        client, b, name="Company B Spoof Sub"
+    )
+
+    listing_b = await client.get("/compliance/notifications", headers=b["headers"])
+    assert listing_b.status_code == 200, listing_b.text
+    notification_id = listing_b.json()["items"][0]["id"]
+
+    response = await client.post(
+        f"/compliance/notifications/{notification_id}/dismiss",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+# =============================================================================
+# Task 3.12
+# (f) Header-spoofing via X-Tenant-ID, genuinely unrelated tenant —
+# `subcontractor_assignments` (list route).
+# =============================================================================
+
+
+async def test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked_for_subcontractor_assignments_list(
+    client,
+):
+    """Mirrors (a)/(e) above, adapted to
+    `GET /projects/{project_id}/subcontractor-assignments`. Uses a REAL
+    project id genuinely belonging to Company B (a genuinely unrelated
+    company, not a parent/child of A) so the test proves the membership
+    guard rejects the spoofed claim BEFORE `_get_project_or_404`
+    (app/routers/projects.py, called from
+    `list_subcontractor_assignments`) ever runs — the project's existence
+    and ownership are irrelevant to the 403."""
+    a = await _register_and_login(client, "Company A", "spoof-assign-list-a@acme.test")
+    b = await _register_and_login(client, "Company B", "spoof-assign-list-b@acme.test")
+    project_id = await _create_project(client, b)
+
+    response = await client.get(
+        f"/projects/{project_id}/subcontractor-assignments",
+        headers={**a["headers"], "X-Tenant-ID": b["company_id"]},
+    )
+    assert response.status_code == 403  # membership check rejects the spoofed claim
+
+
+# =============================================================================
+# Task 3.12
+# (g) Parent/child hierarchy visibility, `subcontractor_assignments`.
+#
+# Mirrors (c) above exactly, adapted to `subcontractor_assignments`: a real
+# assignment is built under a child branch (via `_create_child_with_membership`
+# — genuine `X-Tenant-ID`-switched headers backed by a real `company_users`
+# row, NOT header-spoofing), then the parent admin's own UNSWITCHED token is
+# checked for visibility via the list route, and two sibling branches of the
+# same parent are checked for mutual invisibility.
+# =============================================================================
+
+
+async def test_parent_admin_can_see_child_branch_subcontractor_assignment(client):
+    """Builds a real Project, Subcontractor, and (compliant, so no
+    Admin-override plumbing is needed) SubcontractorAssignment, all acting
+    AS the child branch (genuine membership via
+    `_create_child_with_membership`). Then confirms the parent admin's own
+    token — still scoped to the parent's own company_id, no header
+    switching involved — can see the assignment via
+    `GET /projects/{project_id}/subcontractor-assignments`. Same
+    `get_all_descendant_ids()` RLS grant mechanism (c) above already proves
+    for `subcontractors`/`compliance_documents`, exercised here for
+    `subcontractor_assignments` specifically for the first time."""
+    parent = await _register_and_login(
+        client, "Parent Co", "parent-hier-assign-admin@acme.test"
+    )
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    child_actor = {"headers": child_headers}
+
+    project_id = await _create_project(client, child_actor)
+    subcontractor = await _create_subcontractor(client, child_actor)
+    assign = await _assign(client, child_actor, project_id, subcontractor["id"])
+    assert assign.status_code == 201, assign.text
+    assignment = assign.json()
+    assert assignment["company_id"] == child_id
+
+    list_response = await client.get(
+        f"/projects/{project_id}/subcontractor-assignments", headers=parent["headers"]
+    )
+    assert list_response.status_code == 200, list_response.text
+    ids = {item["id"] for item in list_response.json()["items"]}
+    assert assignment["id"] in ids
+
+
+async def test_sibling_branches_cannot_see_each_others_subcontractor_assignment(client):
+    """Grants the parent admin real `company_users` rows in BOTH sibling
+    branches directly via SQL (`_create_child_with_membership`, twice), same
+    setup (c) above and this codebase's other sibling-branch tests use. Each
+    branch builds its own Project, Subcontractor, and
+    SubcontractorAssignment through the real API. Acting as Branch A,
+    Branch B's Project is invisible, so its assignments list 404s (the
+    project itself 404s via `_get_project_or_404` before the
+    `subcontractor_assignments` table's own RLS check is ever reached — the
+    same "nested resource 404s on the invisible parent" pattern (c) above
+    documents for `compliance_documents`). Checked symmetrically in both
+    directions."""
+    parent = await _register_and_login(client, "Parent Co", "sib-hier-assign-admin@acme.test")
+    child_a_id = await _create_child_with_membership(client, parent, "Branch A")
+    child_b_id = await _create_child_with_membership(client, parent, "Branch B")
+    headers_a = {**parent["headers"], "X-Tenant-ID": child_a_id}
+    headers_b = {**parent["headers"], "X-Tenant-ID": child_b_id}
+    actor_a = {"headers": headers_a}
+    actor_b = {"headers": headers_b}
+
+    project_a = await _create_project(client, actor_a)
+    subcontractor_a = await _create_subcontractor(client, actor_a, name="A's Sub")
+    assign_a = await _assign(client, actor_a, project_a, subcontractor_a["id"])
+    assert assign_a.status_code == 201, assign_a.text
+
+    project_b = await _create_project(client, actor_b)
+    subcontractor_b = await _create_subcontractor(client, actor_b, name="B's Sub")
+    assign_b = await _assign(client, actor_b, project_b, subcontractor_b["id"])
+    assert assign_b.status_code == 201, assign_b.text
+
+    # --- Acting as Branch A: Branch B's project (and therefore its
+    # assignments) is invisible. ---------------------------------------
+    list_b_as_a = await client.get(
+        f"/projects/{project_b}/subcontractor-assignments", headers=headers_a
+    )
+    assert list_b_as_a.status_code == 404
+
+    # --- Symmetric: acting as Branch B, Branch A's project (and its
+    # assignments) is equally invisible. ---------------------------------
+    list_a_as_b = await client.get(
+        f"/projects/{project_a}/subcontractor-assignments", headers=headers_b
+    )
+    assert list_a_as_b.status_code == 404
