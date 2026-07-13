@@ -167,6 +167,47 @@ async def test_dashboard_mixes_expiring_soon_expired_and_omits_far_future_in_one
     }
 
 
+async def test_dashboard_boundary_days_produce_correct_status(client):
+    # Spec-compliance review of Task 3.6 verified these boundaries manually
+    # (via a throwaway script, since deleted) and found the implementation
+    # correct, but flagged that the permanent suite didn't pin them down —
+    # a future off-by-one in the `<=`/`<` comparisons wouldn't be caught.
+    # Locks in: exactly 30 days out (the inclusive edge of the "expiring
+    # soon" window) is still "expiring_soon"; exactly 31 days out is absent
+    # entirely; exactly today is "expiring_soon", not "expired"; exactly 1
+    # day overdue is "expired".
+    admin = await _register_and_login(client, "Acme Construction", "dash-boundary@acme.test")
+    create = await _create_subcontractor(client, admin, name="Boundary Sub")
+    assert create.status_code == 201, create.text
+    subcontractor_id = create.json()["id"]
+
+    thirty_days_out = (date.today() + timedelta(days=30)).isoformat()
+    thirty_one_days_out = (date.today() + timedelta(days=31)).isoformat()
+    exactly_today = date.today().isoformat()
+    one_day_overdue = (date.today() - timedelta(days=1)).isoformat()
+
+    for expires_on, file_name in (
+        (thirty_days_out, "thirty.pdf"),
+        (thirty_one_days_out, "thirtyone.pdf"),
+        (exactly_today, "today.pdf"),
+        (one_day_overdue, "overdue.pdf"),
+    ):
+        upload = await _upload_compliance_document(
+            client, admin, subcontractor_id, expires_on=expires_on, file_name=file_name
+        )
+        assert upload.status_code == 201, upload.text
+
+    response = await client.get("/compliance/dashboard", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    statuses_by_expiry = {item["expires_on"]: item["status"] for item in response.json()["items"]}
+    assert statuses_by_expiry == {
+        thirty_days_out: "expiring_soon",
+        exactly_today: "expiring_soon",
+        one_day_overdue: "expired",
+    }
+    assert thirty_one_days_out not in statuses_by_expiry
+
+
 async def test_field_crew_cannot_view_compliance_dashboard(client):
     admin = await _register_and_login(client, "Acme Construction", "dash-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dash-fc-403-fc@acme.test")
