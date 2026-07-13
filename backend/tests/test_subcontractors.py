@@ -228,3 +228,27 @@ async def test_get_subcontractor_nonexistent_returns_404(client):
         "/subcontractors/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
     )
     assert response.status_code == 404
+
+
+async def test_field_crew_cannot_get_subcontractor_by_id(client):
+    admin = await _register_and_login(client, "Acme Construction", "sub-get-fc-403@acme.test")
+    create = await _create_subcontractor(client, admin)
+    assert create.status_code == 201, create.text
+    subcontractor_id = create.json()["id"]
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "sub-get-fc-403-fc@acme.test")
+
+    response = await client.get(f"/subcontractors/{subcontractor_id}", headers=field_crew["headers"])
+    assert response.status_code == 403
+
+
+async def test_client_cannot_get_subcontractor_by_id(client):
+    admin = await _register_and_login(client, "Acme Construction", "sub-get-client-403@acme.test")
+    create = await _create_subcontractor(client, admin)
+    assert create.status_code == 201, create.text
+    subcontractor_id = create.json()["id"]
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "sub-get-client-403-c@acme.test"
+    )
+
+    response = await client.get(f"/subcontractors/{subcontractor_id}", headers=client_role["headers"])
+    assert response.status_code == 403

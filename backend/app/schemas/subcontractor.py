@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class SubcontractorCreateRequest(BaseModel):
@@ -14,10 +14,18 @@ class SubcontractorCreateRequest(BaseModel):
     "server owns the tenant scoping column" pattern every other
     `*CreateRequest` in this codebase follows (e.g. `DailyLogCreateRequest`,
     `ChangeOrderCreateRequest`).
+
+    `name`/`trade` carry `max_length` matching `Subcontractor`'s own
+    `String(255)`/`String(100)` columns (`app/models/subcontractor.py`),
+    same "schema length bound mirrors the DB column" convention every other
+    bounded-string `*CreateRequest` in this codebase already follows (e.g.
+    `MarkupProfileCreateRequest.name`, `ProjectCreateRequest.name`) — without
+    it, an oversized value passes validation and only fails at the DB layer
+    as an unhandled `DataError` (500), not a clean 422.
     """
 
-    name: str
-    trade: str | None = None
+    name: str = Field(..., min_length=1, max_length=255)
+    trade: str | None = Field(None, max_length=100)
     contact_email: EmailStr | None = None
 
 
