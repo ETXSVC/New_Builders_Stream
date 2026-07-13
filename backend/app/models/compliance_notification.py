@@ -47,6 +47,8 @@ class ComplianceNotification(Base, UUIDPKMixin):
         # The actual duplicate-notification guarantee, not application-layer
         # discipline alone.
         UniqueConstraint(
-            "compliance_document_id", "threshold", name="uq_compliance_notifications_document_threshold"
+            "compliance_document_id",
+            "threshold",
+            name="uq_compliance_notifications_document_threshold",
         ),
     )

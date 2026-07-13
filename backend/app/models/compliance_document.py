@@ -43,4 +43,6 @@ class ComplianceDocument(Base, UUIDPKMixin, TimestampMixin):
     # CHECK constraint mirrors the migration's DB-level constraint, same
     # belt-and-suspenders pattern as Estimate.ck_estimates_status /
     # ChangeOrder.ck_change_orders_status.
-    __table_args__ = (CheckConstraint(_DOC_TYPE_CHECK_SQL, name="ck_compliance_documents_doc_type"),)
+    __table_args__ = (
+        CheckConstraint(_DOC_TYPE_CHECK_SQL, name="ck_compliance_documents_doc_type"),
+    )
