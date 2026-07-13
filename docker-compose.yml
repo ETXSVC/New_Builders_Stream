@@ -111,6 +111,13 @@ services:
     # pick up and execute.
     build: ./backend
     env_file: .env
+    # Kept for defensive startup ordering even though this process itself
+    # never queries postgres or redis directly (see the comment block
+    # above) — Redis IS the thing `.send()` actually publishes to, and
+    # requiring it healthy first avoids this container's very first
+    # `add_job(...)` firing before Redis is reachable. Postgres is included
+    # for consistency with every other service's own health-gated startup
+    # in this file, not because this container queries it.
     depends_on:
       postgres:
         condition: service_healthy
