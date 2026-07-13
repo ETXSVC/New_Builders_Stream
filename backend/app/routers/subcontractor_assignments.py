@@ -118,6 +118,21 @@ async def create_subcontractor_assignment(
     404ing — this is why that helper is imported and reused here rather
     than skipped.
 
+    Both helpers are independently RLS-scoped, which is not by itself
+    sufficient: a PARENT company's session (unswitched, no `X-Tenant-ID`)
+    has simultaneous RLS visibility into every descendant branch via
+    `get_all_descendant_ids()`, so `project` and `subcontractor` can each
+    individually pass their own 404 check while belonging to two different
+    SIBLING branches. Without an explicit same-company check between them,
+    such a session could cross-wire a Branch B subcontractor into a Branch
+    A project — a dangling cross-tenant reference invisible to any session
+    scoped narrowly to just one of the two branches. The
+    `subcontractor.company_id != project.company_id` check below closes
+    this, 404ing with the same "not found" message `_get_subcontractor_or_404`
+    itself would use, consistent with this codebase's "doesn't exist" and
+    "exists but isn't yours" being intentionally indistinguishable from
+    outside.
+
     The business-rule branching below is a role-conditional check INSIDE
     the handler body, not encoded as two separate `require_role` gates —
     same shape `list_estimates`'s own `if current.role == "client":
@@ -178,6 +193,8 @@ async def create_subcontractor_assignment(
     """
     project = await _get_project_or_404(current, project_id)
     subcontractor = await _get_subcontractor_or_404(current, payload.subcontractor_id)
+    if subcontractor.company_id != project.company_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Subcontractor not found")
 
     has_expired = await _has_expired_compliance_document(current, subcontractor.id)
 

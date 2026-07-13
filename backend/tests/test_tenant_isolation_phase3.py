@@ -732,3 +732,44 @@ async def test_sibling_branches_cannot_see_each_others_subcontractor_assignment(
         f"/projects/{project_a}/subcontractor-assignments", headers=headers_b
     )
     assert list_a_as_b.status_code == 404
+
+
+async def test_parent_admin_cannot_cross_wire_sibling_branch_subcontractor_into_project(client):
+    """Regression test for a real cross-tenant bug found in this PR's own
+    review: `create_subcontractor_assignment` (`app/routers/subcontractor_
+    assignments.py`) resolves `project` (via `_get_project_or_404`) and
+    `subcontractor` (via `_get_subcontractor_or_404`) independently. Each
+    helper is individually RLS-scoped, but the PARENT admin's own token
+    (unswitched, no `X-Tenant-ID`) has simultaneous visibility into BOTH
+    sibling branches at once via `get_all_descendant_ids()` — so a Project
+    in Branch A and a Subcontractor in Branch B can each individually pass
+    their own 404 check while belonging to different companies. Without an
+    explicit `subcontractor.company_id != project.company_id` check, the
+    parent could create an assignment row cross-wiring Branch B's
+    subcontractor into Branch A's project — a dangling cross-tenant
+    reference invisible to any session scoped narrowly to just one of the
+    two branches (Branch A could see the assignment but `GET
+    /subcontractors/{id}` for Branch B's subcontractor would 404 for them).
+
+    Confirms the fix: acting AS THE PARENT (not either child), attempting
+    to assign Branch B's subcontractor onto Branch A's project 404s, same
+    "not found" response `_get_subcontractor_or_404` itself would give for
+    a genuinely nonexistent id — consistent with this codebase's
+    "doesn't exist" and "exists but isn't yours" being intentionally
+    indistinguishable from outside."""
+    parent = await _register_and_login(
+        client, "Parent Co", "cross-wire-assign-admin@acme.test"
+    )
+    child_a_id = await _create_child_with_membership(client, parent, "Branch A")
+    child_b_id = await _create_child_with_membership(client, parent, "Branch B")
+    actor_a = {"headers": {**parent["headers"], "X-Tenant-ID": child_a_id}}
+    actor_b = {"headers": {**parent["headers"], "X-Tenant-ID": child_b_id}}
+
+    project_a = await _create_project(client, actor_a)
+    subcontractor_b = await _create_subcontractor(client, actor_b, name="B's Sub")
+
+    # Acting as the parent (not switched into either branch) — both the
+    # Branch A project and the Branch B subcontractor are independently
+    # RLS-visible, which is exactly the precondition the bug needs.
+    cross_wire = await _assign(client, parent, project_a, subcontractor_b["id"])
+    assert cross_wire.status_code == 404, cross_wire.text
