@@ -272,3 +272,101 @@ def write_esignature_artifact_file(*, company_id: uuid.UUID, esignature_id: uuid
         fh.write(content)
 
     return relative_path
+
+
+def write_compliance_document_file(
+    *,
+    company_id: uuid.UUID,
+    subcontractor_id: uuid.UUID,
+    compliance_document_id: uuid.UUID,
+    original_filename: str,
+    content: bytes,
+) -> str:
+    """Writes an uploaded compliance document (insurance certificate,
+    license, etc.) to
+    `{settings.storage_root}/{company_id}/subcontractors/{subcontractor_id}/{compliance_document_id}{ext}`
+    and returns the RELATIVE storage_path
+    (`{company_id}/subcontractors/{subcontractor_id}/{compliance_document_id}{ext}`,
+    matching `relative_document_path`'s "always relative to storage_root,
+    forward slashes" convention) to persist on
+    `ComplianceDocument.storage_path` (Task 3.5).
+
+    `original_filename` is not itself part of the signature list Task 3.5's
+    own spec text writes out, but the same spec text separately requires
+    "preserve the caller-supplied uploaded filename's own extension via
+    `Path(original_filename).suffix`" — those two requirements are only
+    reconcilable by accepting the caller's uploaded filename as a parameter
+    here (bytes alone carry no filename), so it's added as an explicit
+    keyword-only argument, positioned last (before `content`, matching
+    `write_document_file`'s own `file_name` position immediately before
+    `content`).
+
+    `ext` (`Path(original_filename).suffix`, including its leading dot when
+    present) is NOT a fixed extension like `write_estimate_pdf_file`'s
+    `.pdf` or `write_esignature_artifact_file`'s `.png` — a compliance
+    document can legitimately be a PDF, an image scan, or any other format a
+    subcontractor's insurer/licensing body happens to hand out, so there's
+    no single fixed format the way there is for a system-generated PDF
+    export or a signature image. The suffix is used as-is, with no
+    whitelist/validation of its own: if `original_filename` has no
+    extension (or an unusual one), `Path(...).suffix` may return an empty
+    string, and this function then writes to `{compliance_document_id}`
+    (no trailing dot) — there's no established precedent in this codebase
+    for validating/whitelisting file extensions or MIME types, and doing so
+    is out of scope for this task.
+
+    Mirrors `write_esignature_artifact_file`'s general shape (`Path(settings.storage_root)
+    / ...`, `.parent.mkdir(parents=True, exist_ok=True)`, exclusive-create),
+    but differs from both `write_estimate_pdf_file` and
+    `write_esignature_artifact_file` in two deliberate ways:
+
+    1. **Nested under `subcontractors/{subcontractor_id}/`, not a flat
+       `{company_id}/{kind}/{id}.ext`.** A compliance document belongs to a
+       specific Subcontractor (the FK this table carries), and grouping
+       every compliance document for one Subcontractor under its own
+       directory segment keeps the on-disk layout legible in a way a flat
+       `{company_id}/compliance_documents/{id}.ext` wouldn't — there's no
+       functional requirement forcing this shape, but it mirrors how
+       `write_document_file` itself nests under `{project_id}/` rather than
+       using a flat `{company_id}/documents/{id}` layout.
+    2. **Caller-derived extension, not a fixed one** — see above.
+
+    Exclusive-create (`"xb"` mode), same reasoning as
+    `write_esignature_artifact_file`: `compliance_documents` has no update
+    route at all (the model's own docstring — "No UpdatedAtMixin: no update
+    route exists for this table at all, same 'immutable from creation'
+    precedent as Esignature" — app/models/compliance_document.py), and the
+    filename is derived from the row's own newly generated id, never a
+    stable parent id that could legitimately be re-targeted. There is
+    therefore no legitimate scenario where this path is ever written to
+    twice; "xb" makes a second attempt fail loudly (`FileExistsError`)
+    rather than silently overwriting a legally retained document.
+
+    No `validate_file_name()` call, for the same reason
+    `write_estimate_pdf_file`/`write_esignature_artifact_file` skip it: the
+    filename here (`{compliance_document_id}{ext}`) is system-generated
+    from a UUID, never user input — only the EXTENSION is caller-derived,
+    and it's used unvalidated as documented above, never as a full path
+    component a caller could inject traversal characters into on its own
+    (it's concatenated onto a UUID-derived stem, not used as a standalone
+    filename, and `Path.suffix` never returns a value containing a path
+    separator — it's the text after the LAST `.` in the final path
+    component, e.g. `Path("../../evil").suffix == ""` and
+    `Path("a/b.txt").suffix == ".txt"`, never `"/evil"` or similar).
+    """
+    ext = Path(original_filename).suffix
+
+    relative_path = f"{company_id}/subcontractors/{subcontractor_id}/{compliance_document_id}{ext}"
+    absolute_path = (
+        Path(settings.storage_root)
+        / str(company_id)
+        / "subcontractors"
+        / str(subcontractor_id)
+        / f"{compliance_document_id}{ext}"
+    )
+
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    with absolute_path.open("xb") as fh:
+        fh.write(content)
+
+    return relative_path
