@@ -1,14 +1,14 @@
 import uuid
 from dataclasses import dataclass
 
-from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import bearer_token_ctx, claimed_tenant_id_ctx
 from app.core.security import InvalidTokenError, decode_access_token
 from app.db import SessionLocal, set_current_tenant, set_current_user
-from app.models import CompanyUser, User
+from app.models import CompanyUser, Subscription, User
 
 
 @dataclass
@@ -96,3 +96,53 @@ def require_role(*allowed_roles: str):
         return current
 
     return dependency
+
+
+async def get_root_company_id(session: AsyncSession, company_id: uuid.UUID) -> uuid.UUID:
+    """Thin wrapper around the `get_root_company_id` SQL function (migration
+    0010_billing_schema.py). Shared by `block_if_read_only` below and
+    `app/routers/subscriptions.py`'s own subscription-lookup helper — DRY:
+    both need "which root company governs this session's effective
+    subscription" and neither should duplicate the raw `select(func...)`
+    call."""
+    result = await session.execute(select(func.get_root_company_id(company_id)))
+    return result.scalar_one()
+
+
+async def block_if_read_only(
+    request: Request, current: CurrentUser = Depends(get_current_user)
+) -> None:
+    """Task 3.24 (design spec Section 6). GET/HEAD/OPTIONS always pass —
+    only non-read methods are subject to this check. Resolves the caller's
+    ROOT company and checks ITS subscription's status: anything other than
+    'trialing' or 'active' blocks the write with 403. This collapses
+    Stripe's more granular dunning states into one simple rule rather than
+    mirroring Stripe's exact status machine.
+
+    `current: CurrentUser = Depends(get_current_user)` is deliberately the
+    SAME dependency every write route's own `require_role(...)` already
+    depends on — FastAPI caches a dependency's result per request by
+    callable+params, so declaring this alongside `require_role(...)` on the
+    same route does not cause a second JWT decode or a second DB round trip
+    for get_current_user's own work.
+
+    If no subscription row exists at all for the resolved root (should be
+    unreachable — every root gets one atomically at registration), this
+    fails OPEN rather than blocking — treated as an unreachable state, not
+    something to build defensive handling for.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+
+    root_id = await get_root_company_id(current.session, current.company_id)
+
+    status_result = await current.session.execute(
+        select(Subscription.status).where(Subscription.company_id == root_id)
+    )
+    status_value = status_result.scalar_one_or_none()
+
+    if status_value is not None and status_value not in ("trialing", "active"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Your subscription requires attention before you can make changes",
+        )
