@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ComplianceDocument, ComplianceNotification, Subcontractor
 from app.schemas.compliance import (
@@ -207,6 +207,7 @@ async def list_compliance_notifications(
 async def dismiss_compliance_notification(
     notification_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_NOTIFICATION_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ComplianceNotificationEntry:
     """Task 3.10. `require_role("admin")` only, same `_NOTIFICATION_ROLES`
     tuple the list route above uses.
