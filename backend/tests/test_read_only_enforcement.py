@@ -135,6 +135,21 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
     own portal to FIX a lapsed subscription, which is itself a POST),
     /invitations/{id}/accept (structurally has no CurrentUser — Task
     3.25's own note).
+
+    Coverage caveats, for whoever extends this codebase later: (1) this
+    walks `app.routes` and checks each route's own top-level
+    `route.dependant.dependencies` — a route mounted as a separate ASGI
+    sub-app (`app.mount(...)`, not used anywhere in this codebase today)
+    has no `.dependant`/`.methods` in the shape this loop expects and
+    would be silently skipped, not flagged. (2) the check is one level
+    deep — `block_if_read_only` nested inside some OTHER composed
+    dependency (rather than declared directly via `Depends()` on the
+    route, which is how every retrofit in this codebase does it today)
+    would not appear in this flat list even though FastAPI still executes
+    it at request time, producing a false "missing" report. Both fail
+    SAFE (a false positive you have to investigate, not a silent gap) —
+    but if either pattern gets introduced, this test will need updating
+    to match.
     """
     from app.core.deps import block_if_read_only
     from app.main import app
@@ -191,12 +206,14 @@ async def test_write_route_returns_403_when_subscription_is_past_due(client):
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
     owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
-    async with owner_engine.begin() as conn:
-        await conn.execute(
-            text("UPDATE subscriptions SET status = 'past_due' WHERE company_id = :cid"),
-            {"cid": company_id},
-        )
-    await owner_engine.dispose()
+    try:
+        async with owner_engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE subscriptions SET status = 'past_due' WHERE company_id = :cid"),
+                {"cid": company_id},
+            )
+    finally:
+        await owner_engine.dispose()
 
     response = await client.post(
         "/leads",
@@ -209,4 +226,13 @@ async def test_write_route_returns_403_when_subscription_is_past_due(client):
         headers=headers,
     )
 
+    # Not just the status code: create_lead's require_role(*_LEAD_ROLES)
+    # dependency ALSO raises 403 (for a role not in _LEAD_ROLES), and runs
+    # BEFORE block_if_read_only on this same route. Asserting on the detail
+    # message distinguishes "blocked because read-only" from "blocked
+    # because RBAC" — without this, a future regression that silently
+    # dropped block_if_read_only from create_lead while some other 403 path
+    # coincidentally fired would leave this test passing for the wrong
+    # reason, defeating its purpose as a completeness safety net.
     assert response.status_code == 403
+    assert "subscription" in response.json()["detail"].lower()
