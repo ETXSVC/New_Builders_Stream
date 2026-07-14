@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, get_current_user, require_role
+from app.core.deps import CurrentUser, block_if_read_only, get_current_user, require_role
 from app.models import Company
 from app.schemas.company import CompanyResponse, CreateChildCompanyRequest
 from app.services.audit import write_audit_log
@@ -28,6 +28,7 @@ async def create_child_company(
     company_id: uuid.UUID,
     payload: CreateChildCompanyRequest,
     current: CurrentUser = Depends(require_role("admin")),
+    _ro: None = Depends(block_if_read_only),
 ) -> CompanyResponse:
     if company_id != current.company_id:
         # Admin must be acting within the parent's own tenant context (not

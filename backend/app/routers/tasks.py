@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.models import Phase, Task
 from app.routers.projects import _get_project_or_404
 from app.schemas.phase import PhaseCreateRequest, PhaseResponse
@@ -76,6 +76,7 @@ async def create_phase(
     project_id: uuid.UUID,
     payload: PhaseCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> PhaseResponse:
     # Reuses projects.py's _get_project_or_404 purely to avoid duplicating
     # the existence/tenant-404 check — same reuse rationale as Task 1.13's
@@ -113,6 +114,7 @@ async def create_task(
     project_id: uuid.UUID,
     payload: TaskCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> TaskResponse:
     await _get_project_or_404(current, project_id)
 
@@ -169,6 +171,7 @@ async def patch_task(
     task_id: uuid.UUID,
     payload: TaskUpdateRequest,
     current: CurrentUser = Depends(require_role("admin", "project_manager", "field_crew")),
+    _ro: None = Depends(block_if_read_only),
 ) -> TaskResponse:
     """The genuinely new RBAC shape Task 1.14 calls out: role AND ownership
     AND a field-level restriction, combined, not just a role gate.

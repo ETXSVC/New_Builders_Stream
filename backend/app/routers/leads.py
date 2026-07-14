@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import CommunicationLog, Lead
@@ -45,6 +45,7 @@ async def _get_lead_or_404(current: CurrentUser, lead_id: uuid.UUID) -> Lead:
 async def create_lead(
     payload: LeadCreateRequest,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> LeadResponse:
     lead = Lead(
         company_id=current.company_id,
@@ -122,6 +123,7 @@ async def update_lead(
     lead_id: uuid.UUID,
     payload: LeadUpdateRequest,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> LeadResponse:
     lead = await _get_lead_or_404(current, lead_id)
 
@@ -197,6 +199,7 @@ async def create_communication_log(
     lead_id: uuid.UUID,
     payload: CommunicationLogCreateRequest,
     current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> CommunicationLogResponse:
     # Must stay first — see _get_lead_or_404's docstring for why moving this
     # below the CommunicationLog insert would be an information-disclosure bug.
