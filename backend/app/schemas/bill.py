@@ -49,6 +49,9 @@ class BillResponse(BaseModel):
     status: str
     due_date: date | None
     created_at: datetime
+    # Not a Bill column — see InvoiceResponse.outstanding_balance's own
+    # comment (app/schemas/invoice.py) for why: same computed-field,
+    # always-explicit-construction pattern.
     outstanding_balance: Decimal
 
 
@@ -58,4 +61,4 @@ class BillDetailResponse(BillResponse):
 
 class BillListResponse(BaseModel):
     items: list[BillResponse]
-    next_cursor: str | None
+    next_cursor: str | None = None

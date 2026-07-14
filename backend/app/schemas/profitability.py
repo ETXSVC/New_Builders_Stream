@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel
@@ -14,7 +15,10 @@ class ProjectProfitability(BaseModel):
 class AgingEntry(BaseModel):
     id: uuid.UUID
     outstanding_balance: Decimal
-    due_date: str | None
+    # date, not str: Pydantic serializes this to ISO format on its own.
+    # The router passes the row's own due_date (a date | None) straight
+    # through — no .isoformat() call needed on the way in.
+    due_date: date | None
     bucket: str
 
 

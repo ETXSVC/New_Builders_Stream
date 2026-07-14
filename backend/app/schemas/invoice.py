@@ -42,6 +42,11 @@ class InvoiceResponse(BaseModel):
     status: str
     due_date: date | None
     created_at: datetime
+    # Not an Invoice column — always built by explicit keyword construction
+    # (amount minus SUM(payments)), never via .model_validate(invoice)
+    # directly. from_attributes=True is kept for consistency with every
+    # other response schema in this codebase, harmless since this class is
+    # never actually validated off an ORM row.
     outstanding_balance: Decimal
 
 
@@ -51,4 +56,4 @@ class InvoiceDetailResponse(InvoiceResponse):
 
 class InvoiceListResponse(BaseModel):
     items: list[InvoiceResponse]
-    next_cursor: str | None
+    next_cursor: str | None = None

@@ -3047,7 +3047,7 @@ async def get_profitability_report(
         AgingEntry(
             id=row.id,
             outstanding_balance=row.amount - row.paid,
-            due_date=row.due_date.isoformat() if row.due_date else None,
+            due_date=row.due_date,
             bucket=_aging_bucket(row.due_date, today),
         )
         for row in ar_result.all()
@@ -3068,7 +3068,7 @@ async def get_profitability_report(
         AgingEntry(
             id=row.id,
             outstanding_balance=row.amount - row.paid,
-            due_date=row.due_date.isoformat() if row.due_date else None,
+            due_date=row.due_date,
             bucket=_aging_bucket(row.due_date, today),
         )
         for row in ap_result.all()

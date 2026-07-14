@@ -24,4 +24,4 @@ class ExpenseResponse(BaseModel):
 
 class ExpenseListResponse(BaseModel):
     items: list[ExpenseResponse]
-    next_cursor: str | None
+    next_cursor: str | None = None
