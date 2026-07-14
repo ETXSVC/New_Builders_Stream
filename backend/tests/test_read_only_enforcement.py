@@ -120,3 +120,93 @@ async def test_post_blocked_when_canceled():
         assert exc_info.value.status_code == 403
     finally:
         await cleanup()
+
+
+def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions():
+    """Task 3.28: rather than hand-maintaining a list of every write route
+    to check (which silently rots as new routers get added after this
+    feature ships), this introspects the LIVE FastAPI app's own route
+    table. Deliberate exclusions, each with its own reason documented at
+    the retrofit site: /auth/register (creates the subscription itself),
+    /auth/login (must work even when read-only, so an admin can find out
+    and go fix it), /webhooks/stripe (how a lapsed subscription's status
+    even gets updated back after a real payment succeeds — Task 3.21),
+    /subscriptions/portal-session (an Admin must be able to reach Stripe's
+    own portal to FIX a lapsed subscription, which is itself a POST),
+    /invitations/{id}/accept (structurally has no CurrentUser — Task
+    3.25's own note).
+    """
+    from app.core.deps import block_if_read_only
+    from app.main import app
+
+    excluded_paths = {
+        "/auth/register",
+        "/auth/login",
+        "/webhooks/stripe",
+        "/subscriptions/portal-session",
+        "/invitations/{invitation_id}/accept",
+    }
+
+    missing = []
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        if not methods or methods.isdisjoint({"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        if route.path in excluded_paths:
+            continue
+
+        dependant_calls = [dep.call for dep in route.dependant.dependencies]
+        # block_if_read_only may be a direct dependency OR nested under
+        # another dependency's own sub-dependencies (FastAPI flattens these
+        # at request time, but `route.dependant.dependencies` only lists
+        # the route's own top-level Depends(...) list) — every retrofit in
+        # Tasks 3.25-3.27 added it as a top-level Depends(...), so a direct
+        # membership check is sufficient and precise for this codebase's
+        # actual usage.
+        if block_if_read_only not in dependant_calls:
+            missing.append(f"{sorted(methods)} {route.path}")
+
+    assert missing == [], f"Write routes missing block_if_read_only: {missing}"
+
+
+async def test_write_route_returns_403_when_subscription_is_past_due(client):
+    """One representative end-to-end proof (via leads.create_lead) that a
+    lapsed subscription actually blocks a real HTTP write, on top of the
+    unit-level dependency tests (Task 3.24) and the completeness
+    introspection test above."""
+    register = await client.post(
+        "/auth/register",
+        json={
+            "company_name": "Lapsed Co",
+            "admin_email": "lapsed-admin@ro.test",
+            "admin_password": "correct horse battery staple",
+            "admin_full_name": "Lapsed Admin",
+        },
+    )
+    assert register.status_code == 201, register.text
+    company_id = register.json()["company_id"]
+    login = await client.post(
+        "/auth/login", json={"email": "lapsed-admin@ro.test", "password": "correct horse battery staple"}
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    async with owner_engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE subscriptions SET status = 'past_due' WHERE company_id = :cid"),
+            {"cid": company_id},
+        )
+    await owner_engine.dispose()
+
+    response = await client.post(
+        "/leads",
+        json={
+            "contact_name": "Someone",
+            "project_name": "A Project",
+            "email": "lead@ro.test",
+            "project_type": "residential",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 403
