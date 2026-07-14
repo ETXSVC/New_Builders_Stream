@@ -98,17 +98,6 @@ def require_role(*allowed_roles: str):
     return dependency
 
 
-async def get_root_company_id(session: AsyncSession, company_id: uuid.UUID) -> uuid.UUID:
-    """Thin wrapper around the `get_root_company_id` SQL function (migration
-    0010_billing_schema.py). Shared by `block_if_read_only` below and
-    `app/routers/subscriptions.py`'s own subscription-lookup helper — DRY:
-    both need "which root company governs this session's effective
-    subscription" and neither should duplicate the raw `select(func...)`
-    call."""
-    result = await session.execute(select(func.get_root_company_id(company_id)))
-    return result.scalar_one()
-
-
 async def block_if_read_only(
     request: Request, current: CurrentUser = Depends(get_current_user)
 ) -> None:
@@ -126,6 +115,13 @@ async def block_if_read_only(
     same route does not cause a second JWT decode or a second DB round trip
     for get_current_user's own work.
 
+    Root resolution and the subscription lookup are ONE query, not two —
+    `func.get_root_company_id(...)` inlined directly in the WHERE clause,
+    same pattern `app/routers/subscriptions.py`'s own
+    `_get_subscription_for_current` already uses. This dependency runs on
+    every non-GET request across every write route in the app, so an
+    avoidable extra round trip here is not a one-off cost.
+
     If no subscription row exists at all for the resolved root (should be
     unreachable — every root gets one atomically at registration), this
     fails OPEN rather than blocking — treated as an unreachable state, not
@@ -134,10 +130,10 @@ async def block_if_read_only(
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
 
-    root_id = await get_root_company_id(current.session, current.company_id)
-
     status_result = await current.session.execute(
-        select(Subscription.status).where(Subscription.company_id == root_id)
+        select(Subscription.status).where(
+            Subscription.company_id == func.get_root_company_id(current.company_id)
+        )
     )
     status_value = status_result.scalar_one_or_none()
 

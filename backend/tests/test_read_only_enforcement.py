@@ -27,20 +27,28 @@ async def _make_current_user_for_status(status_value: str) -> tuple[CurrentUser,
     path, not a stubbed one."""
     owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
     company_id = uuid.uuid4()
-    async with owner_engine.begin() as conn:
-        await conn.execute(
-            text("INSERT INTO companies (id, parent_id, name) VALUES (:id, NULL, 'RO Test Co')"),
-            {"id": company_id},
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO subscriptions "
-                "(id, company_id, stripe_customer_id, stripe_subscription_id, tier, status, included_seats) "
-                "VALUES (:id, :company_id, 'cus_x', 'sub_x', 'pro', :status, 10)"
-            ),
-            {"id": uuid.uuid4(), "company_id": company_id, "status": status_value},
-        )
-    await owner_engine.dispose()
+    try:
+        async with owner_engine.begin() as conn:
+            await conn.execute(
+                text("INSERT INTO companies (id, parent_id, name) VALUES (:id, NULL, 'RO Test Co')"),
+                {"id": company_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO subscriptions "
+                    "(id, company_id, stripe_customer_id, stripe_subscription_id, tier, status, included_seats) "
+                    "VALUES (:id, :company_id, 'cus_x', 'sub_x', 'pro', :status, 10)"
+                ),
+                {"id": uuid.uuid4(), "company_id": company_id, "status": status_value},
+            )
+    finally:
+        # `async with owner_engine.begin()` already rolls back and releases
+        # the connection on an exception, but dispose() itself sat outside
+        # that block — an INSERT failure would have skipped it entirely,
+        # leaving the engine's pool undisposed. Same "always release what
+        # you open" discipline as `cleanup()` below, just for setup instead
+        # of teardown.
+        await owner_engine.dispose()
 
     app_engine = create_async_engine(TEST_APP_DATABASE_URL, pool_pre_ping=True)
     session_factory = async_sessionmaker(app_engine, expire_on_commit=False, class_=AsyncSession)
