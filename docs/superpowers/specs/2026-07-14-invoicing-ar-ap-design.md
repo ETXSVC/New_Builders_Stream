@@ -31,11 +31,12 @@ CREATE TABLE invoices ( -- client-facing project invoices (AR)
     project_id UUID NOT NULL REFERENCES projects(id),
     company_id UUID NOT NULL REFERENCES companies(id),
     estimate_id UUID REFERENCES estimates(id), -- NULL for invoices created directly, not auto-generated
-    invoice_number VARCHAR(20) NOT NULL UNIQUE, -- per-company sequential, assigned at creation (e.g. INV-2026-0001)
+    invoice_number VARCHAR(20) NOT NULL, -- per-company sequential, assigned at creation (e.g. INV-2026-0001) — unique PER COMPANY, not globally (see UNIQUE(company_id, invoice_number) below)
     amount NUMERIC(12,2) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','paid','overdue','void')),
     due_date DATE,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (company_id, invoice_number)
 );
 
 CREATE TABLE invoice_payments ( -- append-only ledger of payments RECEIVED from the client

@@ -29,7 +29,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,12 +59,18 @@ class Invoice(Base, UUIDPKMixin, TimestampMixin):
     estimate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("estimates.id"), nullable=True
     )
-    invoice_number: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    # NOT globally unique — unique PER COMPANY (see UniqueConstraint below).
+    # Two different companies both generating "INV-2026-0001" as their own
+    # first invoice is expected, not a collision.
+    invoice_number: Mapped[str] = mapped_column(String(20), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     due_date: Mapped[date | None] = mapped_column(nullable=True)
 
-    __table_args__ = (CheckConstraint(_STATUS_CHECK_SQL, name="ck_invoices_status"),)
+    __table_args__ = (
+        CheckConstraint(_STATUS_CHECK_SQL, name="ck_invoices_status"),
+        UniqueConstraint("company_id", "invoice_number", name="uq_invoices_company_invoice_number"),
+    )
 ```
 
 - [ ] **Step 2: Write `backend/app/models/invoice_payment.py`**
@@ -305,7 +311,7 @@ def upgrade() -> None:
         sa.Column(
             "estimate_id", UUID(as_uuid=True), sa.ForeignKey("estimates.id"), nullable=True
         ),
-        sa.Column("invoice_number", sa.String(20), nullable=False, unique=True),
+        sa.Column("invoice_number", sa.String(20), nullable=False),
         sa.Column("amount", sa.Numeric(12, 2), nullable=False),
         sa.Column("status", sa.String(20), nullable=False, server_default="draft"),
         sa.Column("due_date", sa.Date, nullable=True),
@@ -318,6 +324,14 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "status IN ('draft','sent','paid','overdue','void')", name="ck_invoices_status"
         ),
+        # NOT globally unique — unique PER COMPANY. Numbering
+        # (app/services/invoicing.py's next_invoice_number, Task 3.33) is a
+        # per-company sequential counter, so two different companies both
+        # generating "INV-2026-0001" as their own first invoice is expected,
+        # not a collision. A plain `unique=True` on the column alone was
+        # caught in this task's own code-quality review as a real
+        # multi-tenant bug — fixed here before this migration ships.
+        sa.UniqueConstraint("company_id", "invoice_number", name="uq_invoices_company_invoice_number"),
     )
     op.create_index("idx_invoices_company_status", "invoices", ["company_id", "status"])
 
