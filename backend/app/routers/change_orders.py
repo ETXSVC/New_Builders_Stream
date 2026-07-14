@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ChangeOrder
 from app.routers.projects import _get_project_or_404
@@ -112,6 +112,7 @@ async def create_change_order(
     project_id: uuid.UUID,
     payload: ChangeOrderCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ChangeOrderResponse:
     """Task 2.21. `_get_project_or_404` first, same ordering as every other
     project-nested write route in this codebase (existence/tenant check
@@ -241,6 +242,7 @@ async def list_change_orders(
 async def send_change_order_for_signature(
     change_order_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ChangeOrderResponse:
     """Task 2.22. Unlike `send_estimate_for_signature`
     (`app/routers/estimates.py`, Task 2.19), this route does NOT transition
@@ -273,6 +275,7 @@ async def approve_change_order(
     signer_email: str = Form(...),
     signature_artifact: UploadFile = File(...),
     current: CurrentUser = Depends(require_role("client")),
+    _ro: None = Depends(block_if_read_only),
 ) -> ChangeOrderResponse:
     """Task 2.22: the same shape as `approve_estimate` (Task 2.19,
     `app/routers/estimates.py`) — `require_role("client")` only (design
@@ -358,6 +361,7 @@ async def reject_change_order(
     change_order_id: uuid.UUID,
     payload: ChangeOrderRejectRequest,
     current: CurrentUser = Depends(require_role("client")),
+    _ro: None = Depends(block_if_read_only),
 ) -> ChangeOrderResponse:
     """Task 2.22: the same shape as `reject_estimate` (Task 2.19,
     `app/routers/estimates.py`) — same `client`-only role gate and

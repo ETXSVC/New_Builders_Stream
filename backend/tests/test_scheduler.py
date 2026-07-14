@@ -21,6 +21,7 @@ instead of `.send()`) fails fast in CI rather than silently at 2am.
 
 from app.scheduler import _run_check_compliance_expiry
 from app.tasks.compliance_expiry import check_compliance_expiry
+from app.tasks.seat_usage import report_seat_usage
 
 
 def test_run_check_compliance_expiry_calls_send_not_the_undecorated_function(monkeypatch):
@@ -28,5 +29,16 @@ def test_run_check_compliance_expiry_calls_send_not_the_undecorated_function(mon
     monkeypatch.setattr(check_compliance_expiry, "send", lambda *a, **kw: calls.append((a, kw)))
 
     _run_check_compliance_expiry()
+
+    assert calls == [((), {})]
+
+
+def test_run_report_seat_usage_calls_send_not_the_undecorated_function(monkeypatch):
+    calls = []
+    monkeypatch.setattr(report_seat_usage, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    from app.scheduler import _run_report_seat_usage
+
+    _run_report_seat_usage()
 
     assert calls == [((), {})]

@@ -19,7 +19,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ComplianceDocument, Subcontractor
 from app.models.compliance_document import VALID_DOC_TYPES
@@ -64,6 +64,7 @@ async def _get_subcontractor_or_404(current: CurrentUser, subcontractor_id: uuid
 async def create_subcontractor(
     payload: SubcontractorCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> SubcontractorResponse:
     """`company_id=current.company_id` directly — a standalone top-level
     resource with no parent entity's own `company_id` to defer to, matching
@@ -140,6 +141,7 @@ async def upload_compliance_document(
     expires_on: date = Form(...),
     file: UploadFile = File(...),
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ComplianceDocumentResponse:
     """Task 3.5. `require_role("admin")` only (`_WRITE_ROLES`) — same RBAC
     row this router's module docstring already cites: Compliance is "Full

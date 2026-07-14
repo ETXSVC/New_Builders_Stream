@@ -6,9 +6,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
-from app.models import Company, CompanyUser, User
+from app.models import Company, CompanyUser, Subscription, User
 from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 from app.services.audit import write_audit_log
+from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -51,6 +52,34 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
             #    company_users INSERT's WITH CHECK can see it (design decision #2).
             await set_current_tenant(session, str(company_id))
             session.add(CompanyUser(company_id=company_id, user_id=user_id, role="admin"))
+            await session.flush()
+
+            # 4. Trial subscription (Task 3.19, design spec Section 3): every
+            #    new root company starts on a 14-day Pro trial. Synchronous,
+            #    same transaction as the rows above — a trial-less root
+            #    company isn't a state this feature tolerates; if the Stripe
+            #    call fails, the whole registration transaction rolls back
+            #    (the enclosing `async with session.begin():` above — not
+            #    session_scope() itself, which is a bare passthrough with no
+            #    commit/rollback of its own), no retry/fallback path.
+            stripe_client = get_stripe_client()
+            stripe_customer_id = await stripe_client.create_customer(
+                email=payload.admin_email, name=payload.company_name
+            )
+            stripe_subscription = await stripe_client.create_trialing_subscription(
+                customer_id=stripe_customer_id, tier="pro", trial_days=14
+            )
+            session.add(
+                Subscription(
+                    company_id=company_id,
+                    stripe_customer_id=stripe_customer_id,
+                    stripe_subscription_id=stripe_subscription.stripe_subscription_id,
+                    tier="pro",
+                    status=stripe_subscription.status,
+                    included_seats=TIER_INCLUDED_SEATS["pro"],
+                    current_period_end=stripe_subscription.current_period_end,
+                )
+            )
             await session.flush()
 
             await write_audit_log(

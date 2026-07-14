@@ -19,6 +19,7 @@ from app.models.subcontractor import Subcontractor
 from app.models.compliance_document import ComplianceDocument
 from app.models.subcontractor_assignment import SubcontractorAssignment
 from app.models.compliance_notification import ComplianceNotification
+from app.models.subscription import Subscription
 
 __all__ = [
     "Base",
@@ -44,4 +45,5 @@ __all__ = [
     "ComplianceDocument",
     "SubcontractorAssignment",
     "ComplianceNotification",
+    "Subscription",
 ]

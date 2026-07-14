@@ -18,7 +18,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
 from app.models import CostCatalogItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
@@ -59,6 +59,7 @@ _READ_ROLES = ("admin", "project_manager", "accountant")
 async def create_catalog_item(
     payload: CostCatalogItemCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> CostCatalogItemResponse:
     """Plain "brand-new catalog item" create — no `parent_catalog_item_id`
     anywhere in this route or its request schema (see
@@ -101,6 +102,7 @@ async def create_catalog_item_override(
     parent_catalog_item_id: uuid.UUID,
     payload: CostCatalogItemCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> CostCatalogItemResponse:
     """A distinct route, not a `parent_catalog_item_id` field accepted by
     `create_catalog_item` above — matching `CostCatalogItemCreateRequest`'s
@@ -310,6 +312,7 @@ async def list_catalog_items(
 async def create_markup_profile(
     payload: MarkupProfileCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> MarkupProfileResponse:
     """Plain company-scoped create, no inheritance concept at all — design
     decision #1's closing note and `MarkupProfile`'s own model docstring:

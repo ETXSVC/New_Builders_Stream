@@ -37,15 +37,47 @@ logic directly and thoroughly (plus Task 3.9's own live-verification pass
 already exercised the real scheduler->worker->DB chain once). `scheduler`
 IS still brought up alongside the rest of the stack when this script is
 run against the live stack (confirmed to start cleanly), but nothing
-below talks to it."""
+below talks to it.
 
+Task 3.29 note on Billing's seat-usage scheduled job, matching the Task
+2.25/3.13 deferrals above exactly: this script exercises the trial/portal/
+RBAC/read-only-enforcement flow (Task 3.19's automatic trial creation,
+Task 3.20's `/subscriptions/me` and `/subscriptions/portal-session`, and
+Task 3.24's `block_if_read_only`), all entirely over real HTTP, but does
+NOT attempt to exercise the seat-usage scheduled job's (Task 3.23)
+actual daily firing (`report_seat_usage`'s real message flow via
+`app/scheduler.py` / `app/tasks/seat_usage.py`) for the identical
+"disproportionately flaky, already covered elsewhere" reason — that
+logic is already exercised directly and thoroughly by
+`backend/tests/test_seat_usage_task.py` and `backend/tests/test_scheduler.py`.
+This block ALSO makes this script's first-ever direct connection to
+Postgres (see the block itself, near `company_f`, for why and how)."""
+
+import asyncio
 import re
 import sys
 import time
 import uuid
 from datetime import date, timedelta
 
+import asyncpg
 import httpx
+
+# Task 3.29: owner-role Postgres DSN for this script's one direct-DB write
+# (flipping a subscription's status outside of any real Stripe webhook, to
+# prove `block_if_read_only`'s enforcement). Host-side, not container-side,
+# so "localhost" (not the Docker-network "postgres" hostname `DATABASE_URL`
+# uses inside containers) is correct here — this script runs on the host,
+# same reasoning as backend/.env's own MIGRATIONS_DATABASE_URL and
+# TEST_DATABASE_URL entries. Credentials/db name match backend/.env's
+# POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (the Postgres superuser
+# docker-compose.yml's `postgres` service is seeded with), not the
+# restricted `app_user` role the running `backend` container itself uses —
+# same owner-vs-app-role distinction backend/tests/test_subcontractor_assignments.py's
+# OWNER_DSN and backend/tests/test_billing_tenant_isolation.py already rely
+# on for equivalent raw-SQL test setup, applied here for the first time
+# against the live stack instead of the pytest-only test database.
+OWNER_DATABASE_DSN = "postgresql://postgres:devpassword@localhost:5432/builders_stream"
 
 BACKEND_URL = "http://localhost:8000"
 FRONTEND_URL = "http://localhost:3000"
@@ -98,6 +130,30 @@ def login(client: httpx.Client, email: str) -> dict:
     response = client.post("/auth/login", json={"email": email, "password": PASSWORD})
     assert response.status_code == 200, f"login failed: {response.status_code} {response.text}"
     return response.json()
+
+
+async def _set_subscription_status(company_id: str, status: str) -> None:
+    """Task 3.29: directly overwrite a `subscriptions` row's `status`
+    column via a raw owner-role connection — there is no HTTP route for
+    this (a subscription's status is normally only ever changed by a real
+    Stripe webhook event, Task 3.21), and the owner role bypasses RLS the
+    same way `OWNER_DSN`-based test setup does in the backend's own pytest
+    suite. `asyncpg` has no synchronous API, so this is wrapped in
+    `asyncio.run()` at each call site rather than making the whole script
+    async just for this one connection."""
+    conn = await asyncpg.connect(OWNER_DATABASE_DSN)
+    try:
+        result = await conn.execute(
+            "UPDATE subscriptions SET status = $1 WHERE company_id = $2",
+            status,
+            uuid.UUID(company_id),
+        )
+        assert result == "UPDATE 1", (
+            f"expected exactly one subscriptions row updated for company_id={company_id!r}, "
+            f"got {result!r}"
+        )
+    finally:
+        await conn.close()
 
 
 def run() -> None:
@@ -563,6 +619,118 @@ def run() -> None:
             "audit log entry for the override is written server-side on the 201 success "
             "path (its content is verified live over raw SQL by the backend's own pytest "
             "suite; no audit-log-read HTTP endpoint exists for this script to check it)"
+        )
+
+        # --- Task 3.29 exit criterion: Billing (trial, portal, RBAC, and
+        # read-only enforcement), over real HTTP. Fresh company so this
+        # block is self-contained and independent of the Phase 0/1/2/3
+        # checks above. See this module's own docstring for why the
+        # seat-usage scheduled job's real daily firing is deliberately NOT
+        # exercised here.
+        company_f = register(client, "E2E Company F", f"admin-f-{run_id}@e2e.example")
+        token_f = login(client, f"admin-f-{run_id}@e2e.example")["access_token"]
+        headers_f = {"Authorization": f"Bearer {token_f}"}
+        checks_passed.append("company F (Billing flow) registered and logged in over real HTTP")
+
+        subscription = client.get("/subscriptions/me", headers=headers_f)
+        assert subscription.status_code == 200, subscription.text
+        subscription_body = subscription.json()
+        assert subscription_body["tier"] == "pro", (
+            f"expected tier='pro' from POST /auth/register's automatic trial creation "
+            f"(Task 3.19), got {subscription_body['tier']!r}"
+        )
+        assert subscription_body["status"] == "trialing", (
+            f"expected status='trialing' immediately after registration, got "
+            f"{subscription_body['status']!r}"
+        )
+        assert subscription_body["included_seats"] == 10, (
+            f"expected included_seats=10 (TIER_INCLUDED_SEATS['pro']), got "
+            f"{subscription_body['included_seats']!r}"
+        )
+        checks_passed.append(
+            "GET /subscriptions/me over real HTTP shows the automatic 14-day trialing Pro "
+            "subscription created at registration (tier=pro, status=trialing, included_seats=10)"
+        )
+
+        portal_session = client.post("/subscriptions/portal-session", headers=headers_f)
+        assert portal_session.status_code == 200, portal_session.text
+        portal_url = portal_session.json()["url"]
+        assert portal_url.startswith("https://"), (
+            f"expected FakeStripeClient.create_portal_session()'s url to start with "
+            f"'https://', got {portal_url!r}"
+        )
+        checks_passed.append(
+            "POST /subscriptions/portal-session over real HTTP as Admin returns a fake "
+            "Stripe portal url starting with 'https://'"
+        )
+
+        pm_billing_email = f"pm-billing-{run_id}@e2e.example"
+        pm_billing_invite = client.post(
+            "/invitations",
+            json={"email": pm_billing_email, "role": "project_manager"},
+            headers=headers_f,
+        )
+        assert pm_billing_invite.status_code == 201, pm_billing_invite.text
+        pm_billing_accept = client.post(
+            f"/invitations/{pm_billing_invite.json()['id']}/accept",
+            json={"full_name": "E2E Billing PM", "password": PASSWORD},
+        )
+        assert pm_billing_accept.status_code == 200, pm_billing_accept.text
+        pm_billing_token = login(client, pm_billing_email)["access_token"]
+        pm_billing_headers = {"Authorization": f"Bearer {pm_billing_token}"}
+        checks_passed.append(
+            "project_manager-role user invited and accepted over real HTTP for Billing RBAC check"
+        )
+
+        pm_subscription_attempt = client.get("/subscriptions/me", headers=pm_billing_headers)
+        assert pm_subscription_attempt.status_code == 403, (
+            f"expected 403 when a non-Admin/Accountant role (project_manager) reads "
+            f"GET /subscriptions/me, got {pm_subscription_attempt.status_code}: "
+            f"{pm_subscription_attempt.text}"
+        )
+        checks_passed.append(
+            "project_manager-role GET /subscriptions/me correctly rejected with 403 over real HTTP"
+        )
+
+        # Directly flip company F's subscription row to status='past_due' via a raw
+        # owner-role Postgres connection — see _set_subscription_status()'s own
+        # docstring and OWNER_DATABASE_DSN's comment above for why this is the
+        # right (and, for this script, first-ever) way to do it: there's no HTTP
+        # route that sets a subscription's status directly, since in production
+        # it's only ever driven by a real Stripe webhook event (Task 3.21).
+        asyncio.run(_set_subscription_status(company_f["company_id"], "past_due"))
+        checks_passed.append(
+            "company F's subscription row set to status='past_due' via a direct raw-SQL "
+            "owner-role Postgres connection (this script's first direct-DB access)"
+        )
+
+        blocked_lead_attempt = client.post(
+            "/leads",
+            json={
+                "contact_name": "E2E Blocked Lead Contact",
+                "project_name": f"E2E Blocked Lead {run_id}",
+                "email": f"blocked-lead-{run_id}@e2e.example",
+                "project_type": "remodel",
+            },
+            headers=headers_f,
+        )
+        assert blocked_lead_attempt.status_code == 403, (
+            f"expected 403 from block_if_read_only when the company's subscription "
+            f"status is 'past_due', got {blocked_lead_attempt.status_code}: "
+            f"{blocked_lead_attempt.text}"
+        )
+        checks_passed.append(
+            "POST /leads correctly rejected with 403 over real HTTP while company F's "
+            "subscription status='past_due' (block_if_read_only enforcement)"
+        )
+
+        # Restore status='trialing' so this doesn't leave the live stack's DB in a
+        # read-only-blocked state for company F for anything that might run
+        # against this same live stack afterward.
+        asyncio.run(_set_subscription_status(company_f["company_id"], "trialing"))
+        checks_passed.append(
+            "company F's subscription row restored to status='trialing' after the "
+            "read-only-enforcement check, over the same raw-SQL owner-role connection"
         )
 
     with httpx.Client(timeout=10.0) as client:

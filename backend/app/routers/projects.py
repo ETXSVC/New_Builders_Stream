@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
-from app.core.deps import CurrentUser, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
 from app.models.project import VALID_STATUSES
@@ -151,6 +151,7 @@ async def _client_dashboard_response(
 async def create_project(
     payload: ProjectCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ProjectResponse:
     project = Project(
         company_id=current.company_id,
@@ -249,6 +250,7 @@ async def patch_project(
     project_id: uuid.UUID,
     payload: ProjectPatchRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ProjectResponse:
     project = await _get_project_or_404(current, project_id)
 
@@ -270,6 +272,7 @@ async def update_project_status(
     project_id: uuid.UUID,
     payload: ProjectStatusUpdateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> ProjectResponse:
     """Task 1.13: the Project status state machine, entirely separate from
     `patch_project` above (design decision #3 — Project splits field edits
@@ -381,6 +384,7 @@ async def upload_document(
     file_name: str = Form(...),
     file: UploadFile = File(...),
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> DocumentResponse:
     """Task 1.15. `require_role("admin", "project_manager")` per the API
     spec table and the RBAC matrix (docs/07-security-compliance.md Section
@@ -562,6 +566,7 @@ async def create_daily_log(
     project_id: uuid.UUID,
     payload: DailyLogCreateRequest,
     current: CurrentUser = Depends(require_role(*_DAILY_LOG_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
 ) -> DailyLogResponse:
     """Task 1.16. `require_role("admin", "project_manager", "field_crew")`
     per _DAILY_LOG_WRITE_ROLES above — the RBAC matrix's Project Management
