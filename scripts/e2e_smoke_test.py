@@ -39,7 +39,6 @@ IS still brought up alongside the rest of the stack when this script is
 run against the live stack (confirmed to start cleanly), but nothing
 below talks to it."""
 
-import re
 import sys
 import time
 import uuid
@@ -48,7 +47,10 @@ from datetime import date, timedelta
 import httpx
 
 BACKEND_URL = "http://localhost:8000"
-FRONTEND_URL = "http://localhost:3000"
+# docker-compose.yml maps the `frontend` service to host port 3001 (not 3000),
+# to leave 3000 free for other local tooling — keep this in sync with that
+# service's `ports:` mapping if it ever changes.
+FRONTEND_URL = "http://localhost:3001"
 PASSWORD = "supersecret123"
 # Test emails use the "e2e.example" domain, not "e2e.test". pydantic's EmailStr
 # calls email_validator.validate_email() with no way to pass test_environment=True,
@@ -566,16 +568,19 @@ def run() -> None:
         )
 
     with httpx.Client(timeout=10.0) as client:
-        frontend_response = client.get(FRONTEND_URL)
-        assert frontend_response.status_code == 200, frontend_response.text
-        # Next.js 16 / React 19 SSR inserts an HTML comment marker between static
-        # and dynamic text segments in a Server Component (design decision #10),
-        # so the raw body is literally "Backend status: <!-- -->ok", not a
-        # contiguous string — strip comments before asserting so this doesn't
-        # false-fail on correct output.
-        rendered_text = re.sub(r"<!--.*?-->", "", frontend_response.text)
-        assert "Backend status: ok" in rendered_text, (
-            f"Frontend did not report backend as healthy. Body: {frontend_response.text[:500]}"
+        # frontend/app/page.tsx is now the marketing homepage (Task added in
+        # commit 9a69136) and no longer fetches or renders backend health
+        # itself. frontend/app/api/health/route.ts is a dedicated Route
+        # Handler that server-side fetches BACKEND_URL/health via
+        # NEXT_PUBLIC_API_URL (the Docker-network hostname, not localhost —
+        # see docker-compose.yml's own comment on that env var) and returns
+        # JSON, so this still proves the frontend container can reach the
+        # backend container over the real Docker network, not just that the
+        # frontend process itself is up.
+        frontend_health = client.get(f"{FRONTEND_URL}/api/health")
+        assert frontend_health.status_code == 200, frontend_health.text
+        assert frontend_health.json() == {"backend": "ok"}, (
+            f"Frontend did not report backend as healthy. Body: {frontend_health.text[:500]}"
         )
         checks_passed.append("frontend container reaches backend container over the Docker network and renders it")
 
