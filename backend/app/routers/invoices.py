@@ -118,7 +118,37 @@ async def list_invoices(
         limit=limit,
     )
 
-    items = [await _invoice_response(current, row) for row in rows]
+    if not rows:
+        return InvoiceListResponse(items=[], next_cursor=next_cursor)
+
+    # One bounded query over the whole page's invoice_ids, not one
+    # _paid_amount() call per row — same "second query scoped to the
+    # current page, not an N+1" shape compliance.py's own
+    # list_compliance_notifications already establishes for the identical
+    # trade-off.
+    invoice_ids = [row.id for row in rows]
+    paid_result = await current.session.execute(
+        select(InvoicePayment.invoice_id, func.coalesce(func.sum(InvoicePayment.amount), 0))
+        .where(InvoicePayment.invoice_id.in_(invoice_ids))
+        .group_by(InvoicePayment.invoice_id)
+    )
+    paid_by_invoice_id: dict[uuid.UUID, Decimal] = dict(paid_result.all())
+
+    items = [
+        InvoiceResponse(
+            id=row.id,
+            project_id=row.project_id,
+            company_id=row.company_id,
+            estimate_id=row.estimate_id,
+            invoice_number=row.invoice_number,
+            amount=row.amount,
+            status=row.status,
+            due_date=row.due_date,
+            created_at=row.created_at,
+            outstanding_balance=row.amount - paid_by_invoice_id.get(row.id, Decimal("0")),
+        )
+        for row in rows
+    ]
     return InvoiceListResponse(items=items, next_cursor=next_cursor)
 
 
@@ -132,7 +162,9 @@ async def get_invoice(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
 
     payments_result = await current.session.execute(
-        select(InvoicePayment).where(InvoicePayment.invoice_id == invoice.id)
+        select(InvoicePayment)
+        .where(InvoicePayment.invoice_id == invoice.id)
+        .order_by(InvoicePayment.paid_date.asc(), InvoicePayment.id.asc())
     )
     payments = [
         InvoicePaymentResponse.model_validate(payment) for payment in payments_result.scalars().all()
