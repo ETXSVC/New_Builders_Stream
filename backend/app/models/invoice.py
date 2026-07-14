@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,9 +32,15 @@ class Invoice(Base, UUIDPKMixin, TimestampMixin):
     estimate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("estimates.id"), nullable=True
     )
-    invoice_number: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    # NOT globally unique — unique PER COMPANY (see UniqueConstraint below).
+    # Two different companies both generating "INV-2026-0001" as their own
+    # first invoice is expected, not a collision.
+    invoice_number: Mapped[str] = mapped_column(String(20), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     due_date: Mapped[date | None] = mapped_column(nullable=True)
 
-    __table_args__ = (CheckConstraint(_STATUS_CHECK_SQL, name="ck_invoices_status"),)
+    __table_args__ = (
+        CheckConstraint(_STATUS_CHECK_SQL, name="ck_invoices_status"),
+        UniqueConstraint("company_id", "invoice_number", name="uq_invoices_company_invoice_number"),
+    )
