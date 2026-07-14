@@ -45,9 +45,9 @@ Grouped together because both are needed before Enterprise-tier subscribers can 
 
 - Subcontractor/Vendor records, compliance document upload + expiry notifications, compliance dashboard, assignment override + audit logging.
 - Builders Stream's own Stripe subscription billing (tiers, seats, Customer Portal, webhook sync).
-- Client-facing Project invoicing and Expense tracking.
-- Profitability reporting.
-- **Exit criteria:** a company can subscribe/pay via Stripe, and an approved Estimate flows into a draft client invoice automatically.
+- Client-facing Project invoicing (AR), vendor Bills (AP), and Expense tracking.
+- Profitability reporting, including AR/AP aging and estimated tax liability.
+- **Exit criteria:** a company can subscribe/pay via Stripe, an approved Estimate flows into a draft client invoice automatically, and Accountants can track both money owed to and owed by the company through to payment.
 
 ## Phase 4 — External Integrations (Post-MVP)
 
