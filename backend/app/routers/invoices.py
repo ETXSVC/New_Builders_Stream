@@ -1,0 +1,142 @@
+"""Task 3.35 (design spec Section 3): POST/GET /projects/{id}/invoices,
+GET /invoices/{id}.
+
+RBAC per docs/07-security-compliance.md Section 2's split "Accounting/Billing
+(AR)" row: Admin/Accountant write, Admin/Accountant/Client read (Client
+scoped to non-draft only — same `if current.role == "client":
+query = query.where(...)` shape list_estimates already uses).
+"""
+import uuid
+from decimal import Decimal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
+
+from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.models import Invoice, InvoicePayment
+from app.routers.projects import _get_project_or_404
+from app.schemas.invoice import (
+    InvoiceCreateRequest,
+    InvoiceDetailResponse,
+    InvoiceListResponse,
+    InvoicePaymentResponse,
+    InvoiceResponse,
+)
+from app.services.invoicing import next_invoice_number
+
+router = APIRouter(tags=["invoices"])
+
+_WRITE_ROLES = ("admin", "accountant")
+_READ_ROLES = ("admin", "accountant", "client")
+
+
+async def _get_invoice_or_404(current: CurrentUser, invoice_id: uuid.UUID) -> Invoice:
+    result = await current.session.execute(select(Invoice).where(Invoice.id == invoice_id))
+    invoice = result.scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
+    return invoice
+
+
+async def _paid_amount(current: CurrentUser, invoice_id: uuid.UUID) -> Decimal:
+    result = await current.session.execute(
+        select(func.coalesce(func.sum(InvoicePayment.amount), 0)).where(
+            InvoicePayment.invoice_id == invoice_id
+        )
+    )
+    return result.scalar_one()
+
+
+async def _invoice_response(current: CurrentUser, invoice: Invoice) -> InvoiceResponse:
+    paid = await _paid_amount(current, invoice.id)
+    return InvoiceResponse(
+        id=invoice.id,
+        project_id=invoice.project_id,
+        company_id=invoice.company_id,
+        estimate_id=invoice.estimate_id,
+        invoice_number=invoice.invoice_number,
+        amount=invoice.amount,
+        status=invoice.status,
+        due_date=invoice.due_date,
+        created_at=invoice.created_at,
+        outstanding_balance=invoice.amount - paid,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/invoices",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_invoice(
+    project_id: uuid.UUID,
+    body: InvoiceCreateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> InvoiceResponse:
+    project = await _get_project_or_404(current, project_id)
+
+    invoice_number = await next_invoice_number(current.session, project.company_id)
+    invoice = Invoice(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        company_id=project.company_id,
+        estimate_id=None,
+        invoice_number=invoice_number,
+        amount=body.amount,
+        status="draft",
+        due_date=body.due_date,
+    )
+    current.session.add(invoice)
+    await current.session.flush()
+    # No explicit commit — get_current_user (Inherited Invariant #4) commits
+    # current.session once, after this handler returns.
+
+    return await _invoice_response(current, invoice)
+
+
+@router.get("/projects/{project_id}/invoices", response_model=InvoiceListResponse)
+async def list_invoices(
+    project_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> InvoiceListResponse:
+    project = await _get_project_or_404(current, project_id)
+
+    query = select(Invoice).where(Invoice.project_id == project.id)
+    if current.role == "client":
+        query = query.where(Invoice.status != "draft")
+
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=Invoice.created_at,
+        id_col=Invoice.id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    items = [await _invoice_response(current, row) for row in rows]
+    return InvoiceListResponse(items=items, next_cursor=next_cursor)
+
+
+@router.get("/invoices/{invoice_id}", response_model=InvoiceDetailResponse)
+async def get_invoice(
+    invoice_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> InvoiceDetailResponse:
+    invoice = await _get_invoice_or_404(current, invoice_id)
+    if current.role == "client" and invoice.status == "draft":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
+
+    payments_result = await current.session.execute(
+        select(InvoicePayment).where(InvoicePayment.invoice_id == invoice.id)
+    )
+    payments = [
+        InvoicePaymentResponse.model_validate(payment) for payment in payments_result.scalars().all()
+    ]
+
+    base = await _invoice_response(current, invoice)
+    return InvoiceDetailResponse(**base.model_dump(), payments=payments)
