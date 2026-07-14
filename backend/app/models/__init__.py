@@ -20,6 +20,11 @@ from app.models.compliance_document import ComplianceDocument
 from app.models.subcontractor_assignment import SubcontractorAssignment
 from app.models.compliance_notification import ComplianceNotification
 from app.models.subscription import Subscription
+from app.models.invoice import Invoice
+from app.models.invoice_payment import InvoicePayment
+from app.models.bill import Bill
+from app.models.bill_payment import BillPayment
+from app.models.expense import Expense
 
 __all__ = [
     "Base",
@@ -46,4 +51,9 @@ __all__ = [
     "SubcontractorAssignment",
     "ComplianceNotification",
     "Subscription",
+    "Invoice",
+    "InvoicePayment",
+    "Bill",
+    "BillPayment",
+    "Expense",
 ]
