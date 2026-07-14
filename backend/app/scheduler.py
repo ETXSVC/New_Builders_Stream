@@ -44,6 +44,7 @@ from __future__ import annotations
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from app.tasks.compliance_expiry import check_compliance_expiry
+from app.tasks.seat_usage import report_seat_usage
 
 # A brief outage spanning 2am (container restart, host reboot) would
 # otherwise cause APScheduler's own 1-second default misfire_grace_time to
@@ -70,12 +71,25 @@ def _run_check_compliance_expiry() -> None:
     check_compliance_expiry.send()
 
 
+def _run_report_seat_usage() -> None:
+    """Same wrapper rationale as _run_check_compliance_expiry above: a
+    named, log-legible seam that's independently unit-testable (mock
+    report_seat_usage.send, call this, assert called-once)."""
+    report_seat_usage.send()
+
+
 if __name__ == "__main__":
     scheduler = BlockingScheduler()
     scheduler.add_job(
         _run_check_compliance_expiry,
         trigger="cron",
         hour=2,
+        misfire_grace_time=_MISFIRE_GRACE_TIME_SECONDS,
+    )
+    scheduler.add_job(
+        _run_report_seat_usage,
+        trigger="cron",
+        hour=3,
         misfire_grace_time=_MISFIRE_GRACE_TIME_SECONDS,
     )
     scheduler.start()
