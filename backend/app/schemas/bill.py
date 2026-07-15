@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BillCreateRequest(BaseModel):
@@ -21,7 +21,11 @@ class BillCreateRequest(BaseModel):
 
 
 class BillPaymentCreateRequest(BaseModel):
-    amount: Decimal
+    # gt=0 — see InvoicePaymentCreateRequest.amount's own comment
+    # (app/schemas/invoice.py) for why this field, unlike BillCreateRequest
+    # .amount above, needs the floor: it's actual money changing hands and
+    # feeds the status transition directly.
+    amount: Decimal = Field(gt=0)
     paid_date: date
 
 

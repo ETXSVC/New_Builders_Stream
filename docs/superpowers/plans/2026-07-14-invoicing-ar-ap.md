@@ -2411,6 +2411,19 @@ async def record_bill_payment(
     _ro: None = Depends(block_if_read_only),
 ) -> BillPaymentResponse:
     bill = await _get_bill_or_404(current, bill_id)
+
+    # Row-lock the bill for the rest of this transaction BEFORE reading its
+    # status or computing the cumulative paid amount — same lost-update
+    # race, same fix, as Task 3.37's record_invoice_payment (see that
+    # route's own comment for the full explanation): without this,
+    # concurrent payments against the SAME bill can each compute
+    # _paid_amount() before either commits, and the cumulative-reaches-
+    # amount check can pass for neither, leaving a fully-paid bill stuck
+    # at "unpaid" forever.
+    await current.session.execute(
+        select(Bill.id).where(Bill.id == bill.id).with_for_update()
+    )
+
     if bill.status == "void":
         raise HTTPException(status.HTTP_409_CONFLICT, "Cannot record a payment against a void bill")
 
@@ -2431,7 +2444,10 @@ async def record_bill_payment(
         await current.session.flush()
 
     # docs/07-security-compliance.md Section 5 lists "Bill payment/void"
-    # among the state changes requiring an audit_log row.
+    # among the state changes requiring an audit_log row. paid_date is
+    # included (not just payment_id) because it's user-supplied and has
+    # real financial meaning — same rationale as Task 3.37's own
+    # record_invoice_payment audit entry.
     await write_audit_log(
         current.session,
         company_id=bill.company_id,
@@ -2439,7 +2455,11 @@ async def record_bill_payment(
         action="bill.payment_recorded",
         entity_type="bill",
         entity_id=bill.id,
-        metadata={"payment_id": str(payment.id), "amount": str(body.amount)},
+        metadata={
+            "payment_id": str(payment.id),
+            "amount": str(body.amount),
+            "paid_date": body.paid_date.isoformat(),
+        },
     )
 
     return BillPaymentResponse.model_validate(payment)

@@ -145,6 +145,25 @@ async def record_invoice_payment(
     _ro: None = Depends(block_if_read_only),
 ) -> InvoicePaymentResponse:
     invoice = await _get_invoice_or_404(current, invoice_id)
+
+    # Row-lock the invoice for the rest of this transaction BEFORE reading
+    # its status or computing the cumulative paid amount. Without this, two
+    # concurrent payments against the SAME invoice can each compute
+    # _paid_amount() before either commits — under READ COMMITTED, a SELECT
+    # SUM() never sees another transaction's still-uncommitted insert — so
+    # neither request's "cumulative >= amount" check ever passes, even
+    # though together the payments fully cover the invoice. The invoice
+    # would then sit at "sent" forever with no later event to re-check it.
+    # SELECT ... FOR UPDATE forces the second concurrent request to block
+    # until the first commits, so its own _paid_amount() call correctly
+    # sees the first payment already applied. Same pattern this codebase
+    # already uses for an equivalent risk elsewhere (invitations.py's
+    # accept_invitation uses .with_for_update() for the identical reason;
+    # next_invoice_number uses pg_advisory_xact_lock).
+    await current.session.execute(
+        select(Invoice.id).where(Invoice.id == invoice.id).with_for_update()
+    )
+
     if invoice.status in ("draft", "void"):
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"Cannot record a payment against a {invoice.status} invoice"
@@ -168,7 +187,10 @@ async def record_invoice_payment(
 
     # docs/07-security-compliance.md Section 5 lists "Invoice send/payment/
     # void" among the state changes requiring an audit_log row — same
-    # requirement Task 3.36's send_invoice already satisfies.
+    # requirement Task 3.36's send_invoice already satisfies. paid_date is
+    # included (not just payment_id) because it's user-supplied and has
+    # real financial meaning (which accounting period the payment lands
+    # in) — the audit trail should show it directly, not require a join.
     await write_audit_log(
         current.session,
         company_id=invoice.company_id,
@@ -176,7 +198,11 @@ async def record_invoice_payment(
         action="invoice.payment_recorded",
         entity_type="invoice",
         entity_id=invoice.id,
-        metadata={"payment_id": str(payment.id), "amount": str(body.amount)},
+        metadata={
+            "payment_id": str(payment.id),
+            "amount": str(body.amount),
+            "paid_date": body.paid_date.isoformat(),
+        },
     )
 
     return InvoicePaymentResponse.model_validate(payment)

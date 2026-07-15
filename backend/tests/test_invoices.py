@@ -343,3 +343,37 @@ async def test_payment_against_a_draft_invoice_returns_409(client):
         headers=admin["headers"],
     )
     assert response.status_code == 409
+
+
+async def test_client_cannot_record_invoice_payment(client):
+    admin = await _register_and_login(client, "Pay Co 5", "pay-5@example.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "client-pay@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "50.00", "paid_date": "2026-08-01"},
+        headers=client_role["headers"],
+    )
+    assert response.status_code == 403
+
+
+async def test_zero_or_negative_payment_amount_returns_422(client):
+    admin = await _register_and_login(client, "Pay Co 6", "pay-6@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+
+    zero = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "0.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "-10.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert negative.status_code == 422
