@@ -61,17 +61,41 @@ payment, and the profitability report reflecting both, all entirely over
 real HTTP, but does NOT attempt to exercise `flag_overdue_financial_records`'s
 actual daily firing via `app/scheduler.py` — that logic is already
 exercised directly and thoroughly by
-`backend/tests/test_flag_overdue_financial_records.py`."""
+`backend/tests/test_flag_overdue_financial_records.py`.
+
+Task 4.16 note on the Integrations sync worker leg, matching the Task
+2.25/3.13/3.29/3.49 deferrals above exactly: this script exercises the
+Integrations flow entirely over real HTTP — GET /integrations/quickbooks/
+connect returning a fake authorization URL (Task 4.7), GET /integrations/
+quickbooks/callback creating a real connection from a real signed `state`
+token (Task 4.9), GET /integrations/quickbooks/sync-status showing an
+empty `records` list immediately after connecting (Task 4.10), and an
+Invoice creation whose INVOICE_CREATED handler (Task 4.11) enqueues a
+`sync_financial_record` message to the real Redis queue — but does NOT
+poll for the resulting sync record to appear afterward. The live worker
+DOES consume these messages (docker-compose.yml's worker command imports
+`app.tasks.accounting_sync` — added during this same task after its live
+run caught the module missing and every sync message landing in the
+dead-letter queue), and a `status='success'` row was confirmed in the
+stack's own postgres during this task's verification — but asserting on
+it from this script would mean polling for an async consumer's write,
+exactly the "disproportionately flaky" pattern every deferral above
+exists to avoid. The 201 proves the route-level wiring (including the
+enqueuing event handler) didn't error; the consume-and-push path (fake
+provider push, per-record status upsert, failure/retry) is already
+exercised directly and thoroughly by
+`backend/tests/test_accounting_sync.py`."""
 
 import asyncio
 import re
 import sys
 import time
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import asyncpg
 import httpx
+import jwt
 
 # Task 3.29: owner-role Postgres DSN for this script's one direct-DB write
 # (flipping a subscription's status outside of any real Stripe webhook, to
@@ -88,6 +112,22 @@ import httpx
 # on for equivalent raw-SQL test setup, applied here for the first time
 # against the live stack instead of the pytest-only test database.
 OWNER_DATABASE_DSN = "postgresql://postgres:devpassword@localhost:5432/builders_stream"
+
+# Task 4.16: the backend's JWT signing secret, matching the repo-root .env's
+# JWT_SECRET entry — the exact value the running `backend` container receives
+# via docker-compose.yml's `env_file: .env` and reads as
+# `app.config.Settings.jwt_secret`. Needed host-side to sign the OAuth
+# `state` token GET /integrations/{provider}/callback verifies
+# (`backend/app/services/integration_oauth_state.py`); there is no HTTP route
+# that hands out a raw state token to a script (connect embeds it inside the
+# fake provider's authorization_url, which a real browser flow would follow
+# and this script deliberately does not). Hardcoded here with the same
+# "matches .env, host-side" reasoning as OWNER_DATABASE_DSN above, rather
+# than importing backend application code into this standalone script —
+# this file's established convention is replicating backend-internal needs
+# inline (see _set_subscription_status's raw-SQL approach), never importing
+# from backend/.
+JWT_SECRET = "dev-only-secret-change-me"
 
 BACKEND_URL = "http://localhost:8000"
 FRONTEND_URL = "http://localhost:3000"
@@ -164,6 +204,27 @@ async def _set_subscription_status(company_id: str, status: str) -> None:
         )
     finally:
         await conn.close()
+
+
+def _sign_integration_oauth_state(company_id: str, provider: str) -> str:
+    """Task 4.16: replicate `sign_oauth_state` from
+    `backend/app/services/integration_oauth_state.py` exactly — an HS256
+    JWT with claims `company_id`, `provider`, `aud="integration_oauth_state"`,
+    `iat`, and `exp=iat+10min`, signed with the backend's `jwt_secret`
+    setting (JWT_SECRET above). Replicated inline rather than imported —
+    see JWT_SECRET's own comment for why. Any drift between this and the
+    backend helper fails loudly: `verify_oauth_state` rejects a
+    wrong-secret/wrong-audience/expired token and the callback check below
+    turns that into a 400 assertion failure, so this can't silently rot."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "company_id": company_id,
+        "provider": provider,
+        "aud": "integration_oauth_state",
+        "iat": now,
+        "exp": now + timedelta(minutes=10),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
 def run() -> None:
@@ -971,6 +1032,108 @@ def run() -> None:
         checks_passed.append(
             "GET /reports/profitability over real HTTP includes the Invoicing/AR-AP Project "
             "with billed_revenue=5.06 (the Invoice) and actual_cost=20.00 (the Bill)"
+        )
+
+        # --- Task 4.16 exit criterion: Integrations (QuickBooks connect,
+        # OAuth callback with a real signed state, sync-status, and the
+        # INVOICE_CREATED sync enqueue's route-level wiring), over real
+        # HTTP. Fresh company so this block is self-contained and
+        # independent of every block above. See this module's own docstring
+        # for why the enqueued sync_financial_record message is deliberately
+        # NOT drained/waited on here — that consume-and-push logic is
+        # already exercised directly and thoroughly by
+        # backend/tests/test_accounting_sync.py.
+        company_h = register(client, "E2E Company H", f"admin-h-{run_id}@e2e.example")
+        token_h = login(client, f"admin-h-{run_id}@e2e.example")["access_token"]
+        headers_h = {"Authorization": f"Bearer {token_h}"}
+        checks_passed.append("company H (Integrations flow) registered and logged in over real HTTP")
+
+        integration_connect = client.get("/integrations/quickbooks/connect", headers=headers_h)
+        assert integration_connect.status_code == 200, (
+            f"GET /integrations/quickbooks/connect failed: "
+            f"{integration_connect.status_code} {integration_connect.text}"
+        )
+        authorization_url = integration_connect.json()["authorization_url"]
+        assert authorization_url.startswith("https://quickbooks.fake-oauth.test/"), (
+            f"expected authorization_url to start with 'https://quickbooks.fake-oauth.test/' "
+            f"(FakeAccountingProviderClient.get_authorization_url), got {authorization_url!r}"
+        )
+        checks_passed.append(
+            "GET /integrations/quickbooks/connect over real HTTP as Admin returns a fake "
+            "authorization_url starting with 'https://quickbooks.fake-oauth.test/'"
+        )
+
+        # The signed state token is generated host-side with the same
+        # secret/claims the deployed backend verifies with — see
+        # _sign_integration_oauth_state's and JWT_SECRET's own comments.
+        # No Authorization header on this request, deliberately: callback
+        # is an external OAuth redirect target with no CurrentUser at all
+        # (backend/app/routers/integrations.py) — the signed state IS its
+        # entire authentication, and this proves that for real.
+        oauth_state = _sign_integration_oauth_state(company_h["company_id"], "quickbooks")
+        integration_callback = client.get(
+            "/integrations/quickbooks/callback",
+            params={"code": "fake-code", "state": oauth_state},
+        )
+        assert integration_callback.status_code == 200, (
+            f"GET /integrations/quickbooks/callback with a real signed state failed: "
+            f"{integration_callback.status_code} {integration_callback.text}"
+        )
+        integration_connection_body = integration_callback.json()
+        assert integration_connection_body["provider"] == "quickbooks", (
+            f"expected provider='quickbooks' on the connection the callback created, "
+            f"got {integration_connection_body['provider']!r}"
+        )
+        checks_passed.append(
+            "GET /integrations/quickbooks/callback over real HTTP with a real signed state "
+            "token (no bearer token - the state IS the authentication) creates and returns "
+            "a connection with provider='quickbooks'"
+        )
+
+        integration_sync_status = client.get("/integrations/quickbooks/sync-status", headers=headers_h)
+        assert integration_sync_status.status_code == 200, (
+            f"GET /integrations/quickbooks/sync-status failed: "
+            f"{integration_sync_status.status_code} {integration_sync_status.text}"
+        )
+        integration_sync_status_body = integration_sync_status.json()
+        assert integration_sync_status_body["provider"] == "quickbooks", (
+            f"expected provider='quickbooks' from sync-status, got "
+            f"{integration_sync_status_body['provider']!r}"
+        )
+        assert integration_sync_status_body["records"] == [], (
+            f"expected records=[] immediately after connecting (nothing synced yet), "
+            f"got {integration_sync_status_body['records']!r}"
+        )
+        checks_passed.append(
+            "GET /integrations/quickbooks/sync-status over real HTTP returns 200 with "
+            "records=[] immediately after connecting (nothing synced yet)"
+        )
+
+        integrations_project = client.post(
+            "/projects",
+            json={"name": f"E2E Integrations Project {run_id}", "site_address": "654 E2E Way"},
+            headers=headers_h,
+        )
+        assert integrations_project.status_code == 201, integrations_project.text
+        integrations_project_id = integrations_project.json()["id"]
+        checks_passed.append("Project created over real HTTP for Integrations flow")
+
+        integrations_invoice = client.post(
+            f"/projects/{integrations_project_id}/invoices",
+            json={"amount": "75.00"},
+            headers=headers_h,
+        )
+        assert integrations_invoice.status_code == 201, (
+            f"POST /projects/{{id}}/invoices with an active integration connection failed: "
+            f"{integrations_invoice.status_code} {integrations_invoice.text} - the "
+            f"INVOICE_CREATED handler's sync enqueue (Task 4.11) runs inside this request, "
+            f"so a failure here would implicate that route-level wiring"
+        )
+        checks_passed.append(
+            "POST /projects/{id}/invoices over real HTTP succeeds (201) with an active "
+            "quickbooks connection - the INVOICE_CREATED handler enqueued a "
+            "sync_financial_record message to the real Redis queue without erroring "
+            "(the queue is deliberately not drained here; see the module docstring)"
         )
 
     with httpx.Client(timeout=10.0) as client:

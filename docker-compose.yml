@@ -94,11 +94,17 @@ services:
     # own command line to discover `@dramatiq.actor`-decorated functions
     # (`dramatiq --help`'s own "Import extra modules" example confirms
     # multiple modules are accepted as additional positional args). Without
-    # `app.tasks.compliance_expiry` listed here too, `check_compliance_expiry`
-    # would never be registered with this worker process — a message the
-    # scheduler enqueues for it would sit in the Redis queue with nothing
-    # able to consume it, not error loudly.
-    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry
+    # a module listed here, its actors are never registered with this worker
+    # process — a message enqueued for one lands in the dead-letter queue
+    # ("Received message for undefined actor"), not an error anyone sees.
+    # Task 4.16 found exactly that live: app.tasks.seat_usage (Task 3.23),
+    # app.tasks.flag_overdue_financial_records (Task 3.45), and
+    # app.tasks.accounting_sync (Task 4.12) had all been added to app/tasks/
+    # without being added here, so the scheduler's seat-usage and
+    # overdue-flagging messages and every Integrations sync message were
+    # being silently DLQ'd in the running stack (confirmed via worker logs).
+    # Every module in app/tasks/ that defines an actor must be listed here.
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync
 
   scheduler:
     # Task 3.9: fires `check_compliance_expiry.send()` (Task 3.8) once daily
