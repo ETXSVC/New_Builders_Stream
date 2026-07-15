@@ -160,9 +160,17 @@ async def record_invoice_payment(
     # already uses for an equivalent risk elsewhere (invitations.py's
     # accept_invitation uses .with_for_update() for the identical reason;
     # next_invoice_number uses pg_advisory_xact_lock).
-    await current.session.execute(
-        select(Invoice.id).where(Invoice.id == invoice.id).with_for_update()
+    #
+    # Fetches the full row (not just Invoice.id) and reassigns `invoice`
+    # from it — not merely acquiring the lock and trusting the earlier
+    # unlocked read — because a concurrent void_invoice call could have
+    # changed status between the fetch above and the lock being granted
+    # here (e.g. a payment and a void racing each other); the status check
+    # right below must see the current, locked value.
+    locked = await current.session.execute(
+        select(Invoice).where(Invoice.id == invoice.id).with_for_update()
     )
+    invoice = locked.scalar_one()
 
     if invoice.status in ("draft", "void"):
         raise HTTPException(

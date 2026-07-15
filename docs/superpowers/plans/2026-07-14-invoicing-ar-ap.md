@@ -1545,6 +1545,19 @@ async def void_invoice(
     _ro: None = Depends(block_if_read_only),
 ) -> InvoiceResponse:
     invoice = await _get_invoice_or_404(current, invoice_id)
+
+    # Row-lock before reading status, same fix and same reason as Task
+    # 3.37's record_invoice_payment: without this, a void request racing a
+    # concurrent payment that pushes the invoice to "paid" could read a
+    # stale ("sent") status, void an invoice that a payment just settled.
+    # Refresh from the locked row (not just lock-and-trust-the-earlier-read)
+    # since a concurrent transaction may have changed status between the
+    # initial fetch above and the lock being granted here.
+    locked = await current.session.execute(
+        select(Invoice).where(Invoice.id == invoice.id).with_for_update()
+    )
+    invoice = locked.scalar_one()
+
     if invoice.status in ("paid", "void"):
         raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot void a {invoice.status} invoice")
 
@@ -1564,6 +1577,8 @@ async def void_invoice(
 
     return await _invoice_response(current, invoice)
 ```
+
+Note: this same locked-refresh pattern should also be retrofitted into Task 3.37's `record_invoice_payment` if it hasn't been already — that route's own code-quality review found the identical race and fixed it with a lock, but check whether it also refreshes the in-memory `invoice.status` from the locked row (not just the earlier unlocked fetch) before its own `("draft", "void")` check, for full consistency with this route's fix.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
