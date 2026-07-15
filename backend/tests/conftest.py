@@ -49,6 +49,11 @@ os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_EXPIRE_MINUTES", "60")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+# Task 4.3: must be a real, valid Fernet key (not an arbitrary string like
+# "test-secret" above) — app.services.token_encryption constructs
+# Fernet(settings.integration_token_encryption_key.encode()) at import time,
+# which raises immediately on a malformed key.
+os.environ.setdefault("INTEGRATION_TOKEN_ENCRYPTION_KEY", "Rewy1h1FRZkZ2sxynenqVW39Vu1r573swS_UOr1uiUk=")
 # Same reasoning as DATABASE_URL above: app.config.Settings' default
 # (`/data/documents`, a Docker-volume path — see Task 1.15) doesn't exist on
 # the host running pytest. Point it at a host-writable temp directory
