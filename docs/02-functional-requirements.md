@@ -175,11 +175,13 @@ Subscription (company's Builders Stream plan), Invoice, InvoicePayment, Bill, Bi
 
 **US-6.1** — As an Accountant, I can connect my company's QuickBooks or FreshBooks account via OAuth.
 
-**US-6.2** — As an Accountant, when an Invoice or Expense is created/updated in Builders Stream, it syncs to the connected accounting platform asynchronously, with retry on transient failure and a visible sync-status indicator.
+**US-6.2** — As an Accountant, when an Invoice, Bill, or Expense is created in Builders Stream, it syncs to every connected accounting platform asynchronously, with retry on transient failure and a per-record visible sync-status indicator.
 
 ### Business Rules
 
 - Sync failures must not block core Builders Stream workflows — the sync runs as a background task, decoupled from the request/response cycle (see [Technical Architecture](03-technical-architecture.md), Section 4).
+- Sync triggers on record creation only (Invoice, Bill, Expense) — syncing on a later status change (an Invoice being paid, a Project completing) is not yet implemented; see [`docs/superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md`](superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md)'s own Open Questions for why.
+- A company may connect both QuickBooks and FreshBooks at once — sync fans out to every active connection independently, so a failure syncing to one provider never blocks or retries an already-successful sync to the other.
 
 ---
 

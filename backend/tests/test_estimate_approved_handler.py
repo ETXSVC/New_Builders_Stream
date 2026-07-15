@@ -209,6 +209,51 @@ async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(cli
     assert _decode_metadata(audit_row["log_metadata"]) == {"estimate_id": estimate_id}
 
 
+async def test_approving_an_estimate_enqueues_a_sync_for_the_deposit_invoice(client, monkeypatch):
+    """Regression test for a gap found by external design review after Task
+    4.13: handle_estimate_approved is the SECOND place Invoices are created
+    (create_invoice in app/routers/invoices.py is the first), and it
+    originally never published INVOICE_CREATED — so auto-drafted deposit
+    invoices silently bypassed accounting sync, which is precisely the
+    flagship US-6.2 flow (client signs an Estimate, the deposit invoice
+    lands in the accountant's platform)."""
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+
+    admin = await _register_and_login(client, "Deposit Co 3", "deposit-3@example.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "deposit-client-3@example.test")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    connect = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    assert connect.status_code == 200, connect.text
+
+    project = await _create_project(client, admin["headers"])
+    markup_profile_id = await _create_markup_profile(client, admin["headers"])
+    catalog_item_id = await _create_catalog_item(client, admin["headers"])
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    estimate_id, _total = await _create_and_approve_estimate(
+        client,
+        admin["headers"],
+        client_role["headers"],
+        project["id"],
+        markup_profile_id,
+        catalog_item_id,
+        quantity="8.00",
+    )
+
+    invoices = await _fetch_invoices_for_estimate(estimate_id)
+    assert len(invoices) == 1
+
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs["entity_type"] == "invoice"
+    assert kwargs["entity_id"] == str(invoices[0]["id"])
+
+
 async def _create_lead(client, headers):
     response = await client.post(
         "/leads",

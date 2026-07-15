@@ -350,8 +350,24 @@ CREATE TABLE integration_connections ( -- QuickBooks / FreshBooks OAuth state
     provider VARCHAR(20) NOT NULL CHECK (provider IN ('quickbooks','freshbooks')),
     access_token_encrypted TEXT NOT NULL,
     refresh_token_encrypted TEXT NOT NULL,
-    connected_at TIMESTAMPTZ DEFAULT now()
+    connected_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (company_id, provider) -- one active connection per company per provider; a company may hold both a QuickBooks and a FreshBooks connection at once
 );
+
+CREATE TABLE integration_sync_records ( -- per-record sync status against a connected provider (design spec 2026-07-15)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES companies(id),
+    connection_id UUID NOT NULL REFERENCES integration_connections(id),
+    entity_type VARCHAR(20) NOT NULL CHECK (entity_type IN ('invoice','expense','bill')),
+    entity_id UUID NOT NULL,
+    status VARCHAR(20) NOT NULL CHECK (status IN ('pending','success','failed')) DEFAULT 'pending',
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_attempted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (connection_id, entity_type, entity_id) -- mutable current-state per record, not an append-only attempt log
+);
+CREATE INDEX idx_integration_sync_records_connection_status ON integration_sync_records(connection_id, status);
 ```
 
 ## 8. Audit Log (Cross-Cutting, P0)

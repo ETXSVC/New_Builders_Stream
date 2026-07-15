@@ -44,6 +44,13 @@ dependencies = [
     # image the `scheduler` Docker Compose service runs from, not just this
     # venv's own test-time dependencies.
     "apscheduler>=3.10,<4.0",
+    # Task 4.3: OAuth token-at-rest encryption for integration_connections
+    # (docs/07-security-compliance.md Section 4's existing requirement that
+    # third-party OAuth tokens are "additionally encrypted at the
+    # application layer before storage, never stored in plaintext"). Already
+    # present transitively via argon2-cffi/pyjwt in this project's venv, but
+    # this is the first code that imports it directly.
+    "cryptography>=43.0,<44.0",
 ]
 
 [project.optional-dependencies]

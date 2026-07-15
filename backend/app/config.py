@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # explicit override; tests set STORAGE_ROOT to a host-writable temp
     # directory the same way conftest.py overrides DATABASE_URL.
     storage_root: str = "/data/documents"
+    # Task 4.3: Fernet key (44-char urlsafe-base64, generate with
+    # `Fernet.generate_key()`) for encrypting integration_connections'
+    # access_token_encrypted/refresh_token_encrypted columns at the
+    # application layer. Required (no default) — unlike jwt_secret, which
+    # is reused for the OAuth state token under a distinct signing context
+    # (Task 4.5), this is a genuinely separate secret with a different
+    # cryptographic purpose (symmetric encryption, not HMAC signing) and
+    # must not be the same value as jwt_secret.
+    integration_token_encryption_key: str
 
 
 settings = Settings()

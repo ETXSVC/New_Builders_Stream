@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import Invoice, InvoicePayment
 from app.routers.projects import _get_project_or_404
@@ -95,6 +96,14 @@ async def create_invoice(
     await current.session.flush()
     # No explicit commit — get_current_user (Inherited Invariant #4) commits
     # current.session once, after this handler returns.
+
+    await publish(
+        "INVOICE_CREATED",
+        session=current.session,
+        entity_type="invoice",
+        entity_id=invoice.id,
+        company_id=invoice.company_id,
+    )
 
     return await _invoice_response(current, invoice)
 

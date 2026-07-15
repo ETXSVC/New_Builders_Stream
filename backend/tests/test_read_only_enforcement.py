@@ -134,7 +134,8 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
     /subscriptions/portal-session (an Admin must be able to reach Stripe's
     own portal to FIX a lapsed subscription, which is itself a POST),
     /invitations/{id}/accept (structurally has no CurrentUser — Task
-    3.25's own note).
+    3.25's own note), /integrations/{provider}/callback (same reason —
+    Task 4.9's own note).
 
     Coverage caveats, for whoever extends this codebase later: (1) this
     walks `app.routes` and checks each route's own top-level
@@ -160,6 +161,7 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
         "/webhooks/stripe",
         "/subscriptions/portal-session",
         "/invitations/{invitation_id}/accept",
+        "/integrations/{provider}/callback",
     }
 
     missing = []
