@@ -42,3 +42,19 @@ def test_run_report_seat_usage_calls_send_not_the_undecorated_function(monkeypat
     _run_report_seat_usage()
 
     assert calls == [((), {})]
+
+
+def test_run_flag_overdue_financial_records_calls_send_not_the_undecorated_function(monkeypatch):
+    """Task 3.45's own wrapper — same wiring-lock rationale as the two
+    tests above (module docstring)."""
+    from app.scheduler import _run_flag_overdue_financial_records
+    from app.tasks.flag_overdue_financial_records import flag_overdue_financial_records
+
+    calls = []
+    monkeypatch.setattr(
+        flag_overdue_financial_records, "send", lambda *a, **kw: calls.append((a, kw))
+    )
+
+    _run_flag_overdue_financial_records()
+
+    assert calls == [((), {})]

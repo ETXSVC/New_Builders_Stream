@@ -612,13 +612,13 @@ async def approve_estimate(
     `ESTIMATE_APPROVED`'s payload includes `project_id`, which **may be
     `None`** — an Estimate created against a bare Lead (no Project yet) has
     no `project_id` at all (`Estimate.project_id`'s own nullable column).
-    This is intentional and expected, not an oversight: Phase 3's eventual
-    consumer of this event must handle a `None` project_id itself; this task
-    deliberately does not add a NOT NULL constraint or an artificial
-    Project requirement just to make this field always populated. No
-    handler is registered for `ESTIMATE_APPROVED` yet (matching `LEAD_WON`'s
-    own Task 1.5 -> Task 1.18 gap) — `publish()` is a real, wired-up call
-    dispatching to zero registered handlers, a no-op in practice today.
+    This is intentional and expected, not an oversight:
+    `app.services.estimate_approved_handler.handle_estimate_approved`
+    (Task 3.39, registered via `app.core.event_handlers
+    .register_event_handlers()`) no-ops silently on a `None` project_id
+    rather than requiring one; this task deliberately does not add a NOT
+    NULL constraint or an artificial Project requirement just to make this
+    field always populated.
     """
     estimate = await _get_estimate_or_404(current, estimate_id)
     _require_estimate_sent(estimate)
@@ -654,8 +654,17 @@ async def approve_estimate(
 
     # project_id may be None — see this route's own docstring above for why
     # that's intentional and Phase 3's job to handle, not this task's.
+    #
+    # session=current.session (Task 3.39): app.services.estimate_approved_handler
+    # .handle_estimate_approved is now registered against this event and
+    # must reuse this exact AsyncSession (Inherited Invariant #4 — see that
+    # module's own docstring) so its Invoice/audit_log writes join the same
+    # transaction get_current_user commits once, after this route returns.
+    # Matches LEAD_WON's own publish() call (app/routers/leads.py) passing
+    # session=current.session for the identical reason.
     await publish(
         "ESTIMATE_APPROVED",
+        session=current.session,
         estimate_id=estimate.id,
         project_id=estimate.project_id,
         company_id=estimate.company_id,

@@ -6,15 +6,19 @@ from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
 from app.routers import (
     auth,
+    bills,
     catalogs,
     change_orders,
     companies,
     compliance,
     esignatures,
     estimates,
+    expenses,
     invitations,
+    invoices,
     leads,
     projects,
+    reports,
     subcontractor_assignments,
     subcontractors,
     subscriptions,
@@ -38,6 +42,10 @@ app.include_router(subcontractors.router)
 app.include_router(subcontractor_assignments.router)
 app.include_router(compliance.router)
 app.include_router(subscriptions.router)
+app.include_router(invoices.router)
+app.include_router(bills.router)
+app.include_router(expenses.router)
+app.include_router(reports.router)
 app.include_router(webhooks.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into

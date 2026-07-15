@@ -18,8 +18,12 @@
 | CRM | Full CRUD | Full CRUD | — | — | — |
 | Project Management | Full CRUD | Full CRUD | Read assigned + create Daily Logs | Read (financial fields only) | Read sanitized dashboard |
 | Estimation | Full CRUD | Full CRUD | — | Read | Approve/reject own estimate (e-sign) |
-| Accounting/Billing | Full CRUD | — | — | Full CRUD | Read own invoices |
+| Accounting/Billing (AR) | Full CRUD | — | — | Full CRUD | Read own invoices |
+| Accounting/Billing (AP) | Full CRUD | — | — | Full CRUD | — |
+| Expenses | Full CRUD | — | — | Full CRUD | — |
 | Compliance | Full CRUD | Read + assign (with override logging) | — | Read | — |
+
+AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which the Client is the actual recipient of, Bills represent the company's own internal obligations to its vendors/subcontractors. Expenses follow the identical never-Client-visible rule as AP, for the same reason — they record the company's own project costs, not anything billed to the Client.
 
 Enforced at two layers, per [Technical Architecture](03-technical-architecture.md), Section 5: a FastAPI dependency checks role before the request reaches business logic (fast-fail, clear error), and PostgreSQL RLS enforces tenant boundary regardless of application-layer bugs (defense in depth).
 
@@ -36,7 +40,7 @@ Enforced at two layers, per [Technical Architecture](03-technical-architecture.m
 
 ## 5. Audit Logging
 
-- Every state-changing action on financially or legally significant entities (Project status changes, Estimate approval, Change Order approval, Subcontractor compliance overrides, user role changes) writes an `audit_log` row (see [Database Schema](04-database-schema.md), Section 8) recording who, what, when, and relevant metadata.
+- Every state-changing action on financially or legally significant entities (Project status changes, Estimate approval, Change Order approval, Subcontractor compliance overrides, user role changes, Invoice send/payment/void, Bill payment/void) writes an `audit_log` row (see [Database Schema](04-database-schema.md), Section 8) recording who, what, when, and relevant metadata.
 - Audit log entries are append-only; no application code path updates or deletes them.
 
 ## 6. E-Signature Workflow

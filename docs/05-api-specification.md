@@ -68,15 +68,26 @@ This document describes API contracts conceptually. The authoritative, machine-r
 | `/estimates/{id}/send-for-signature` | POST | Route to client for e-signature | signer_email |
 | `/esignatures/{id}` | GET | Retrieve signature record (audit) | — |
 
-## 6. Accounting & Billing (Post-MVP)
+## 6. Accounting & Billing — AR/AP (Post-MVP)
 
 | Route | Method | Purpose | Key Inputs |
 |---|---|---|---|
 | `/subscriptions/me` | GET | Current company's Builders Stream plan | — |
 | `/subscriptions/portal-session` | POST | Create a Stripe Customer Portal session | — |
-| `/projects/{id}/invoices` | POST | Create a client-facing invoice | amount, due_date |
-| `/projects/{id}/expenses` | POST | Record an expense | description, amount, incurred_on |
-| `/reports/profitability` | GET | Company-wide project profitability report | Date range |
+| `/projects/{id}/invoices` | POST | Create a client-facing invoice (AR) | amount, due_date (optional) |
+| `/projects/{id}/invoices` | GET | List a project's invoices (Client: non-draft only) | — |
+| `/invoices/{id}` | GET | Invoice detail, payments, outstanding balance | — |
+| `/invoices/{id}/send` | POST | draft → sent, assigns due_date | due_date (if not already set) |
+| `/invoices/{id}/payments` | POST | Record a payment received; auto-marks paid when fully covered | amount, paid_date |
+| `/invoices/{id}/void` | POST | Void a non-paid invoice | — |
+| `/bills` | POST | Record a vendor Bill (AP); project/subcontractor optional | project_id?, subcontractor_id?, vendor_name?, amount, due_date?, bill_number? |
+| `/bills` | GET | List Bills, optionally filtered by project | project_id? |
+| `/bills/{id}` | GET | Bill detail, payments, outstanding balance | — |
+| `/bills/{id}/payments` | POST | Record a payment made; auto-marks paid when fully covered | amount, paid_date |
+| `/bills/{id}/void` | POST | Void a non-paid bill | — |
+| `/projects/{id}/expenses` | POST | Record a non-vendor expense | description, amount, incurred_on |
+| `/projects/{id}/expenses` | GET | List a project's expenses | — |
+| `/reports/profitability` | GET | Per-project billed revenue/cost/profitability (date range) plus company-wide AR aging, AP aging, and estimated tax liability (point-in-time) | Date range |
 
 ## 7. External Integrations (Post-MVP)
 

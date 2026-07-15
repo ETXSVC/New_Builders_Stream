@@ -288,17 +288,54 @@ CREATE TABLE subscriptions ( -- Builders Stream's own SaaS billing, distinct fro
     current_period_end TIMESTAMPTZ
 );
 
-CREATE TABLE invoices ( -- client-facing project invoices
+CREATE TABLE invoices ( -- client-facing project invoices (AR)
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id),
     company_id UUID NOT NULL REFERENCES companies(id),
+    estimate_id UUID REFERENCES estimates(id), -- NULL for invoices created directly, not auto-generated from an approved Estimate
+    invoice_number VARCHAR(20) NOT NULL, -- per-company sequential, assigned at creation (e.g. INV-2026-0001) — unique PER COMPANY, not globally
     amount NUMERIC(12,2) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+    status VARCHAR(20) NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','paid','overdue','void')),
     due_date DATE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (company_id, invoice_number)
+);
+
+CREATE TABLE invoice_payments ( -- append-only ledger of payments RECEIVED from the client
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+    company_id UUID NOT NULL REFERENCES companies(id),
+    amount NUMERIC(12,2) NOT NULL,
+    paid_date DATE NOT NULL,
+    recorded_by UUID NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE expenses (
+CREATE TABLE bills ( -- amounts owed to vendors/subcontractors (AP)
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES companies(id),
+    project_id UUID REFERENCES projects(id), -- NULL for company-wide overhead bills (rent, insurance, etc.)
+    subcontractor_id UUID REFERENCES subcontractors(id), -- NULL for non-Subcontractor vendors
+    vendor_name VARCHAR(255), -- required when subcontractor_id is NULL
+    bill_number VARCHAR(50), -- the vendor's own reference number, free text
+    amount NUMERIC(12,2) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'unpaid' CHECK (status IN ('unpaid','paid','overdue','void')),
+    due_date DATE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    CHECK (subcontractor_id IS NOT NULL OR vendor_name IS NOT NULL)
+);
+
+CREATE TABLE bill_payments ( -- append-only ledger of payments MADE to vendors
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    bill_id UUID NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+    company_id UUID NOT NULL REFERENCES companies(id),
+    amount NUMERIC(12,2) NOT NULL,
+    paid_date DATE NOT NULL,
+    recorded_by UUID NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE expenses ( -- non-vendor project costs (petty cash, mileage, direct purchases) — distinct from bills, which track a specific vendor's obligation
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id),
     company_id UUID NOT NULL REFERENCES companies(id),

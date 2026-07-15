@@ -28,6 +28,7 @@ A dedicated module rather than inlining `register()` calls in
 """
 
 from app.core.events import is_registered, register
+from app.services.estimate_approved_handler import handle_estimate_approved
 from app.services.lead_won_handler import handle_lead_won
 
 
@@ -51,3 +52,6 @@ def register_event_handlers() -> None:
     advance."""
     if not is_registered("LEAD_WON", handle_lead_won):
         register("LEAD_WON", handle_lead_won)
+
+    if not is_registered("ESTIMATE_APPROVED", handle_estimate_approved):
+        register("ESTIMATE_APPROVED", handle_estimate_approved)

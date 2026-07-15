@@ -5,9 +5,12 @@ import tempfile
 import asyncpg
 import email_validator
 import pytest
+import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 # pydantic's EmailStr calls email_validator.validate_email() with no way to pass
 # test_environment=True (the flag the library documents for exactly this case), so
@@ -102,6 +105,61 @@ def _clean_event_registry():
     events.clear()
     yield
     events.clear()
+
+
+@pytest_asyncio.fixture(loop_scope="function")
+async def db_session():
+    """Real, owner-role AsyncSession (bypasses RLS — table owners are exempt
+    by default, same reasoning as _clean_tables' asyncpg connection below).
+    Needed by tests (e.g. tests/test_invoicing_service.py, Task 3.33) that
+    must see rows across MULTIPLE companies in one test — a tenant-scoped
+    app_user session can only ever see one company's rows at a time under
+    RLS. Teardown order matters (rollback releases every Postgres-side lock
+    this session could hold, which is what a LATER test's TRUNCATE-based
+    _clean_tables cleanup needs) — see the inline comments below for why
+    each teardown step is guarded and why loop_scope/poolclass are set.
+    """
+    # loop_scope="function" is required, not stylistic: pytest.ini's
+    # asyncio_default_fixture_loop_scope=session governs FIXTURES only, not
+    # test functions (which default to a fresh per-function loop). Without
+    # this override, db_session ran on the session-scoped loop while its
+    # calling test ran on its own per-function loop — reproduced as
+    # `RuntimeError: Event loop is closed` raised from inside
+    # session.rollback() once the test's own loop closed at test end
+    # (confirmed via print-instrumented teardown: the "after rollback"
+    # print never fired). Pinning to the test's own loop scope eliminates
+    # the mismatch entirely.
+    #
+    # poolclass=NullPool: no connection pooling — every checkout opens a
+    # fresh physical connection, every checkin closes it immediately. This
+    # fixture is used rarely (a handful of tests, one session each), so
+    # there's no performance reason to pool, and a pooled connection was a
+    # separate proven cause of a hang: a connection returned to the pool
+    # without its transaction fully unwound left a later test's TRUNCATE-
+    # based _clean_tables cleanup blocked indefinitely — reproduced via
+    # pg_locks/pg_stat_activity, showing _clean_tables' own TRUNCATE
+    # waiting on exactly that connection's lock.
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        # Nested try/finally, not three flat awaits: rollback is what
+        # actually matters for the next test (it's what releases every
+        # Postgres-side lock this session could hold) — if close() or
+        # dispose() themselves raise (the same class of failure this
+        # fixture was built to survive, see loop_scope comment above),
+        # rollback must still have already run, and the later steps must
+        # still each get attempted independently rather than one failure
+        # skipping the rest.
+        try:
+            await session.rollback()
+        finally:
+            try:
+                await session.close()
+            finally:
+                await engine.dispose()
 
 
 @pytest.fixture(autouse=True)

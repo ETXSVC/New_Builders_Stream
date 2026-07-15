@@ -137,25 +137,35 @@ Estimate (Quote), Cost Catalog Item, Line Item, Markup Profile.
 
 ---
 
-## 5. Accounting & Billing (P3 — Post-MVP)
+## 5. Accounting & Billing — AR/AP (P3 — Post-MVP)
 
 ### Core Entities
-Subscription (company's Builders Stream plan), Invoice, Payment, Expense.
+Subscription (company's Builders Stream plan), Invoice, InvoicePayment, Bill, BillPayment, Expense.
 
 ### User Stories
 
 **US-5.1** — As an Admin, I can view and manage my company's Builders Stream subscription (plan tier, seats, billing history) via a Stripe-hosted customer portal.
 
-**US-5.2** — As an Accountant, when a Project Estimate is approved, a draft client-facing Invoice is automatically generated for the deposit amount.
+**US-5.2** — As an Accountant, when a Project Estimate is approved, a draft client-facing Invoice is automatically generated for the deposit amount. Each Invoice has a sequential, company-scoped invoice number once sent, and can be voided (not deleted) if issued in error.
 
 **US-5.3** — As an Accountant, I can record Expenses against a Project and see running actual-vs-estimated cost.
 
-**US-5.4** — As an Accountant, I can view a financial report showing project profitability, outstanding invoices, and tax liability across the company.
+**US-5.4** — As an Accountant, I can view a financial report showing project profitability (billed revenue vs. actual cost), an accounts-receivable aging breakdown of outstanding Invoices, an accounts-payable aging breakdown of outstanding Bills, and an estimated tax liability across the company.
+
+**US-5.5** — As an Accountant, I can record a Bill representing an amount owed to a vendor (an existing Subcontractor, or a free-text vendor name for one that isn't), optionally against a Project or as company-wide overhead, and record payments made against it.
+
+**US-5.6** — As an Accountant, I can record a payment received against a client Invoice; when cumulative payments reach the Invoice amount, it's automatically marked paid.
+
+**US-5.7** — As an Accountant, I can void an Invoice or Bill issued in error; voided records are never deleted, only marked dead.
+
+**US-5.8** — As an Accountant, Invoices and Bills I haven't acted on by their due date are automatically flagged overdue, without my having to check manually.
 
 ### Business Rules
 
-- Builders Stream subscription billing (what the contractor pays to use the platform) and client-facing Project invoicing (what the contractor bills their own customer) are separate financial flows and must not be conflated in the data model.
-- Financial records are never overwritten; corrections are made via new, linked entries (append-only ledger discipline).
+- Builders Stream subscription billing (what the contractor pays to use the platform) and client-facing Project invoicing/vendor Bills (what the contractor bills their own customer, and owes their own vendors) are separate financial flows and must not be conflated in the data model.
+- Financial records are never overwritten; corrections are made via new, linked entries (append-only ledger discipline) — this applies to Invoice/Bill payments (a ledger of payment records, never a mutated running total) and to corrections on an issued Invoice/Bill (void + reissue, never an in-place edit).
+- A Bill's vendor is either an existing Subcontractor (`docs/02-functional-requirements.md` Section 7) or a free-text vendor name — not every company Builders Stream's users pay is a compliance-tracked Subcontractor.
+- This module is a lightweight AR/AP ledger, not a general-ledger/double-entry bookkeeping system — no chart of accounts, no debits/credits. It's the system of record that later syncs to real accounting software (QuickBooks/FreshBooks, Section 6 below), not a replacement for one.
 
 ---
 
