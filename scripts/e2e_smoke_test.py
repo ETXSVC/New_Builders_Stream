@@ -51,7 +51,17 @@ actual daily firing (`report_seat_usage`'s real message flow via
 logic is already exercised directly and thoroughly by
 `backend/tests/test_seat_usage_task.py` and `backend/tests/test_scheduler.py`.
 This block ALSO makes this script's first-ever direct connection to
-Postgres (see the block itself, near `company_f`, for why and how)."""
+Postgres (see the block itself, near `company_f`, for why and how).
+
+Task 3.49 note on Invoicing/AR-AP's overdue-flagging scheduled job (Task
+3.45), matching the Task 2.25/3.13/3.29 deferrals above exactly: this
+script exercises the deposit-invoice auto-generation on Estimate approval
+(Task 3.39), invoice send/payment/paid-transition, a vendor Bill with
+payment, and the profitability report reflecting both, all entirely over
+real HTTP, but does NOT attempt to exercise `flag_overdue_financial_records`'s
+actual daily firing via `app/scheduler.py` — that logic is already
+exercised directly and thoroughly by
+`backend/tests/test_flag_overdue_financial_records.py`."""
 
 import asyncio
 import re
@@ -731,6 +741,236 @@ def run() -> None:
         checks_passed.append(
             "company F's subscription row restored to status='trialing' after the "
             "read-only-enforcement check, over the same raw-SQL owner-role connection"
+        )
+
+        # --- Task 3.49 exit criterion: Invoicing/AR-AP (deposit-invoice
+        # auto-generation on Estimate approval, invoice send/payment/paid-
+        # transition, a vendor Bill with payment, and the profitability
+        # report reflecting both), over real HTTP. Fresh company so this
+        # block is self-contained and independent of the Phase 0/1/2/3 and
+        # Billing checks above. See this module's own docstring for why the
+        # overdue-flagging scheduled job's (Task 3.45) real daily firing is
+        # deliberately NOT exercised here — that logic is already exercised
+        # directly and thoroughly by
+        # backend/tests/test_flag_overdue_financial_records.py.
+        company_g = register(client, "E2E Company G", f"admin-g-{run_id}@e2e.example")
+        token_g = login(client, f"admin-g-{run_id}@e2e.example")["access_token"]
+        headers_g = {"Authorization": f"Bearer {token_g}"}
+        checks_passed.append("company G (Invoicing/AR-AP flow) registered and logged in over real HTTP")
+
+        invoicing_project = client.post(
+            "/projects",
+            json={"name": f"E2E Invoicing Project {run_id}", "site_address": "321 E2E Terrace"},
+            headers=headers_g,
+        )
+        assert invoicing_project.status_code == 201, invoicing_project.text
+        invoicing_project_id = invoicing_project.json()["id"]
+        checks_passed.append("Project created over real HTTP for Invoicing/AR-AP flow")
+
+        # Same hand-verifiable, rounding-tie-free numbers as
+        # test_estimate_approved_handler.py's own _create_and_approve_estimate
+        # scenario: quantity 8.00 @ unit_rate 5.00 -> subtotal 40.00 ->
+        # total = round(40.00 * 1.10 * 1.15, 2) = 50.60 -> 10% deposit = 5.06.
+        invoicing_markup_profile = client.post(
+            "/markup-profiles",
+            json={"name": f"E2E Invoicing Markup {run_id}", "overhead_pct": "10.00", "profit_pct": "15.00"},
+            headers=headers_g,
+        )
+        assert invoicing_markup_profile.status_code == 201, invoicing_markup_profile.text
+        invoicing_markup_profile_id = invoicing_markup_profile.json()["id"]
+        checks_passed.append(
+            "Markup Profile created over real HTTP for Invoicing/AR-AP flow "
+            "(overhead_pct=10.00, profit_pct=15.00)"
+        )
+
+        invoicing_catalog_item = client.post(
+            "/catalogs/items",
+            json={
+                "category": "materials",
+                "name": f"E2E Lumber {run_id}",
+                "unit": "board_ft",
+                "unit_rate": "5.00",
+            },
+            headers=headers_g,
+        )
+        assert invoicing_catalog_item.status_code == 201, invoicing_catalog_item.text
+        invoicing_catalog_item_id = invoicing_catalog_item.json()["id"]
+        checks_passed.append("Cost Catalog item created over real HTTP for Invoicing/AR-AP flow (unit_rate=5.00)")
+
+        invoicing_estimate = client.post(
+            "/estimates",
+            json={"project_id": invoicing_project_id, "markup_profile_id": invoicing_markup_profile_id},
+            headers=headers_g,
+        )
+        assert invoicing_estimate.status_code == 201, invoicing_estimate.text
+        invoicing_estimate_id = invoicing_estimate.json()["id"]
+        checks_passed.append("Estimate created over real HTTP against the Project for Invoicing/AR-AP flow")
+
+        invoicing_lines = client.put(
+            f"/estimates/{invoicing_estimate_id}/lines",
+            json={"items": [{"cost_catalog_item_id": invoicing_catalog_item_id, "quantity": "8.00"}]},
+            headers=headers_g,
+        )
+        assert invoicing_lines.status_code == 200, invoicing_lines.text
+        checks_passed.append("Estimate line items replaced over real HTTP (quantity=8.00) for Invoicing/AR-AP flow")
+
+        invoicing_calculated = client.post(f"/estimates/{invoicing_estimate_id}/calculate", headers=headers_g)
+        assert invoicing_calculated.status_code == 200, invoicing_calculated.text
+        invoicing_calculated_body = invoicing_calculated.json()
+        assert invoicing_calculated_body["subtotal"] == "40.00", (
+            f"expected subtotal='40.00' (8.00 * 5.00), got {invoicing_calculated_body['subtotal']!r}"
+        )
+        assert invoicing_calculated_body["total"] == "50.60", (
+            f"expected total='50.60' (40.00 * 1.10 * 1.15), got {invoicing_calculated_body['total']!r}"
+        )
+        checks_passed.append(
+            "Estimate calculated over real HTTP with hand-verifiable subtotal=40.00, total=50.60 for Invoicing/AR-AP flow"
+        )
+
+        invoicing_sent = client.post(f"/estimates/{invoicing_estimate_id}/send-for-signature", headers=headers_g)
+        assert invoicing_sent.status_code == 200, invoicing_sent.text
+        checks_passed.append("Estimate sent for signature over real HTTP for Invoicing/AR-AP flow (status=sent)")
+
+        invoicing_client_email = f"client-inv-{run_id}@e2e.example"
+        invoicing_client_invite = client.post(
+            "/invitations", json={"email": invoicing_client_email, "role": "client"}, headers=headers_g
+        )
+        assert invoicing_client_invite.status_code == 201, invoicing_client_invite.text
+        invoicing_client_accept = client.post(
+            f"/invitations/{invoicing_client_invite.json()['id']}/accept",
+            json={"full_name": "E2E Invoicing Client", "password": PASSWORD},
+        )
+        assert invoicing_client_accept.status_code == 200, invoicing_client_accept.text
+        invoicing_client_token = login(client, invoicing_client_email)["access_token"]
+        invoicing_client_headers = {"Authorization": f"Bearer {invoicing_client_token}"}
+        checks_passed.append(
+            "client-role user invited and accepted over real HTTP for Invoicing/AR-AP Estimate approval"
+        )
+
+        invoicing_approved = client.post(
+            f"/estimates/{invoicing_estimate_id}/approve",
+            data={"signer_name": "E2E Invoicing Client", "signer_email": invoicing_client_email},
+            files={"signature_artifact": ("signature.png", b"fake-e2e-signature-bytes", "image/png")},
+            headers=invoicing_client_headers,
+        )
+        assert invoicing_approved.status_code == 200, invoicing_approved.text
+        checks_passed.append(
+            "Estimate approved by client-role user over real HTTP for Invoicing/AR-AP flow "
+            "(status=approved), firing ESTIMATE_APPROVED"
+        )
+
+        # ESTIMATE_APPROVED's handler (Task 3.39) runs synchronously inside
+        # the approve request's own transaction (app.core.events.publish()
+        # awaits each handler directly, no queue/worker involved) — no
+        # polling/retry needed here, the draft Invoice already exists by the
+        # time the approve response returns.
+        deposit_invoices = client.get(
+            f"/projects/{invoicing_project_id}/invoices", headers=headers_g
+        )
+        assert deposit_invoices.status_code == 200, deposit_invoices.text
+        deposit_invoices_body = deposit_invoices.json()["items"]
+        assert len(deposit_invoices_body) == 1, (
+            f"expected exactly one auto-generated deposit Invoice after Estimate approval, "
+            f"got {len(deposit_invoices_body)}: {deposit_invoices_body}"
+        )
+        deposit_invoice = deposit_invoices_body[0]
+        assert deposit_invoice["status"] == "draft", (
+            f"expected status='draft' for the auto-generated deposit Invoice, "
+            f"got {deposit_invoice['status']!r}"
+        )
+        assert deposit_invoice["amount"] == "5.06", (
+            f"expected amount='5.06' (10% of the 50.60 Estimate total), "
+            f"got {deposit_invoice['amount']!r}"
+        )
+        assert deposit_invoice["invoice_number"].startswith("INV-"), (
+            f"expected invoice_number to start with 'INV-', got {deposit_invoice['invoice_number']!r}"
+        )
+        checks_passed.append(
+            "GET /projects/{id}/invoices over real HTTP shows exactly one auto-generated draft "
+            "deposit Invoice (amount=5.06, invoice_number starting with 'INV-') after Estimate approval"
+        )
+
+        invoicing_invoice_id = deposit_invoice["id"]
+        # Computed relative to today, not a hardcoded calendar date that
+        # would go stale — same discipline the Compliance block above uses
+        # for expires_on.
+        invoicing_due_date = (date.today() + timedelta(days=30)).isoformat()
+        invoice_sent = client.post(
+            f"/invoices/{invoicing_invoice_id}/send",
+            json={"due_date": invoicing_due_date},
+            headers=headers_g,
+        )
+        assert invoice_sent.status_code == 200, invoice_sent.text
+        assert invoice_sent.json()["status"] == "sent", (
+            f"expected status='sent' after POST /invoices/{{id}}/send, got {invoice_sent.json()['status']!r}"
+        )
+        checks_passed.append("POST /invoices/{id}/send over real HTTP succeeds (status=sent)")
+
+        invoice_paid = client.post(
+            f"/invoices/{invoicing_invoice_id}/payments",
+            json={"amount": "5.06", "paid_date": date.today().isoformat()},
+            headers=headers_g,
+        )
+        assert invoice_paid.status_code == 201, invoice_paid.text
+        invoice_after_payment = client.get(f"/invoices/{invoicing_invoice_id}", headers=headers_g)
+        assert invoice_after_payment.status_code == 200, invoice_after_payment.text
+        assert invoice_after_payment.json()["status"] == "paid", (
+            f"expected status='paid' after a full payment, got {invoice_after_payment.json()['status']!r}"
+        )
+        checks_passed.append(
+            "POST /invoices/{id}/payments for the full amount over real HTTP succeeds "
+            "and transitions the Invoice to status=paid"
+        )
+
+        vendor_bill = client.post(
+            "/bills",
+            json={"project_id": invoicing_project_id, "vendor_name": f"E2E Vendor {run_id}", "amount": "20.00"},
+            headers=headers_g,
+        )
+        assert vendor_bill.status_code == 201, vendor_bill.text
+        vendor_bill_id = vendor_bill.json()["id"]
+        checks_passed.append("POST /bills over real HTTP with a free-text vendor succeeds (status=unpaid)")
+
+        vendor_bill_paid = client.post(
+            f"/bills/{vendor_bill_id}/payments",
+            json={"amount": "20.00", "paid_date": date.today().isoformat()},
+            headers=headers_g,
+        )
+        assert vendor_bill_paid.status_code == 201, vendor_bill_paid.text
+        vendor_bill_after_payment = client.get(f"/bills/{vendor_bill_id}", headers=headers_g)
+        assert vendor_bill_after_payment.status_code == 200, vendor_bill_after_payment.text
+        assert vendor_bill_after_payment.json()["status"] == "paid", (
+            f"expected status='paid' after a full Bill payment, got "
+            f"{vendor_bill_after_payment.json()['status']!r}"
+        )
+        checks_passed.append(
+            "POST /bills/{id}/payments for the full amount over real HTTP succeeds "
+            "and transitions the Bill to status=paid"
+        )
+
+        profitability = client.get(
+            "/reports/profitability?start_date=2020-01-01&end_date=2030-12-31", headers=headers_g
+        )
+        assert profitability.status_code == 200, profitability.text
+        profitability_body = profitability.json()
+        matching_project = [
+            p for p in profitability_body["projects"] if p["project_id"] == invoicing_project_id
+        ]
+        assert len(matching_project) == 1, (
+            f"expected the Invoicing/AR-AP Project to appear exactly once in the "
+            f"profitability report, got {len(matching_project)}: {matching_project}"
+        )
+        assert matching_project[0]["billed_revenue"] == "5.06", (
+            f"expected billed_revenue='5.06' (the sent-then-paid deposit Invoice's amount), "
+            f"got {matching_project[0]['billed_revenue']!r}"
+        )
+        assert matching_project[0]["actual_cost"] == "20.00", (
+            f"expected actual_cost='20.00' (the paid vendor Bill's amount), "
+            f"got {matching_project[0]['actual_cost']!r}"
+        )
+        checks_passed.append(
+            "GET /reports/profitability over real HTTP includes the Invoicing/AR-AP Project "
+            "with billed_revenue=5.06 (the Invoice) and actual_cost=20.00 (the Bill)"
         )
 
     with httpx.Client(timeout=10.0) as client:
