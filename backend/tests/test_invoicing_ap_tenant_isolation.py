@@ -2,7 +2,7 @@
 first (Task 3.40); AP half appended by Task 3.43."""
 import asyncpg
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, set_subscription_tier
 
 # Naming matches test_tenant_isolation_phase3.py's own convention exactly:
 # OWNER_DSN (table-owner/superuser, used for direct membership inserts and
@@ -26,6 +26,9 @@ async def _register_and_login(client, company_name, email):
     )
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    # Tier gating (Task 5.5): these suites exercise Enterprise-gated
+    # accounting routes; registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],

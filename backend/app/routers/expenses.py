@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module
 from app.models import Expense
 from app.routers.projects import _get_project_or_404
 from app.schemas.expense import ExpenseCreateRequest, ExpenseListResponse, ExpenseResponse
@@ -30,6 +31,7 @@ async def create_expense(
     body: ExpenseCreateRequest,
     current: CurrentUser = Depends(require_role(*_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> ExpenseResponse:
     project = await _get_project_or_404(current, project_id)
 

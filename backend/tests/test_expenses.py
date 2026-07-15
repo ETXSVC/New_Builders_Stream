@@ -1,3 +1,6 @@
+from tests.conftest import set_subscription_tier
+
+
 async def _register_and_login(client, company_name, email):
     register = await client.post(
         "/auth/register",
@@ -10,6 +13,9 @@ async def _register_and_login(client, company_name, email):
     )
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    # Tier gating (Task 5.5): these suites exercise Enterprise-gated
+    # accounting routes; registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
 
 

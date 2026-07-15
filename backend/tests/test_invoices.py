@@ -3,7 +3,7 @@ from decimal import Decimal
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -21,6 +21,9 @@ async def _register_and_login(client, company_name, email):
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
     assert login.status_code == 200, login.text
+    # Tier gating (Task 5.5): these suites exercise Enterprise-gated
+    # accounting routes; registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},

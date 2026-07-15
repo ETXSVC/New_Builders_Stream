@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module
 from app.models import Bill, BillPayment
 from app.routers.projects import _get_project_or_404
 from app.routers.subcontractors import _get_subcontractor_or_404
@@ -70,6 +71,7 @@ async def create_bill(
     body: BillCreateRequest,
     current: CurrentUser = Depends(require_role(*_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> BillResponse:
     project_id: uuid.UUID | None = None
     if body.project_id is not None:
@@ -190,6 +192,7 @@ async def record_bill_payment(
     body: BillPaymentCreateRequest,
     current: CurrentUser = Depends(require_role(*_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> BillPaymentResponse:
     bill = await _get_bill_or_404(current, bill_id)
 
@@ -267,6 +270,7 @@ async def void_bill(
     bill_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> BillResponse:
     bill = await _get_bill_or_404(current, bill_id)
 

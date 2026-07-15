@@ -257,3 +257,55 @@ async def test_gate_fires_for_a_child_branch_acting_session_via_rls_root_resolut
     assert "requires the pro plan" in response.json()["detail"]  # not bare "pro" -
     # the role-403 message contains "project_manager", which a bare
     # substring check would falsely match (Task 5.3 code-quality review)
+
+
+async def test_pro_company_cannot_create_accounting_records(client):
+    """The trial default (pro) is exactly the below-tier case for
+    accounting — no tier flip needed for the negative direction."""
+    admin = await _register_and_login(client, "Tier Co A1", "tier-a1@example.test")
+    project = await client.post(
+        "/projects", json={"name": "Tier Project", "site_address": "1 Main St"}, headers=admin["headers"]
+    )
+    assert project.status_code == 201, project.text
+
+    invoice = await client.post(
+        f"/projects/{project.json()['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    assert invoice.status_code == 403
+    assert "enterprise" in invoice.json()["detail"]
+
+    bill = await client.post(
+        "/bills", json={"vendor_name": "Ace Plumbing", "amount": "300.00"}, headers=admin["headers"]
+    )
+    assert bill.status_code == 403
+    assert "enterprise" in bill.json()["detail"]
+
+    expense = await client.post(
+        f"/projects/{project.json()['id']}/expenses",
+        json={"description": "Materials", "amount": "50.00", "incurred_on": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert expense.status_code == 403
+
+
+async def test_enterprise_company_can_create_an_invoice_and_pro_can_still_read(client):
+    admin = await _register_and_login(client, "Tier Co A2", "tier-a2@example.test")
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    project = await client.post(
+        "/projects", json={"name": "Tier Project 2", "site_address": "1 Main St"}, headers=admin["headers"]
+    )
+    assert project.status_code == 201, project.text
+    invoice = await client.post(
+        f"/projects/{project.json()['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    assert invoice.status_code == 201, invoice.text
+
+    # Downgrade back to pro: the created invoice must remain READABLE
+    # (spec Decision 3 - the whole point of writes-only gating).
+    await set_subscription_tier(admin["company_id"], "pro")
+    detail = await client.get(f"/invoices/{invoice.json()['id']}", headers=admin["headers"])
+    assert detail.status_code == 200
+    report = await client.get(
+        "/reports/profitability?start_date=2026-01-01&end_date=2026-12-31", headers=admin["headers"]
+    )
+    assert report.status_code == 200
