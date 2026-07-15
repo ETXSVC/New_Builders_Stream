@@ -12,7 +12,7 @@ This document describes API contracts conceptually. The authoritative, machine-r
 - **Auth:** `Authorization: Bearer <jwt>` on every request except public auth routes.
 - **Tenant context:** `X-Tenant-ID: <company_uuid>` required for any user with access to more than one company; optional (inferred from JWT) for single-company users.
 - **Pagination:** `?limit=` (default 25, max 100) and `?cursor=` query params; responses include a `next_cursor`.
-- **Errors:** JSON body `{ "error": { "code": "string", "message": "string", "details": {...} } }` with standard HTTP status codes (400 validation, 401 unauthenticated, 403 unauthorized/wrong tenant, 404 not found, 409 illegal state transition, 422 unprocessable entity, 429 rate-limited, 5xx server error).
+- **Errors:** JSON body `{ "error": { "code": "string", "message": "string", "details": {...} } }` with standard HTTP status codes (400 validation, 401 unauthenticated, 403 unauthorized/wrong tenant, 404 not found, 409 illegal state transition, 422 unprocessable entity, 429 rate-limited, 5xx server error). `403` covers three orthogonal rejections on the same routes: wrong role, subscription not in good standing (write blocked), or subscription tier below the module's plan ([Pricing Model](08-pricing-subscription-model.md) Section 3 — mutating routes of Estimation/Compliance require Pro+, of Accounting/Integrations/child-branch creation require Enterprise; read routes are never tier-gated).
 - **Idempotency:** all `POST` endpoints that create billable or externally-synced records accept an optional `Idempotency-Key` header.
 
 ## 2. Users & Company Management

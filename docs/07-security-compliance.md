@@ -28,6 +28,8 @@ AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which 
 
 Enforced at two layers, per [Technical Architecture](03-technical-architecture.md), Section 5: a FastAPI dependency checks role before the request reaches business logic (fast-fail, clear error), and PostgreSQL RLS enforces tenant boundary regardless of application-layer bugs (defense in depth).
 
+Role gating composes with **tier gating** ([Pricing Model](08-pricing-subscription-model.md), Section 3; design: [`docs/superpowers/specs/2026-07-15-tier-gating-design.md`](superpowers/specs/2026-07-15-tier-gating-design.md)): role decides *who within a company* may act on a module; tier decides *which subscription plan* the company must be on for that module's mutating routes to be available at all. Both reject with `403`, alongside the subscription-status read-only gate — three orthogonal per-route dependencies on the same routes.
+
 ## 3. Tenant Isolation
 
 - Row-Level Security is the authoritative isolation mechanism (see [Technical Architecture](03-technical-architecture.md), Section 5) — application-layer `WHERE company_id = ...` filtering is a performance/clarity convenience, never the sole safeguard.
