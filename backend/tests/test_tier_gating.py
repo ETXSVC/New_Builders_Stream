@@ -11,7 +11,7 @@ import asyncpg
 import pytest
 
 from app.core.tier_gating import MODULE_MIN_TIER, TIER_RANK, tier_allows
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -121,3 +121,119 @@ async def test_tier_allows_resolves_the_root_company_for_a_child_branch(db_sessi
     finally:
         await conn.close()
     assert await tier_allows(db_session, child_id, "accounting") is True
+
+
+async def _register_and_login(client, company_name, email):
+    register = await client.post(
+        "/auth/register",
+        json={
+            "company_name": company_name,
+            "admin_full_name": "Test Admin",
+            "admin_email": email,
+            "admin_password": "supersecret123",
+        },
+    )
+    assert register.status_code == 201, register.text
+    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    return {
+        "company_id": register.json()["company_id"],
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+    }
+
+
+async def test_starter_company_cannot_create_a_catalog_item(client):
+    admin = await _register_and_login(client, "Tier Co S1", "tier-s1@example.test")
+    await set_subscription_tier(admin["company_id"], "starter")
+
+    response = await client.post(
+        "/catalogs/items",
+        json={"category": "materials", "name": "Lumber", "unit": "board_ft", "unit_rate": "5.00"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 403
+    assert "requires the pro plan" in response.json()["detail"]  # not bare "pro" -
+    # the role-403 message contains "project_manager", which a bare
+    # substring check would falsely match (Task 5.3 code-quality review)
+
+
+async def test_starter_company_cannot_create_an_estimate_but_can_still_read(client):
+    admin = await _register_and_login(client, "Tier Co S2", "tier-s2@example.test")
+    await set_subscription_tier(admin["company_id"], "starter")
+
+    # A valid-SHAPED body (the project/markup profile don't need to exist —
+    # the tier dependency 403s before the handler body ever queries), so the
+    # assertion can't race FastAPI's own 422 body validation.
+    # markup_profile_id is required by EstimateCreateRequest's schema, so a
+    # random UUID is supplied to keep the body valid-shaped.
+    create = await client.post(
+        "/estimates",
+        json={"project_id": str(uuid.uuid4()), "markup_profile_id": str(uuid.uuid4())},
+        headers=admin["headers"],
+    )
+    assert create.status_code == 403
+
+    # Reads stay open below tier (spec Decision 3).
+    listing = await client.get("/estimates", headers=admin["headers"])
+    assert listing.status_code == 200
+
+
+async def test_pro_company_can_create_a_catalog_item(client):
+    """The trial default IS pro — no tier flip needed; this pins the
+    at-tier pass so a future gating regression can't silently over-block."""
+    admin = await _register_and_login(client, "Tier Co P1", "tier-p1@example.test")
+
+    response = await client.post(
+        "/catalogs/items",
+        json={"category": "materials", "name": "Lumber", "unit": "board_ft", "unit_rate": "5.00"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 201, response.text
+
+
+async def test_gate_fires_for_a_child_branch_acting_session_via_rls_root_resolution(client):
+    """Task 5.1 code-quality review carry-forward: the gate's tier lookup
+    runs on the tenant-scoped app_user session under the subscriptions
+    table's upward-visibility RLS policy — a child branch has no
+    subscriptions row of its own, so this only 403s if the root-resolution
+    genuinely works through RLS from a child tenant context. fail-open
+    means a broken policy would silently allow; this test makes that
+    breakage loud."""
+    import asyncpg as _asyncpg
+
+    admin = await _register_and_login(client, "Tier Co RLS1", "tier-rls1@example.test")
+    # Create the child while the parent is still pro (child creation isn't
+    # gated until Task 5.7), grant the admin a membership in it directly,
+    # then downgrade the ROOT to starter.
+    create = await client.post(
+        f"/companies/{admin['company_id']}/children", json={"name": "RLS Branch"}, headers=admin["headers"]
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+
+    conn = await _asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        # user_id: registration response carries it; fetch via the users
+        # table to keep this helper-independent.
+        user_row = await conn.fetchrow(
+            "SELECT user_id FROM company_users WHERE company_id = $1", uuid.UUID(admin["company_id"])
+        )
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) VALUES ($1, $2, 'admin', now())",
+            uuid.UUID(child_id),
+            user_row["user_id"],
+        )
+    finally:
+        await conn.close()
+
+    await set_subscription_tier(admin["company_id"], "starter")
+
+    child_headers = {**admin["headers"], "X-Tenant-ID": child_id}
+    response = await client.post(
+        "/catalogs/items",
+        json={"category": "materials", "name": "Lumber", "unit": "board_ft", "unit_rate": "5.00"},
+        headers=child_headers,
+    )
+    assert response.status_code == 403
+    assert "requires the pro plan" in response.json()["detail"]  # not bare "pro" -
+    # the role-403 message contains "project_manager", which a bare
+    # substring check would falsely match (Task 5.3 code-quality review)

@@ -20,6 +20,7 @@ from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, MarkupProfile, Project
 from app.models.estimate import VALID_STATUSES
 from app.schemas.estimate import (
@@ -125,6 +126,7 @@ async def create_estimate(
     payload: EstimateCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateResponse:
     """US-4.1: an Estimate is built "against a Lead or Project" — exactly
     one of `project_id`/`lead_id`, never neither, never both. Each
@@ -293,6 +295,7 @@ async def replace_estimate_line_items(
     payload: EstimateLineItemsReplaceRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateDetailResponse:
     """Task 2.11: US-4.3's "As a Project Manager, I can add/edit line items
     with quantities" — a full batch replace (API spec's own wording), not a
@@ -417,6 +420,7 @@ async def calculate_estimate_totals(
     estimate_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateCalculationResponse:
     """Task 2.12: US-4.3's "I can trigger a recalculation" — runs
     `app/services/estimate_calculation.py`'s fixed-order calculation engine
@@ -484,6 +488,7 @@ async def export_estimate_pdf(
     estimate_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateResponse:
     """Task 2.15: enqueues async PDF generation
     (`app/tasks/estimate_pdf.py`'s `generate_estimate_pdf` Dramatiq actor)
@@ -533,6 +538,7 @@ async def send_estimate_for_signature(
     estimate_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateResponse:
     """Task 2.19: US-4.5's send-for-signature step — marks an Estimate as
     awaiting the client's approve/reject action. No e-signature is captured
@@ -574,6 +580,7 @@ async def approve_estimate(
     signature_artifact: UploadFile = File(...),
     current: CurrentUser = Depends(require_role("client")),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateResponse:
     """Task 2.19: US-4.5's "As a Client, I can review an emailed Estimate
     and approve it with an e-signature." `require_role("client")` only
@@ -680,6 +687,7 @@ async def reject_estimate(
     payload: EstimateRejectRequest,
     current: CurrentUser = Depends(require_role("client")),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> EstimateResponse:
     """Task 2.19: US-4.5's "or reject it with a reason." Same `client`-only
     role gate and `status='sent'` precondition (`_require_estimate_sent`,
