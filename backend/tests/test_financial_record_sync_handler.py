@@ -101,3 +101,83 @@ async def test_two_active_connections_enqueue_two_messages(client, monkeypatch, 
     assert len(calls) == 2
     providers_synced = {kw["connection_id"] for _, kw in calls}
     assert len(providers_synced) == 2
+
+
+async def test_creating_an_invoice_via_the_real_route_enqueues_a_sync(client, monkeypatch):
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Sync Co 4", "sync-4@example.test")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+
+    project = await client.post(
+        "/projects", json={"name": "Sync Project", "site_address": "1 Main St"}, headers=admin["headers"]
+    )
+    assert project.status_code == 201, project.text
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    invoice = await client.post(
+        f"/projects/{project.json()['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    assert invoice.status_code == 201, invoice.text
+
+    assert len(calls) == 1
+    assert calls[0][1]["entity_type"] == "invoice"
+    # The enqueued entity_id must be the CREATED entity's id — asserting
+    # entity_type alone would not catch a route passing e.g. project.id.
+    assert calls[0][1]["entity_id"] == invoice.json()["id"]
+
+
+async def test_creating_a_bill_via_the_real_route_enqueues_a_sync(client, monkeypatch):
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Sync Co 5", "sync-5@example.test")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    bill = await client.post(
+        "/bills", json={"vendor_name": "Ace Plumbing", "amount": "300.00"}, headers=admin["headers"]
+    )
+    assert bill.status_code == 201, bill.text
+
+    assert len(calls) == 1
+    assert calls[0][1]["entity_type"] == "bill"
+    assert calls[0][1]["entity_id"] == bill.json()["id"]
+
+
+async def test_creating_an_expense_via_the_real_route_enqueues_a_sync(client, monkeypatch):
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Sync Co 6", "sync-6@example.test")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+
+    project = await client.post(
+        "/projects", json={"name": "Expense Sync Project", "site_address": "1 Main St"}, headers=admin["headers"]
+    )
+    assert project.status_code == 201, project.text
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    expense = await client.post(
+        f"/projects/{project.json()['id']}/expenses",
+        json={"description": "Materials", "amount": "50.00", "incurred_on": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert expense.status_code == 201, expense.text
+
+    assert len(calls) == 1
+    assert calls[0][1]["entity_type"] == "expense"
+    assert calls[0][1]["entity_id"] == expense.json()["id"]

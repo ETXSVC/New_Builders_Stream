@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import Bill, BillPayment
 from app.routers.projects import _get_project_or_404
@@ -95,6 +96,14 @@ async def create_bill(
     await current.session.flush()
     # No explicit commit — get_current_user (Inherited Invariant #4) commits
     # current.session once, after this handler returns.
+
+    await publish(
+        "BILL_CREATED",
+        session=current.session,
+        entity_type="bill",
+        entity_id=bill.id,
+        company_id=bill.company_id,
+    )
 
     return await _bill_response(current, bill)
 
