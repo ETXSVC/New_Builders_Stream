@@ -217,3 +217,137 @@ async def test_sibling_branches_cannot_see_each_others_invoices(client):
 
     response_a_sees_b = await client.get(f"/invoices/{invoice_b['id']}", headers=headers_a)
     assert response_a_sees_b.status_code == 404
+
+
+async def _create_bill(client, headers, vendor_name="Vendor Iso", amount="200.00"):
+    response = await client.post(
+        "/bills", json={"vendor_name": vendor_name, "amount": amount}, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked_for_bills(client):
+    company_a = await _register_and_login(client, "Iso AP Co A", "iso-ap-a@example.test")
+    company_b = await _register_and_login(client, "Iso AP Co B", "iso-ap-b@example.test")
+
+    spoofed_headers = {**company_a["headers"], "X-Tenant-ID": company_b["company_id"]}
+    response = await client.post(
+        "/bills", json={"vendor_name": "Spoofed Vendor", "amount": "50.00"}, headers=spoofed_headers
+    )
+    assert response.status_code == 403
+
+
+async def test_bill_get_404s_across_tenants_at_the_application_layer(client):
+    """Confirms `GET /bills/{id}` itself 404s for a genuinely unrelated
+    tenant (app/routers/bills.py's `_get_bill_or_404` has no explicit
+    company_id filter of its own — RLS is the only thing narrowing this
+    query). The POLICY-level proof (that RLS itself, not app-layer luck, is
+    responsible) is the separate
+    test_rls_policy_itself_blocks_cross_tenant_bill_visibility test below —
+    same "one HTTP-level proof + one policy-level proof" split this file's
+    own AR half already uses for invoices."""
+    company_a = await _register_and_login(client, "Iso AP Co C", "iso-ap-c@example.test")
+    company_b = await _register_and_login(client, "Iso AP Co D", "iso-ap-d@example.test")
+    bill_b = await _create_bill(client, company_b["headers"])
+
+    response = await client.get(f"/bills/{bill_b['id']}", headers=company_a["headers"])
+    assert response.status_code == 404
+
+
+async def test_rls_policy_itself_blocks_cross_tenant_bill_visibility(client):
+    """Mirrors this file's own
+    test_rls_policy_itself_blocks_cross_tenant_invoice_visibility exactly,
+    adapted to `bills` — connects as app_user directly (bypassing the
+    FastAPI app, and therefore `_get_bill_or_404` entirely) to prove the
+    POLICY itself, not application-layer filtering, blocks a genuinely
+    unrelated tenant from seeing another tenant's bill row. Then disables
+    RLS as the table owner and confirms the identical query starts
+    returning the row, showing the policy, not luck, was responsible. Then
+    ALWAYS restores RLS in a finally, even if an assertion above fails
+    partway through, so this test can never leave the database in an
+    insecure state for any test that runs after it — same two-level
+    try/finally discipline as every other RLS-disable/re-enable proof in
+    this codebase."""
+    a = await _register_and_login(client, "Iso AP Co E", "iso-ap-e@example.test")
+    b = await _register_and_login(client, "Iso AP Co F", "iso-ap-f@example.test")
+    bill_b = await _create_bill(client, b["headers"])
+    bill_b_id = bill_b["id"]
+
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
+    try:
+        await app_conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+        )
+        visible_as_a = await app_conn.fetchrow(
+            "SELECT id FROM bills WHERE id = $1", bill_b_id
+        )
+        assert visible_as_a is None, (
+            "RLS should block Company A's session from seeing Company B's bill"
+        )
+    finally:
+        await app_conn.close()
+
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute("ALTER TABLE bills DISABLE ROW LEVEL SECURITY")
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
+        try:
+            await app_conn2.execute(
+                "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+            )
+            visible_with_rls_off = await app_conn2.fetchrow(
+                "SELECT id FROM bills WHERE id = $1", bill_b_id
+            )
+            assert visible_with_rls_off is not None, (
+                "Sanity check failed: Company B's bill row should exist and "
+                "be visible once RLS is off — if this fails, the row itself "
+                "is missing, which means the test setup (not the policy) is "
+                "broken."
+            )
+        finally:
+            await app_conn2.close()
+    finally:
+        # ALWAYS restore RLS even if the assertion above fails — see this
+        # test's own docstring for why this is a separate try/finally.
+        try:
+            await owner_conn.execute("ALTER TABLE bills ENABLE ROW LEVEL SECURITY")
+        finally:
+            await owner_conn.close()
+
+
+async def test_parent_admin_can_see_child_branch_bill(client):
+    """Uses _create_child_with_membership rather than a bare POST
+    /companies/{id}/children — see that helper's docstring: creating a child
+    company does NOT itself grant the creating admin membership in it, so a
+    bare X-Tenant-ID switch into a freshly created child would 403 before
+    ever reaching the bill-visibility assertion this test cares about."""
+    parent = await _register_and_login(client, "Iso AP Parent", "iso-ap-parent@example.test")
+    child_id = await _create_child_with_membership(client, parent, "AP Branch")
+
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    bill = await _create_bill(client, child_headers)
+
+    response = await client.get(f"/bills/{bill['id']}", headers=child_headers)
+    assert response.status_code == 200, response.text
+
+
+async def test_sibling_branches_cannot_see_each_others_bills(client):
+    """Checked symmetrically in both directions, same convention as this
+    file's own test_sibling_branches_cannot_see_each_others_invoices: a
+    single one-way check (A can't see B's) wouldn't rule out a bug that only
+    manifests checking the reverse direction (B can't see A's)."""
+    parent = await _register_and_login(client, "Iso AP Parent 2", "iso-ap-parent2@example.test")
+    child_a_id = await _create_child_with_membership(client, parent, "AP Branch A")
+    child_b_id = await _create_child_with_membership(client, parent, "AP Branch B")
+
+    headers_a = {**parent["headers"], "X-Tenant-ID": child_a_id}
+    headers_b = {**parent["headers"], "X-Tenant-ID": child_b_id}
+    bill_a = await _create_bill(client, headers_a, vendor_name="Branch A Vendor")
+    bill_b = await _create_bill(client, headers_b, vendor_name="Branch B Vendor")
+
+    response_b_sees_a = await client.get(f"/bills/{bill_a['id']}", headers=headers_b)
+    assert response_b_sees_a.status_code == 404
+
+    response_a_sees_b = await client.get(f"/bills/{bill_b['id']}", headers=headers_a)
+    assert response_a_sees_b.status_code == 404
