@@ -45,6 +45,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.events import publish
 from app.core.money import CENTS
 from app.models import Invoice
 from app.services.audit import write_audit_log
@@ -102,4 +103,22 @@ async def handle_estimate_approved(
         entity_type="invoice",
         entity_id=invoice.id,
         metadata={"estimate_id": str(estimate_id)},
+    )
+
+    # This handler is the SECOND place Invoices are created (the first is
+    # create_invoice in app/routers/invoices.py) — both must publish
+    # INVOICE_CREATED, or auto-drafted deposit invoices silently bypass
+    # accounting sync (Task 4.11's handle_financial_record_created), which
+    # is precisely the flagship US-6.2 flow: client signs an Estimate, the
+    # deposit invoice lands in the accountant's platform. Found by external
+    # design review after Task 4.13 wired only the three create routes.
+    # publish() dispatching is a plain sequential loop, so this nested
+    # publish (we are ourselves running inside ESTIMATE_APPROVED's
+    # dispatch) is just a recursive call, not a re-entrancy hazard.
+    await publish(
+        "INVOICE_CREATED",
+        session=session,
+        entity_type="invoice",
+        entity_id=invoice.id,
+        company_id=company_id,
     )
