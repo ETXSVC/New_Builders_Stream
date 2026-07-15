@@ -156,6 +156,26 @@ async def test_starter_company_cannot_create_a_catalog_item(client):
     # substring check would falsely match (Task 5.3 code-quality review)
 
 
+async def test_starter_company_cannot_create_a_subcontractor_but_can_read_the_dashboard(client):
+    admin = await _register_and_login(client, "Tier Co S3", "tier-s3@example.test")
+    await set_subscription_tier(admin["company_id"], "starter")
+
+    create = await client.post(
+        "/subcontractors",
+        json={"name": "Ace Plumbing", "trade": "plumbing"},
+        headers=admin["headers"],
+    )
+    assert create.status_code == 403
+    assert "requires the pro plan" in create.json()["detail"]  # not bare "pro" -
+    # the role-403 message contains "project_manager", which a bare
+    # substring check would falsely match (Task 5.3 code-quality review)
+
+    # The dashboard (and every compliance GET) stays open below tier
+    # (spec Decision 3).
+    dashboard = await client.get("/compliance/dashboard", headers=admin["headers"])
+    assert dashboard.status_code == 200
+
+
 async def test_starter_company_cannot_create_an_estimate_but_can_still_read(client):
     admin = await _register_and_login(client, "Tier Co S2", "tier-s2@example.test")
     await set_subscription_tier(admin["company_id"], "starter")
