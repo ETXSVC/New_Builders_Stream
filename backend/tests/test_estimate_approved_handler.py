@@ -28,6 +28,7 @@ column — an avoidable source of test flakiness across Postgres versions,
 not a real assertion about the handler's own correctness. $50.60's clean
 10% deposit ($5.06) has no such tie.
 """
+import json
 import uuid
 from decimal import Decimal
 
@@ -155,6 +156,22 @@ async def _fetch_invoices_for_estimate(estimate_id):
         await conn.close()
 
 
+async def _fetch_audit_log_for_invoice(invoice_id):
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        return await conn.fetch(
+            "SELECT action, entity_type, entity_id, actor_id, log_metadata "
+            "FROM audit_log WHERE entity_type = 'invoice' AND entity_id = $1",
+            invoice_id,
+        )
+    finally:
+        await conn.close()
+
+
+def _decode_metadata(raw):
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
 async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(client):
     register_event_handlers()
 
@@ -179,8 +196,17 @@ async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(cli
     invoice = invoices[0]
     assert invoice["status"] == "draft"
     assert invoice["project_id"] == uuid.UUID(project["id"])
+    assert invoice["company_id"] == uuid.UUID(admin["company_id"])
+    assert invoice["estimate_id"] == uuid.UUID(estimate_id)
     assert invoice["due_date"] is None
     assert Decimal(invoice["amount"]) == Decimal(str(total)) * Decimal("0.10")
+
+    audit_rows = await _fetch_audit_log_for_invoice(invoice["id"])
+    assert len(audit_rows) == 1
+    audit_row = audit_rows[0]
+    assert audit_row["action"] == "invoice.auto_generated"
+    assert audit_row["actor_id"] is None
+    assert _decode_metadata(audit_row["log_metadata"]) == {"estimate_id": estimate_id}
 
 
 async def _create_lead(client, headers):

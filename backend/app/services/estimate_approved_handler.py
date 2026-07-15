@@ -41,10 +41,11 @@ reasonable follow-up, flagged in this task's implementation report rather
 than done silently here as a scope-creeping router edit.
 """
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.money import CENTS
 from app.models import Invoice
 from app.services.audit import write_audit_log
 from app.services.invoicing import DEFAULT_DEPOSIT_PERCENTAGE, next_invoice_number
@@ -62,6 +63,18 @@ async def handle_estimate_approved(
     if project_id is None:
         return
 
+    # Quantized to CENTS/ROUND_HALF_UP before it ever reaches the Numeric
+    # (12,2) column — same rule every other monetary write in this codebase
+    # follows (see app/core/money.py's own docstring). Without this,
+    # approved_total * DEFAULT_DEPOSIT_PERCENTAGE can carry more than 2
+    # decimal places (e.g. 999.99 * 0.10 = 99.9990); Postgres would round on
+    # INSERT, but the in-memory invoice.amount on this ORM object would stay
+    # unquantized after flush() (SQLAlchemy doesn't re-fetch plain columns
+    # post-insert), diverging from what's actually persisted.
+    deposit_amount = (approved_total * DEFAULT_DEPOSIT_PERCENTAGE).quantize(
+        CENTS, rounding=ROUND_HALF_UP
+    )
+
     invoice_number = await next_invoice_number(session, company_id)
     invoice = Invoice(
         id=uuid.uuid4(),
@@ -69,7 +82,7 @@ async def handle_estimate_approved(
         company_id=company_id,
         estimate_id=estimate_id,
         invoice_number=invoice_number,
-        amount=approved_total * DEFAULT_DEPOSIT_PERCENTAGE,
+        amount=deposit_amount,
         status="draft",
         due_date=None,
     )
