@@ -22,8 +22,9 @@
 | Accounting/Billing (AP) | Full CRUD | — | — | Full CRUD | — |
 | Expenses | Full CRUD | — | — | Full CRUD | — |
 | Compliance | Full CRUD | Read + assign (with override logging) | — | Read | — |
+| Integrations | Full CRUD | — | — | Full CRUD | — |
 
-AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which the Client is the actual recipient of, Bills represent the company's own internal obligations to its vendors/subcontractors. Expenses follow the identical never-Client-visible rule as AP, for the same reason — they record the company's own project costs, not anything billed to the Client.
+AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which the Client is the actual recipient of, Bills represent the company's own internal obligations to its vendors/subcontractors. Expenses follow the identical never-Client-visible rule as AP, for the same reason — they record the company's own project costs, not anything billed to the Client. Integrations (QuickBooks/FreshBooks connections and sync status) follow the same rule for the same reason — third-party accounting sync is an internal bookkeeping concern, not something ever exposed to a Client. The one exception to `require_role` gating in this module is the OAuth `callback` route itself, which has no authenticated `CurrentUser` at all (an external redirect cannot carry a bearer token) — its security boundary is a signed, short-lived `state` parameter instead, the same structural pattern `/invitations/{id}/accept` already uses.
 
 Enforced at two layers, per [Technical Architecture](03-technical-architecture.md), Section 5: a FastAPI dependency checks role before the request reaches business logic (fast-fail, clear error), and PostgreSQL RLS enforces tenant boundary regardless of application-layer bugs (defense in depth).
 
@@ -40,7 +41,7 @@ Enforced at two layers, per [Technical Architecture](03-technical-architecture.m
 
 ## 5. Audit Logging
 
-- Every state-changing action on financially or legally significant entities (Project status changes, Estimate approval, Change Order approval, Subcontractor compliance overrides, user role changes, Invoice send/payment/void, Bill payment/void) writes an `audit_log` row (see [Database Schema](04-database-schema.md), Section 8) recording who, what, when, and relevant metadata.
+- Every state-changing action on financially or legally significant entities (Project status changes, Estimate approval, Change Order approval, Subcontractor compliance overrides, user role changes, Invoice send/payment/void, Bill payment/void, connecting a QuickBooks/FreshBooks integration) writes an `audit_log` row (see [Database Schema](04-database-schema.md), Section 8) recording who, what, when, and relevant metadata.
 - Audit log entries are append-only; no application code path updates or deletes them.
 
 ## 6. E-Signature Workflow

@@ -93,9 +93,11 @@ This document describes API contracts conceptually. The authoritative, machine-r
 
 | Route | Method | Purpose | Key Inputs |
 |---|---|---|---|
-| `/integrations/quickbooks/connect` | GET | Begin OAuth flow | — (redirects) |
-| `/integrations/quickbooks/callback` | GET | OAuth callback | code, state |
-| `/integrations/{provider}/sync-status` | GET | Last sync status/errors | — |
+| `/integrations/{provider}/connect` | GET | Begin OAuth flow — returns `{"authorization_url": "..."}` as JSON (not a raw redirect; the caller is responsible for navigating there) | — |
+| `/integrations/{provider}/callback` | GET | OAuth callback, exchanges `code` for tokens and stores the connection. No `CurrentUser` — the signed `state` parameter carries the authenticated `company_id` instead. | code, state |
+| `/integrations/{provider}/sync-status` | GET | Connection summary plus a paginated, per-record sync status list (`?status=` filter supported) | cursor, limit, status |
+
+`provider` is `quickbooks` or `freshbooks`, per `integration_connections.provider`'s own CHECK constraint (Section 7 of the [Database Schema](04-database-schema.md)). See [`docs/superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md`](superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md) for the full design — this phase builds the provider-agnostic core behind a fake client, not real QuickBooks/FreshBooks wiring.
 
 ## 8. Compliance
 
