@@ -18,6 +18,7 @@ from app.routers import (
     invoices,
     leads,
     projects,
+    reports,
     subcontractor_assignments,
     subcontractors,
     subscriptions,
@@ -44,6 +45,7 @@ app.include_router(subscriptions.router)
 app.include_router(invoices.router)
 app.include_router(bills.router)
 app.include_router(expenses.router)
+app.include_router(reports.router)
 app.include_router(webhooks.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
