@@ -20,6 +20,7 @@ from app.schemas.invoice import (
     InvoiceCreateRequest,
     InvoiceDetailResponse,
     InvoiceListResponse,
+    InvoicePaymentCreateRequest,
     InvoicePaymentResponse,
     InvoiceResponse,
     InvoiceSendRequest,
@@ -130,6 +131,55 @@ async def send_invoice(
     )
 
     return await _invoice_response(current, invoice)
+
+
+@router.post(
+    "/invoices/{invoice_id}/payments",
+    response_model=InvoicePaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_invoice_payment(
+    invoice_id: uuid.UUID,
+    body: InvoicePaymentCreateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> InvoicePaymentResponse:
+    invoice = await _get_invoice_or_404(current, invoice_id)
+    if invoice.status in ("draft", "void"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"Cannot record a payment against a {invoice.status} invoice"
+        )
+
+    payment = InvoicePayment(
+        id=uuid.uuid4(),
+        invoice_id=invoice.id,
+        company_id=invoice.company_id,
+        amount=body.amount,
+        paid_date=body.paid_date,
+        recorded_by=current.user.id,
+    )
+    current.session.add(payment)
+    await current.session.flush()
+
+    paid = await _paid_amount(current, invoice.id)
+    if paid >= invoice.amount:
+        invoice.status = "paid"
+        await current.session.flush()
+
+    # docs/07-security-compliance.md Section 5 lists "Invoice send/payment/
+    # void" among the state changes requiring an audit_log row — same
+    # requirement Task 3.36's send_invoice already satisfies.
+    await write_audit_log(
+        current.session,
+        company_id=invoice.company_id,
+        actor_id=current.user.id,
+        action="invoice.payment_recorded",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        metadata={"payment_id": str(payment.id), "amount": str(body.amount)},
+    )
+
+    return InvoicePaymentResponse.model_validate(payment)
 
 
 @router.get("/projects/{project_id}/invoices", response_model=InvoiceListResponse)

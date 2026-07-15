@@ -255,3 +255,91 @@ async def test_client_cannot_send_invoice(client):
         f"/invoices/{invoice_id}/send", json={}, headers=client_role["headers"]
     )
     assert response.status_code == 403
+
+
+async def _create_and_send_invoice(client, headers, project_id, amount, due_date="2026-09-01"):
+    create = await client.post(
+        f"/projects/{project_id}/invoices",
+        json={"amount": amount, "due_date": due_date},
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    invoice_id = create.json()["id"]
+    send = await client.post(f"/invoices/{invoice_id}/send", json={}, headers=headers)
+    assert send.status_code == 200, send.text
+    return invoice_id
+
+
+async def test_partial_payment_leaves_invoice_sent_with_reduced_outstanding_balance(client):
+    admin = await _register_and_login(client, "Pay Co 1", "pay-1@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "1000.00")
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "400.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 201, response.text
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "sent"
+    assert body["outstanding_balance"] == "600.00"
+    assert len(body["payments"]) == 1
+
+
+async def test_cumulative_payment_reaching_full_amount_auto_marks_paid(client):
+    admin = await _register_and_login(client, "Pay Co 2", "pay-2@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "500.00")
+
+    await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "300.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    second = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "200.00", "paid_date": "2026-08-02"},
+        headers=admin["headers"],
+    )
+    assert second.status_code == 201, second.text
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "paid"
+    assert body["outstanding_balance"] == "0.00"
+
+
+async def test_overpayment_leaves_outstanding_balance_negative(client):
+    admin = await _register_and_login(client, "Pay Co 3", "pay-3@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+
+    await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "150.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "paid"
+    assert body["outstanding_balance"] == "-50.00"
+
+
+async def test_payment_against_a_draft_invoice_returns_409(client):
+    admin = await _register_and_login(client, "Pay Co 4", "pay-4@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    invoice_id = create.json()["id"]
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "50.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409
