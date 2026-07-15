@@ -1,4 +1,5 @@
 """Task 4.7 (design spec Section 3): GET /integrations/{provider}/connect."""
+import uuid
 
 
 async def _register_and_login(client, company_name, email):
@@ -153,3 +154,130 @@ async def test_reconnecting_the_same_provider_replaces_the_old_tokens(client):
         await conn.close()
     assert len(rows) == 1, "reconnecting must update the existing row, not insert a second one"
     assert rows[0]["access_token_encrypted"] != first_token
+
+
+async def _connect(client, headers, company_id, provider="quickbooks"):
+    state = sign_oauth_state(company_id=company_id, provider=provider)
+    response = await client.get(f"/integrations/{provider}/callback?code=fake-code&state={state}")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def test_sync_status_404s_for_a_provider_with_no_connection(client):
+    admin = await _register_and_login(client, "Integ Co 7", "integ-7@example.test")
+
+    response = await client.get("/integrations/quickbooks/sync-status", headers=admin["headers"])
+    assert response.status_code == 404
+
+
+async def test_sync_status_returns_the_connection_summary_with_an_empty_records_list(client):
+    admin = await _register_and_login(client, "Integ Co 8", "integ-8@example.test")
+    await _connect(client, admin["headers"], admin["company_id"])
+
+    response = await client.get("/integrations/quickbooks/sync-status", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["provider"] == "quickbooks"
+    assert body["records"] == []
+
+
+async def test_project_manager_cannot_read_sync_status(client):
+    admin = await _register_and_login(client, "Integ Co 9", "integ-9@example.test")
+    await _connect(client, admin["headers"], admin["company_id"])
+    invite = await client.post(
+        "/invitations", json={"email": "pm-integ2@example.test", "role": "project_manager"}, headers=admin["headers"]
+    )
+    await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "PM User", "password": "supersecret123"},
+    )
+    pm_login = await client.post(
+        "/auth/login", json={"email": "pm-integ2@example.test", "password": "supersecret123"}
+    )
+    pm_headers = {"Authorization": f"Bearer {pm_login.json()['access_token']}"}
+
+    response = await client.get("/integrations/quickbooks/sync-status", headers=pm_headers)
+    assert response.status_code == 403
+
+
+async def _insert_sync_record_directly(company_id, connection_id, **overrides):
+    """Seeds a real integration_sync_records row via the RLS-exempt owner
+    connection — sync_status's whole purpose is serializing rows like this
+    one, and Tasks 4.11-4.13 (the actual writers) don't exist yet, so this
+    is the only way to exercise the response-serialization path before
+    then. Same rationale as test_tenant_isolation_phase1.py's
+    _insert_lead_directly: this is test setup, not a runtime code path."""
+    record_id = str(uuid.uuid4())
+    fields = {
+        "entity_type": "invoice",
+        "entity_id": str(uuid.uuid4()),
+        "status": "success",
+    }
+    fields.update(overrides)
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO integration_sync_records "
+            "(id, company_id, connection_id, entity_type, entity_id, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            record_id,
+            company_id,
+            connection_id,
+            fields["entity_type"],
+            fields["entity_id"],
+            fields["status"],
+        )
+    finally:
+        await conn.close()
+    return record_id
+
+
+async def test_sync_status_returns_a_seeded_sync_record(client):
+    admin = await _register_and_login(client, "Integ Co 10", "integ-10@example.test")
+    connection = await _connect(client, admin["headers"], admin["company_id"])
+    record_id = await _insert_sync_record_directly(admin["company_id"], connection["id"])
+
+    response = await client.get("/integrations/quickbooks/sync-status", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["records"]) == 1
+    record = body["records"][0]
+    assert record["id"] == record_id
+    assert record["entity_type"] == "invoice"
+    assert record["status"] == "success"
+
+
+async def test_sync_status_does_not_500_when_a_child_branch_shares_the_same_provider(client):
+    """Regression test: integration_connections is UNIQUE per (company_id,
+    provider), not globally — a parent company and a child branch that
+    each independently connect the same provider are two distinct rows
+    RLS makes visible to the parent admin. Before this test was added,
+    sync_status filtered its IntegrationConnection lookup by `provider`
+    alone and called scalar_one_or_none(), which raises
+    MultipleResultsFound (an unhandled 500) in exactly this situation."""
+    parent = await _register_and_login(client, "Integ Co 11", "integ-11@example.test")
+    await _connect(client, parent["headers"], parent["company_id"])
+
+    create_child = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": "Integ Branch"},
+        headers=parent["headers"],
+    )
+    assert create_child.status_code == 201
+    child_id = create_child.json()["id"]
+
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO integration_connections "
+            "(id, company_id, provider, access_token_encrypted, refresh_token_encrypted) "
+            "VALUES ($1, $2, 'quickbooks', 'x', 'y')",
+            str(uuid.uuid4()),
+            child_id,
+        )
+    finally:
+        await conn.close()
+
+    response = await client.get("/integrations/quickbooks/sync-status", headers=parent["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["provider"] == "quickbooks"

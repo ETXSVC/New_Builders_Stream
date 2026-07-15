@@ -8,13 +8,20 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, require_role
+from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.db import session_scope, set_current_tenant
-from app.models import IntegrationConnection
-from app.schemas.integration import AuthorizationUrlResponse, IntegrationConnectionResponse
+from app.models import IntegrationConnection, IntegrationSyncRecord
+from app.schemas.integration import (
+    AuthorizationUrlResponse,
+    IntegrationConnectionResponse,
+    SyncRecordResponse,
+    SyncStatusResponse,
+)
 from app.services.accounting_client import get_accounting_client
 from app.services.audit import write_audit_log
 from app.services.integration_oauth_state import (
@@ -182,3 +189,75 @@ async def callback(
             )
 
     return IntegrationConnectionResponse.model_validate(connection)
+
+
+@router.get("/{provider}/sync-status", response_model=SyncStatusResponse)
+async def sync_status(
+    provider: Provider,
+    current: CurrentUser = Depends(require_role(*_ROLES)),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> SyncStatusResponse:
+    """Task 4.10 (design spec Section 3): read-only, cursor-paginated sync
+    status listing. Same `_ROLES` (admin/accountant) RBAC gate as
+    `connect` above.
+
+    The `IntegrationConnection` lookup below DOES filter explicitly on
+    `company_id == current.company_id`, unlike `leads.py`'s `GET /leads`
+    (which relies on RLS alone) — `leads` is a LIST endpoint, where the
+    parent/child roll-up `get_all_descendant_ids()` RLS policy returning
+    multiple companies' rows is the intended behavior. This route instead
+    does a `scalar_one_or_none()` lookup keyed only on `provider`, which
+    has no such tolerance: `integration_connections` has a
+    `UNIQUE(company_id, provider)` constraint, not a globally unique one,
+    so a parent company and a child branch that each independently connect
+    the same provider are two distinct, RLS-visible rows to a parent
+    admin — `provider` alone can't disambiguate them, and `scalar_one_or_
+    none()` would raise `MultipleResultsFound` (an unhandled 500) instead
+    of correctly resolving to "this company's own connection." Matches
+    `subscriptions.py`'s own precedent for this exact "hierarchy + need
+    exactly one row" shape (an explicit company filter alongside RLS, not
+    RLS alone) — though unlike `subscriptions` (root-company-scoped by
+    design), `integration_connections` rows are scoped to whichever
+    specific company connected (see `connect`/`callback` above, both of
+    which use `current.company_id`/the signed state's own `company_id`
+    directly, never a root-company resolution), so the filter here is the
+    caller's own `company_id`, not `get_root_company_id(...)`.
+
+    `IntegrationSyncRecord` rows, by contrast, need no explicit
+    `company_id` filter of their own: they're looked up by `connection_id
+    == connection.id`, and `connection.id` is a global UUID primary key
+    that (once resolved to a specific row above) unambiguously identifies
+    one connection — filtering by that FK is sufficient on its own,
+    independent of RLS breadth.
+    """
+    connection_result = await current.session.execute(
+        select(IntegrationConnection).where(
+            IntegrationConnection.provider == provider,
+            IntegrationConnection.company_id == current.company_id,
+        )
+    )
+    connection = connection_result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No {provider} connection for this company")
+
+    query = select(IntegrationSyncRecord).where(IntegrationSyncRecord.connection_id == connection.id)
+    if status_filter is not None:
+        query = query.where(IntegrationSyncRecord.status == status_filter)
+
+    rows, next_cursor = await paginate(
+        current.session,
+        query,
+        created_at_col=IntegrationSyncRecord.created_at,
+        id_col=IntegrationSyncRecord.id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+    return SyncStatusResponse(
+        provider=connection.provider,
+        connected_at=connection.connected_at,
+        records=[SyncRecordResponse.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+    )
