@@ -182,3 +182,59 @@ async def test_get_invoice_as_client_404s_on_draft(client):
     await _set_invoice_status_directly(invoice_id, "sent")
     response = await client.get(f"/invoices/{invoice_id}", headers=client_role["headers"])
     assert response.status_code == 200, response.text
+
+
+async def test_send_invoice_with_no_due_date_at_creation_requires_one_in_the_request(client):
+    admin = await _register_and_login(client, "Send Co 1", "send-1@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "400.00"}, headers=admin["headers"]
+    )
+    invoice_id = create.json()["id"]
+
+    missing_due_date = await client.post(
+        f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"]
+    )
+    assert missing_due_date.status_code == 422
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/send", json={"due_date": "2026-08-15"}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "sent"
+    assert body["due_date"] == "2026-08-15"
+
+
+async def test_send_invoice_that_already_has_a_due_date_does_not_require_one_again(client):
+    admin = await _register_and_login(client, "Send Co 2", "send-2@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "400.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    invoice_id = create.json()["id"]
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["due_date"] == "2026-09-01"
+
+
+async def test_sending_a_non_draft_invoice_returns_409(client):
+    admin = await _register_and_login(client, "Send Co 3", "send-3@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "400.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    invoice_id = create.json()["id"]
+    await client.post(f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"])
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"]
+    )
+    assert response.status_code == 409

@@ -22,6 +22,7 @@ from app.schemas.invoice import (
     InvoiceListResponse,
     InvoicePaymentResponse,
     InvoiceResponse,
+    InvoiceSendRequest,
 )
 from app.services.invoicing import next_invoice_number
 
@@ -92,6 +93,31 @@ async def create_invoice(
     await current.session.flush()
     # No explicit commit — get_current_user (Inherited Invariant #4) commits
     # current.session once, after this handler returns.
+
+    return await _invoice_response(current, invoice)
+
+
+@router.post("/invoices/{invoice_id}/send", response_model=InvoiceResponse)
+async def send_invoice(
+    invoice_id: uuid.UUID,
+    body: InvoiceSendRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> InvoiceResponse:
+    invoice = await _get_invoice_or_404(current, invoice_id)
+    if invoice.status != "draft":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only a draft invoice can be sent")
+
+    due_date = body.due_date or invoice.due_date
+    if due_date is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "due_date is required (either already set, or provided in this request)",
+        )
+
+    invoice.status = "sent"
+    invoice.due_date = due_date
+    await current.session.flush()
 
     return await _invoice_response(current, invoice)
 
