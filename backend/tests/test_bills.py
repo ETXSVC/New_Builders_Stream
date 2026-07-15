@@ -168,3 +168,148 @@ async def test_get_bill_detail_returns_404_for_nonexistent_bill(client):
         "/bills/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
     )
     assert response.status_code == 404
+
+
+async def test_cumulative_bill_payment_reaching_full_amount_auto_marks_paid(client):
+    admin = await _register_and_login(client, "Bill Pay Co 1", "bill-pay-1@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Z", "amount": "300.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "100.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    second = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "200.00", "paid_date": "2026-08-02"}, headers=admin["headers"]
+    )
+    assert second.status_code == 201, second.text
+
+    detail = await client.get(f"/bills/{bill_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "paid"
+    assert body["outstanding_balance"] == "0.00"
+
+
+async def test_payment_against_void_bill_returns_409(client):
+    admin = await _register_and_login(client, "Bill Pay Co 2", "bill-pay-2@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor W", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+    await client.post(f"/bills/{bill_id}/void", headers=admin["headers"])
+
+    response = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "50.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert response.status_code == 409
+
+
+async def test_void_an_unpaid_bill(client):
+    admin = await _register_and_login(client, "Bill Void Co 1", "bill-void-1@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor V", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    response = await client.post(f"/bills/{bill_id}/void", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "void"
+
+
+async def test_void_a_paid_bill_returns_409(client):
+    admin = await _register_and_login(client, "Bill Void Co 2", "bill-void-2@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor U", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+    await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "100.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+
+    response = await client.post(f"/bills/{bill_id}/void", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_void_an_already_void_bill_returns_409(client):
+    """Mirrors test_invoices.py's own test_void_an_already_void_invoice_
+    returns_409 — test_void_a_paid_bill_returns_409 above only covers the
+    paid->void deny path, not void->void."""
+    admin = await _register_and_login(client, "Bill Void Co 3", "bill-void-3@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor T", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+    await client.post(f"/bills/{bill_id}/void", headers=admin["headers"])
+
+    response = await client.post(f"/bills/{bill_id}/void", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def _invite_and_login_as_client(client, admin, email):
+    invite = await client.post(
+        "/invitations", json={"email": email, "role": "client"}, headers=admin["headers"]
+    )
+    await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "Client User", "password": "supersecret123"},
+    )
+    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+
+
+async def test_client_cannot_record_bill_payment(client):
+    """Mirrors test_invoices.py's own test_client_cannot_record_invoice_
+    payment — record_bill_payment's require_role("admin", "accountant")
+    guard (bills.py) was otherwise only exercised indirectly via the
+    create/list/get routes' equivalent tests, never directly for this
+    route."""
+    admin = await _register_and_login(client, "Bill Pay Co 3", "bill-pay-3@example.test")
+    client_role = await _invite_and_login_as_client(client, admin, "client-bill-pay@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor S", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    response = await client.post(
+        f"/bills/{bill_id}/payments",
+        json={"amount": "50.00", "paid_date": "2026-08-01"},
+        headers=client_role["headers"],
+    )
+    assert response.status_code == 403
+
+
+async def test_client_cannot_void_bill(client):
+    """Mirrors test_invoices.py's own test_client_cannot_void_invoice — same
+    rationale as test_client_cannot_record_bill_payment above, for void_bill's
+    guard."""
+    admin = await _register_and_login(client, "Bill Void Co 4", "bill-void-4@example.test")
+    client_role = await _invite_and_login_as_client(client, admin, "client-bill-void@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor R", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    response = await client.post(f"/bills/{bill_id}/void", headers=client_role["headers"])
+    assert response.status_code == 403
+
+
+async def test_zero_or_negative_bill_payment_amount_returns_422(client):
+    """Mirrors test_invoices.py's own test_zero_or_negative_payment_amount_
+    returns_422 — verifies BillPaymentCreateRequest.amount's Field(gt=0)
+    (schemas/bill.py) is actually enforced, not just present in the schema."""
+    admin = await _register_and_login(client, "Bill Pay Co 4", "bill-pay-4@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Q", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    zero = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "0.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "-10.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert negative.status_code == 422

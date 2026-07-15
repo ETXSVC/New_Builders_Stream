@@ -21,9 +21,11 @@ from app.schemas.bill import (
     BillCreateRequest,
     BillDetailResponse,
     BillListResponse,
+    BillPaymentCreateRequest,
     BillPaymentResponse,
     BillResponse,
 )
+from app.services.audit import write_audit_log
 
 router = APIRouter(prefix="/bills", tags=["bills"])
 
@@ -169,3 +171,123 @@ async def get_bill(
 
     base = await _bill_response(current, bill)
     return BillDetailResponse(**base.model_dump(), payments=payments)
+
+
+@router.post(
+    "/{bill_id}/payments", response_model=BillPaymentResponse, status_code=status.HTTP_201_CREATED
+)
+async def record_bill_payment(
+    bill_id: uuid.UUID,
+    body: BillPaymentCreateRequest,
+    current: CurrentUser = Depends(require_role(*_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> BillPaymentResponse:
+    bill = await _get_bill_or_404(current, bill_id)
+
+    # Row-lock the bill for the rest of this transaction BEFORE reading its
+    # status or computing the cumulative paid amount. Without this, two
+    # concurrent payments against the SAME bill can each compute
+    # _paid_amount() before either commits — under READ COMMITTED, a SELECT
+    # SUM() never sees another transaction's still-uncommitted insert — so
+    # neither request's "cumulative >= amount" check ever passes, even
+    # though together the payments fully cover the bill. The bill would
+    # then sit at "unpaid" forever with no later event to re-check it.
+    # SELECT ... FOR UPDATE forces the second concurrent request to block
+    # until the first commits, so its own _paid_amount() call correctly
+    # sees the first payment already applied. Same pattern this codebase
+    # already uses for an equivalent risk elsewhere (invitations.py's
+    # accept_invitation uses .with_for_update() for the identical reason;
+    # next_invoice_number uses pg_advisory_xact_lock; invoices.py's own
+    # record_invoice_payment uses this exact fix for the AR-side mirror of
+    # this route).
+    #
+    # Fetches the full row (not just Bill.id) and reassigns `bill` from
+    # it — not merely acquiring the lock and trusting the earlier unlocked
+    # read — because a concurrent void_bill call could have changed status
+    # between the fetch above and the lock being granted here (e.g. a
+    # payment and a void racing each other); the status check right below
+    # must see the current, locked value.
+    locked = await current.session.execute(
+        select(Bill).where(Bill.id == bill.id).with_for_update()
+    )
+    bill = locked.scalar_one()
+
+    if bill.status == "void":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Cannot record a payment against a void bill")
+
+    payment = BillPayment(
+        id=uuid.uuid4(),
+        bill_id=bill.id,
+        company_id=bill.company_id,
+        amount=body.amount,
+        paid_date=body.paid_date,
+        recorded_by=current.user.id,
+    )
+    current.session.add(payment)
+    await current.session.flush()
+
+    paid = await _paid_amount(current, bill.id)
+    if paid >= bill.amount:
+        bill.status = "paid"
+        await current.session.flush()
+
+    # docs/07-security-compliance.md Section 5 lists "Bill payment/void"
+    # among the state changes requiring an audit_log row. paid_date is
+    # included (not just payment_id) because it's user-supplied and has
+    # real financial meaning — same rationale as invoices.py's own
+    # record_invoice_payment audit entry.
+    await write_audit_log(
+        current.session,
+        company_id=bill.company_id,
+        actor_id=current.user.id,
+        action="bill.payment_recorded",
+        entity_type="bill",
+        entity_id=bill.id,
+        metadata={
+            "payment_id": str(payment.id),
+            "amount": str(body.amount),
+            "paid_date": body.paid_date.isoformat(),
+        },
+    )
+
+    return BillPaymentResponse.model_validate(payment)
+
+
+@router.post("/{bill_id}/void", response_model=BillResponse)
+async def void_bill(
+    bill_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> BillResponse:
+    bill = await _get_bill_or_404(current, bill_id)
+
+    # Row-lock before reading status, same fix and same reason as
+    # record_bill_payment's own lock (see that route's comment for the
+    # full explanation): without this, a void request racing a concurrent
+    # payment that pushes the bill to "paid" could read a stale ("unpaid")
+    # status and void a bill a payment just settled.
+    # Refreshes `bill` from the locked row (not just lock-and-trust-the-
+    # earlier-read), since a concurrent transaction may have changed
+    # status between the initial fetch above and the lock being granted
+    # here.
+    locked = await current.session.execute(
+        select(Bill).where(Bill.id == bill.id).with_for_update()
+    )
+    bill = locked.scalar_one()
+
+    if bill.status in ("paid", "void"):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot void a {bill.status} bill")
+
+    bill.status = "void"
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=bill.company_id,
+        actor_id=current.user.id,
+        action="bill.voided",
+        entity_type="bill",
+        entity_id=bill.id,
+    )
+
+    return await _bill_response(current, bill)
