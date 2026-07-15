@@ -238,3 +238,20 @@ async def test_sending_a_non_draft_invoice_returns_409(client):
         f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"]
     )
     assert response.status_code == 409
+
+
+async def test_client_cannot_send_invoice(client):
+    admin = await _register_and_login(client, "Send Co 4", "send-4@example.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "client-send@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "400.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    invoice_id = create.json()["id"]
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/send", json={}, headers=client_role["headers"]
+    )
+    assert response.status_code == 403

@@ -24,6 +24,7 @@ from app.schemas.invoice import (
     InvoiceResponse,
     InvoiceSendRequest,
 )
+from app.services.audit import write_audit_log
 from app.services.invoicing import next_invoice_number
 
 router = APIRouter(tags=["invoices"])
@@ -118,6 +119,15 @@ async def send_invoice(
     invoice.status = "sent"
     invoice.due_date = due_date
     await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=invoice.company_id,
+        actor_id=current.user.id,
+        action="invoice.sent",
+        entity_type="invoice",
+        entity_id=invoice.id,
+    )
 
     return await _invoice_response(current, invoice)
 

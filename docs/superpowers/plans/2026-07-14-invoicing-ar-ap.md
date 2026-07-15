@@ -1437,13 +1437,28 @@ async def record_invoice_payment(
         invoice.status = "paid"
         await current.session.flush()
 
+    # docs/07-security-compliance.md Section 5 lists "Invoice send/payment/
+    # void" among the state changes requiring an audit_log row — same
+    # requirement Task 3.36's send_invoice already satisfies.
+    await write_audit_log(
+        current.session,
+        company_id=invoice.company_id,
+        actor_id=current.user.id,
+        action="invoice.payment_recorded",
+        entity_type="invoice",
+        entity_id=invoice.id,
+        metadata={"payment_id": str(payment.id), "amount": str(body.amount)},
+    )
+
     return InvoicePaymentResponse.model_validate(payment)
 ```
+
+Add `from app.services.audit import write_audit_log` to the imports if it isn't already there (Task 3.36 should have added it).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && source .venv/Scripts/activate && python -m pytest tests/test_invoices.py -v`
-Expected: PASS, 12 passed
+Expected: PASS — exact count depends on how many extra RBAC/coverage tests earlier tasks' code-quality reviews added beyond the plan's own baseline; check the actual current test count in the file rather than a stale number here (plan originally said 12, but earlier tasks' reviews already added extra tests, so the real baseline is higher).
 
 - [ ] **Step 5: Commit**
 
@@ -1536,13 +1551,24 @@ async def void_invoice(
     invoice.status = "void"
     await current.session.flush()
 
+    # docs/07-security-compliance.md Section 5 lists "Invoice send/payment/
+    # void" among the state changes requiring an audit_log row.
+    await write_audit_log(
+        current.session,
+        company_id=invoice.company_id,
+        actor_id=current.user.id,
+        action="invoice.voided",
+        entity_type="invoice",
+        entity_id=invoice.id,
+    )
+
     return await _invoice_response(current, invoice)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && source .venv/Scripts/activate && python -m pytest tests/test_invoices.py -v`
-Expected: PASS, 16 passed
+Expected: PASS, roughly 17-20 passed (exact count depends on how many extra RBAC/coverage tests earlier tasks' code-quality reviews added beyond the plan's own baseline — check the actual current test count in the file rather than a stale number here)
 
 - [ ] **Step 5: Commit**
 
@@ -2404,6 +2430,18 @@ async def record_bill_payment(
         bill.status = "paid"
         await current.session.flush()
 
+    # docs/07-security-compliance.md Section 5 lists "Bill payment/void"
+    # among the state changes requiring an audit_log row.
+    await write_audit_log(
+        current.session,
+        company_id=bill.company_id,
+        actor_id=current.user.id,
+        action="bill.payment_recorded",
+        entity_type="bill",
+        entity_id=bill.id,
+        metadata={"payment_id": str(payment.id), "amount": str(body.amount)},
+    )
+
     return BillPaymentResponse.model_validate(payment)
 
 
@@ -2420,13 +2458,24 @@ async def void_bill(
     bill.status = "void"
     await current.session.flush()
 
+    await write_audit_log(
+        current.session,
+        company_id=bill.company_id,
+        actor_id=current.user.id,
+        action="bill.voided",
+        entity_type="bill",
+        entity_id=bill.id,
+    )
+
     return await _bill_response(current, bill)
 ```
+
+Add `from app.services.audit import write_audit_log` to `bills.py`'s imports.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd backend && source .venv/Scripts/activate && python -m pytest tests/test_bills.py -v`
-Expected: PASS, 11 passed
+Expected: PASS — exact count depends on prior tasks' code-quality-review additions; check the actual current test count rather than a stale number.
 
 - [ ] **Step 5: Commit**
 
