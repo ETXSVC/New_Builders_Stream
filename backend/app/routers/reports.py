@@ -110,16 +110,16 @@ async def get_profitability_report(
         .group_by(Bill.project_id)
     )
     for project_id, amount in bill_result.all():
-        cost_by_project[project_id] = cost_by_project.get(project_id, Decimal("0")) + amount
+        cost_by_project[project_id] = cost_by_project.get(project_id, Decimal("0.00")) + amount
 
     all_project_ids = set(revenue_by_project) | set(cost_by_project)
     projects = [
         ProjectProfitability(
             project_id=project_id,
-            billed_revenue=revenue_by_project.get(project_id, Decimal("0")),
-            actual_cost=cost_by_project.get(project_id, Decimal("0")),
-            profitability=revenue_by_project.get(project_id, Decimal("0"))
-            - cost_by_project.get(project_id, Decimal("0")),
+            billed_revenue=revenue_by_project.get(project_id, Decimal("0.00")),
+            actual_cost=cost_by_project.get(project_id, Decimal("0.00")),
+            profitability=revenue_by_project.get(project_id, Decimal("0.00"))
+            - cost_by_project.get(project_id, Decimal("0.00")),
         )
         for project_id in all_project_ids
     ]
@@ -175,7 +175,7 @@ async def get_profitability_report(
     # real nonzero rate, an unquantized multiplication here would emit more
     # than 2 decimal places.
     tax_liability_estimate = (
-        sum(revenue_by_project.values(), Decimal("0")) * DEFAULT_TAX_RATE
+        sum(revenue_by_project.values(), Decimal("0.00")) * DEFAULT_TAX_RATE
     ).quantize(CENTS, rounding=ROUND_HALF_UP)
 
     return ProfitabilityReportResponse(
