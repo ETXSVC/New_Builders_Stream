@@ -14,6 +14,7 @@ from app.routers import (
     esignatures,
     estimates,
     expenses,
+    integrations,
     invitations,
     invoices,
     leads,
@@ -47,6 +48,7 @@ app.include_router(bills.router)
 app.include_router(expenses.router)
 app.include_router(reports.router)
 app.include_router(webhooks.router)
+app.include_router(integrations.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called
