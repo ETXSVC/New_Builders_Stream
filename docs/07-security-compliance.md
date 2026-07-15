@@ -20,9 +20,10 @@
 | Estimation | Full CRUD | Full CRUD | — | Read | Approve/reject own estimate (e-sign) |
 | Accounting/Billing (AR) | Full CRUD | — | — | Full CRUD | Read own invoices |
 | Accounting/Billing (AP) | Full CRUD | — | — | Full CRUD | — |
+| Expenses | Full CRUD | — | — | Full CRUD | — |
 | Compliance | Full CRUD | Read + assign (with override logging) | — | Read | — |
 
-AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which the Client is the actual recipient of, Bills represent the company's own internal obligations to its vendors/subcontractors.
+AP (Bills, Bill Payments) is never Client-visible — unlike AR Invoices, which the Client is the actual recipient of, Bills represent the company's own internal obligations to its vendors/subcontractors. Expenses follow the identical never-Client-visible rule as AP, for the same reason — they record the company's own project costs, not anything billed to the Client.
 
 Enforced at two layers, per [Technical Architecture](03-technical-architecture.md), Section 5: a FastAPI dependency checks role before the request reaches business logic (fast-fail, clear error), and PostgreSQL RLS enforces tenant boundary regardless of application-layer bugs (defense in depth).
 
