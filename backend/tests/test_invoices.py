@@ -377,3 +377,66 @@ async def test_zero_or_negative_payment_amount_returns_422(client):
         headers=admin["headers"],
     )
     assert negative.status_code == 422
+
+
+async def test_void_a_draft_invoice(client):
+    admin = await _register_and_login(client, "Void Co 1", "void-1@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    invoice_id = create.json()["id"]
+
+    response = await client.post(f"/invoices/{invoice_id}/void", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "void"
+
+
+async def test_void_a_sent_invoice(client):
+    admin = await _register_and_login(client, "Void Co 2", "void-2@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "200.00")
+
+    response = await client.post(f"/invoices/{invoice_id}/void", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "void"
+
+
+async def test_void_a_paid_invoice_returns_409(client):
+    admin = await _register_and_login(client, "Void Co 3", "void-3@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+    await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "100.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+
+    response = await client.post(f"/invoices/{invoice_id}/void", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_void_an_already_void_invoice_returns_409(client):
+    admin = await _register_and_login(client, "Void Co 4", "void-4@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    invoice_id = create.json()["id"]
+    await client.post(f"/invoices/{invoice_id}/void", headers=admin["headers"])
+
+    response = await client.post(f"/invoices/{invoice_id}/void", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_client_cannot_void_invoice(client):
+    admin = await _register_and_login(client, "Void Co 5", "void-5@example.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "client-void@example.test")
+    project = await _create_project(client, admin["headers"])
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
+    )
+    invoice_id = create.json()["id"]
+
+    response = await client.post(f"/invoices/{invoice_id}/void", headers=client_role["headers"])
+    assert response.status_code == 403

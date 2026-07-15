@@ -216,6 +216,48 @@ async def record_invoice_payment(
     return InvoicePaymentResponse.model_validate(payment)
 
 
+@router.post("/invoices/{invoice_id}/void", response_model=InvoiceResponse)
+async def void_invoice(
+    invoice_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> InvoiceResponse:
+    invoice = await _get_invoice_or_404(current, invoice_id)
+
+    # Row-lock before reading status, same fix and same reason as
+    # record_invoice_payment's own lock (see that route's comment for the
+    # full explanation): without this, a void request racing a concurrent
+    # payment that pushes the invoice to "paid" could read a stale
+    # ("sent") status and void an invoice a payment just settled.
+    # Refreshes `invoice` from the locked row (not just lock-and-trust-the-
+    # earlier-read), since a concurrent transaction may have changed
+    # status between the initial fetch above and the lock being granted
+    # here.
+    locked = await current.session.execute(
+        select(Invoice).where(Invoice.id == invoice.id).with_for_update()
+    )
+    invoice = locked.scalar_one()
+
+    if invoice.status in ("paid", "void"):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot void a {invoice.status} invoice")
+
+    invoice.status = "void"
+    await current.session.flush()
+
+    # docs/07-security-compliance.md Section 5 lists "Invoice send/payment/
+    # void" among the state changes requiring an audit_log row.
+    await write_audit_log(
+        current.session,
+        company_id=invoice.company_id,
+        actor_id=current.user.id,
+        action="invoice.voided",
+        entity_type="invoice",
+        entity_id=invoice.id,
+    )
+
+    return await _invoice_response(current, invoice)
+
+
 @router.get("/projects/{project_id}/invoices", response_model=InvoiceListResponse)
 async def list_invoices(
     project_id: uuid.UUID,
