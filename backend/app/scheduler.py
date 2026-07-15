@@ -44,6 +44,7 @@ from __future__ import annotations
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from app.tasks.compliance_expiry import check_compliance_expiry
+from app.tasks.flag_overdue_financial_records import flag_overdue_financial_records
 from app.tasks.seat_usage import report_seat_usage
 
 # A brief outage spanning 2am (container restart, host reboot) would
@@ -78,6 +79,13 @@ def _run_report_seat_usage() -> None:
     report_seat_usage.send()
 
 
+def _run_flag_overdue_financial_records() -> None:
+    """Same wrapper rationale as _run_check_compliance_expiry above: a
+    named, log-legible seam that's independently unit-testable (mock
+    flag_overdue_financial_records.send, call this, assert called-once)."""
+    flag_overdue_financial_records.send()
+
+
 if __name__ == "__main__":
     scheduler = BlockingScheduler()
     scheduler.add_job(
@@ -90,6 +98,12 @@ if __name__ == "__main__":
         _run_report_seat_usage,
         trigger="cron",
         hour=3,
+        misfire_grace_time=_MISFIRE_GRACE_TIME_SECONDS,
+    )
+    scheduler.add_job(
+        _run_flag_overdue_financial_records,
+        trigger="cron",
+        hour=4,
         misfire_grace_time=_MISFIRE_GRACE_TIME_SECONDS,
     )
     scheduler.start()
