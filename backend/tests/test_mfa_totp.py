@@ -206,6 +206,11 @@ async def test_refresh_needs_no_totp_mid_session(client):
         "/auth/refresh", json={"refresh_token": login.json()["refresh_token"]}
     )
     assert r.status_code == 200, r.text
+    # Task 7.4 review: mfa_enrollment_required is computed independently at
+    # refresh (a fresh User select, not carried from login) — assert it
+    # here too, not just at /auth/login, so a regression in that second
+    # computation (wrong role check, stale value) is actually caught.
+    assert r.json()["mfa_enrollment_required"] is False  # registration's admin, already active
 
 
 async def test_mfa_enrollment_required_signal(client):
