@@ -487,3 +487,96 @@ async def test_below_tier_company_with_a_leftover_connection_enqueues_no_sync(cl
         company_id=uuid.UUID(admin["company_id"]),
     )
     assert calls == []
+
+
+def test_every_gated_module_mutating_route_has_the_correct_tier_gate():
+    """Walks the LIVE app's route table (same technique as
+    test_read_only_enforcement.py's completeness test, and it inherits
+    that test's caveats — sub-app mounts and the one-level-deep dependency
+    walk; see that docstring). For every mutating route in a gated router,
+    asserts a dependency stamped with the CORRECT module is present —
+    catching both a missed route and a copy-pasted wrong module.
+
+    Coverage caveat OF THIS TEST'S OWN (Task 5.9 code-quality review),
+    with the OPPOSITE failure direction from the inherited ones: the
+    read-only completeness test enforces a universal rule, so a new route
+    is checked by default and drift fails LOUD. This test cannot be
+    universal (only some modules are gated), so module_for() below is a
+    second, hand-maintained encoding of module ownership — and a path it
+    doesn't classify is silently SKIPPED, not flagged. Maintenance
+    contract: adding a NEW ROUTER (or renaming routes) under a gated
+    module requires extending module_for, and nothing structural can
+    catch that case. What IS structurally caught (the seen_modules
+    assertion at the bottom, generalizing the connect_checked pattern): a
+    new module added to MODULE_MIN_TIER without a module_for clause, and
+    any rename/removal that orphans a module's ENTIRE route set — most
+    importantly child_branches, whose single route is matched by exact
+    string.
+
+    Deliberate exclusions:
+    - /integrations/{provider}/callback — gated IN-ROUTE via tier_allows
+      (no CurrentUser for a dependency; see the route's own comment), and
+      covered by test_pro_company_cannot_start_or_complete_the_oauth_flow.
+    - /integrations/{provider}/connect is a GET but MUST carry the gate —
+      asserted explicitly below, since the mutating-methods walk skips it.
+    """
+    from app.main import app
+
+    # router module (by route path prefix ownership) -> tier module
+    def module_for(path: str) -> str | None:
+        if path.startswith("/catalogs") or path.startswith("/markup-profiles") or path.startswith("/estimates"):
+            return "estimation"
+        if "/change-orders" in path:
+            return "estimation"
+        if path.startswith("/subcontractors") or path.startswith("/compliance") or "/subcontractor-assignments" in path:
+            return "compliance"
+        if "/invoices" in path or path.startswith("/bills") or "/expenses" in path:
+            return "accounting"
+        if path.startswith("/integrations"):
+            return "integrations"
+        if path == "/companies/{company_id}/children":
+            return "child_branches"
+        return None
+
+    excluded = {"/integrations/{provider}/callback"}
+
+    def gate_modules(route) -> set:
+        return {
+            getattr(dep.call, "tier_module", None)
+            for dep in route.dependant.dependencies
+        } - {None}
+
+    problems = []
+    connect_checked = False
+    seen_modules = set()
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        if not methods:
+            continue
+        path = route.path
+        expected = module_for(path)
+
+        if path == "/integrations/{provider}/connect":
+            connect_checked = True
+            seen_modules.add("integrations")
+            if "integrations" not in gate_modules(route):
+                problems.append(f"GET {path} must carry the integrations gate")
+            continue
+
+        if methods.isdisjoint({"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        if path in excluded or expected is None:
+            continue
+        seen_modules.add(expected)
+
+        found = gate_modules(route)
+        if expected not in found:
+            problems.append(f"{sorted(methods)} {path} missing require_module({expected!r}) (found: {found or 'none'})")
+
+    assert connect_checked, "connect route not found — did its path change?"
+    assert seen_modules >= set(MODULE_MIN_TIER), (
+        f"gated modules with ZERO classified mutating routes — module_for() has "
+        f"drifted from the route table (new module without a mapping clause, or a "
+        f"rename orphaned a module's whole prefix?): {set(MODULE_MIN_TIER) - seen_modules}"
+    )
+    assert problems == [], f"Tier-gating gaps: {problems}"
