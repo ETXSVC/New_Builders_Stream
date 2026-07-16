@@ -108,7 +108,26 @@ tier='pro' from GET /subscriptions/me. Unlike company F's read-only status
 flip (restored below because 'canceled' BLOCKS writes for anything running
 against this same live stack afterward), the tier bumps are deliberately
 not restored: enterprise only ever broadens access, and A/G/H are
-per-run throwaway companies nothing else reuses."""
+per-run throwaway companies nothing else reuses.
+
+Task 6.9 note on the auth token lifecycle
+(docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md):
+POST /auth/login now returns a `refresh_token` alongside the access token,
+so EVERY block's login response below carries one — that is additive and
+harmless, and deliberately only company A's block exercises it (threading
+refresh handling through the other blocks would prove nothing new). That
+block now ends with a token-lifecycle sequence run entirely over real
+HTTP: refresh rotation (asserting the RFC 6749 §5.1 `Cache-Control:
+no-store` header on the token response), reuse detection on the spent
+original token (401), family containment on the rotation's successor
+(401), and logout revocation (204, then 401 on refresh) via a
+deliberately separate second login — the reuse probe burns the first
+login's whole family, so the logout probe needs a fresh one. The sequence
+sits at the END of the block (the plan's documented simpler alternative)
+so the block's pre-existing flow is untouched; access tokens are
+stateless 15-minute JWTs (revocation is refresh-time, not access-time),
+so burning company A's refresh family never invalidates `token_a`
+anyway."""
 
 import asyncio
 import re
@@ -285,7 +304,11 @@ def run() -> None:
         checks_passed.append("backend /health reachable over real HTTP")
 
         company_a = register(client, "E2E Company A", f"admin-a-{run_id}@e2e.example")
-        token_a = login(client, f"admin-a-{run_id}@e2e.example")["access_token"]
+        # Task 6.9: keep the WHOLE login body, not just the access token —
+        # the token-lifecycle sequence at the end of this block presents
+        # this login's refresh_token for its rotation/reuse probes.
+        login_a = login(client, f"admin-a-{run_id}@e2e.example")
+        token_a = login_a["access_token"]
         headers_a = {"Authorization": f"Bearer {token_a}"}
         checks_passed.append("company A registered and logged in over real HTTP")
 
@@ -341,6 +364,96 @@ def run() -> None:
         invitee_login = login(client, invite_email)
         assert invitee_login["default_company_id"] == company_a["company_id"]
         checks_passed.append("newly-invited user can log in and lands in the correct company")
+
+        # --- Task 6.9 exit criterion: auth token lifecycle (refresh
+        # rotation, reuse detection, family containment, logout
+        # revocation), over real HTTP. Placed at the END of company A's
+        # block — the plan's documented simpler alternative — so the
+        # block's pre-existing flow above is untouched. The reuse probe
+        # below deliberately burns login_a's whole refresh-token FAMILY,
+        # but access tokens are stateless 15-minute JWTs (revocation is
+        # refresh-time, not access-time), so token_a itself was never at
+        # risk — and nothing after this sequence uses company A
+        # credentials at all, so no trailing re-login is needed to leave
+        # a live token behind. Exactly ONE extra login exists in this
+        # sequence (lifecycle_login, below): the logout probe needs a
+        # FRESH family because the reuse probe has already revoked
+        # login_a's entire family by the time it runs.
+        assert login_a.get("refresh_token"), (
+            f"expected the login response body to carry a refresh_token (Task 6.1), "
+            f"got keys {sorted(login_a)}"
+        )
+        checks_passed.append("login response body carries a refresh_token over real HTTP")
+
+        refreshed = client.post("/auth/refresh", json={"refresh_token": login_a["refresh_token"]})
+        assert refreshed.status_code == 200, (
+            f"POST /auth/refresh with a freshly-minted token failed: "
+            f"{refreshed.status_code} {refreshed.text}"
+        )
+        refreshed_body = refreshed.json()
+        assert refreshed_body["access_token"] != login_a["access_token"], (
+            "expected refresh to mint a DIFFERENT access token than login's"
+        )
+        assert refreshed_body["refresh_token"] != login_a["refresh_token"], (
+            "expected refresh to rotate to a DIFFERENT refresh token than the one presented"
+        )
+        # Live proof of the RFC 6749 §5.1 header (commit b5164fa): token
+        # responses must not be cached by any intermediary.
+        assert refreshed.headers.get("Cache-Control") == "no-store", (
+            f"expected 'Cache-Control: no-store' on the refresh token response "
+            f"(RFC 6749 §5.1), got {refreshed.headers.get('Cache-Control')!r}"
+        )
+        checks_passed.append(
+            "POST /auth/refresh over real HTTP returns 200 with a different access+refresh "
+            "token pair and Cache-Control: no-store (RFC 6749 §5.1)"
+        )
+
+        reuse_probe = client.post("/auth/refresh", json={"refresh_token": login_a["refresh_token"]})
+        assert reuse_probe.status_code == 401, (
+            f"expected 401 re-presenting the spent original refresh token (reuse "
+            f"detection), got {reuse_probe.status_code}: {reuse_probe.text}"
+        )
+        checks_passed.append(
+            "re-presenting the spent original refresh token is rejected with 401 over "
+            "real HTTP (reuse detection live)"
+        )
+
+        family_probe = client.post(
+            "/auth/refresh", json={"refresh_token": refreshed_body["refresh_token"]}
+        )
+        assert family_probe.status_code == 401, (
+            f"expected 401 from the rotation's successor token after the reuse probe "
+            f"revoked its family, got {family_probe.status_code}: {family_probe.text}"
+        )
+        checks_passed.append(
+            "the rotation's successor refresh token is also rejected with 401 after the "
+            "reuse probe over real HTTP (family containment)"
+        )
+
+        # The ONE extra login in this sequence (see the comment atop it):
+        # a fresh family for the logout probe, because the reuse probe
+        # above already revoked login_a's entire family.
+        lifecycle_login = login(client, f"admin-a-{run_id}@e2e.example")
+        logged_out = client.post(
+            "/auth/logout", json={"refresh_token": lifecycle_login["refresh_token"]}
+        )
+        assert logged_out.status_code == 204, (
+            f"expected 204 from POST /auth/logout with a live refresh token, "
+            f"got {logged_out.status_code}: {logged_out.text}"
+        )
+        checks_passed.append("POST /auth/logout with a live refresh token returns 204 over real HTTP")
+
+        post_logout_refresh = client.post(
+            "/auth/refresh", json={"refresh_token": lifecycle_login["refresh_token"]}
+        )
+        assert post_logout_refresh.status_code == 401, (
+            f"expected 401 refreshing a logged-out family's token, "
+            f"got {post_logout_refresh.status_code}: {post_logout_refresh.text}"
+        )
+        checks_passed.append(
+            "refreshing a logged-out family's token is rejected with 401 over real HTTP "
+            "(logout revokes the family)"
+        )
 
         # --- Phase 1 exit criterion: Lead -> Won -> Project, over real HTTP ---
         # Fresh company so this block is self-contained and independent of the
