@@ -130,3 +130,114 @@ async def test_enroll_while_active_is_409_but_reenroll_while_pending_rotates(cli
     third = await client.post("/auth/mfa/enroll", headers=ctx["headers"])
     assert third.status_code == 409
     assert third.json()["detail"] == "MFA is already active"
+
+
+async def test_pending_enrollment_does_not_gate_login(client):
+    ctx = await _register_and_login(client)
+    await client.post("/auth/mfa/enroll", headers=ctx["headers"])  # pending only
+    r = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_active_mfa_gates_login(client):
+    ctx = await _register_and_login(client)
+    secret = await _enroll_and_activate(client, ctx)
+
+    missing = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}
+    )
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "TOTP code required"
+
+    wrong = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": pyotp.TOTP(secret).at(0)},
+    )
+    assert wrong.status_code == 401
+    assert wrong.json()["detail"] == "Invalid TOTP code"
+
+    ok = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": pyotp.TOTP(secret).now()},
+    )
+    assert ok.status_code == 200, ok.text
+
+
+async def test_wrong_password_wins_over_totp_disclosure(client):
+    """A caller who has NOT proved the password must get the generic
+    credentials 401, never the TOTP-required detail — MFA status is only
+    disclosed past the password check."""
+    ctx = await _register_and_login(client)
+    await _enroll_and_activate(client, ctx)
+    r = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": "wrong-password-1"}
+    )
+    assert r.status_code == 401
+    assert r.json()["detail"] == "Invalid email or password"
+
+
+async def test_totp_replay_is_refused_at_login(client):
+    ctx = await _register_and_login(client)
+    secret = await _enroll_and_activate(client, ctx)
+    code = pyotp.TOTP(secret).now()
+    first = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": code},
+    )
+    assert first.status_code == 200, first.text
+    replay = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": code},
+    )
+    assert replay.status_code == 401
+    assert replay.json()["detail"] == "Invalid TOTP code"
+
+
+async def test_refresh_needs_no_totp_mid_session(client):
+    ctx = await _register_and_login(client)
+    secret = await _enroll_and_activate(client, ctx)
+    login = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": pyotp.TOTP(secret).now()},
+    )
+    r = await client.post(
+        "/auth/refresh", json={"refresh_token": login.json()["refresh_token"]}
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_mfa_enrollment_required_signal(client):
+    import asyncpg
+
+    from tests.conftest import TEST_DATABASE_URL
+
+    ctx = await _register_and_login(client)  # registration creates an ADMIN
+    assert ctx["login"]["mfa_enrollment_required"] is True
+    secret = await _enroll_and_activate(client, ctx)
+    relogin = await client.post(
+        "/auth/login",
+        json={"email": ctx["email"], "password": ctx["password"], "totp_code": pyotp.TOTP(secret).now()},
+    )
+    assert relogin.json()["mfa_enrollment_required"] is False
+
+    # Non-admin, MFA-less: the nudge is admin-only (spec Decision 3). Role
+    # edited via owner DSN (same direct-DB setup precedent as
+    # set_subscription_tier), on a SECOND fresh user so the assertions
+    # above stay untouched.
+    ctx2 = await _register_and_login(client)
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        result = await conn.execute(
+            "UPDATE company_users SET role = 'accountant' WHERE user_id = $1",
+            uuid.UUID(ctx2["user_id"]),
+        )
+        assert result == "UPDATE 1", result
+    finally:
+        await conn.close()
+    nonadmin = await client.post(
+        "/auth/login", json={"email": ctx2["email"], "password": ctx2["password"]}
+    )
+    assert nonadmin.status_code == 200, nonadmin.text
+    assert nonadmin.json()["mfa_enrollment_required"] is False

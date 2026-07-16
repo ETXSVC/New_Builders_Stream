@@ -19,6 +19,7 @@ class RegisterResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    totp_code: str | None = None
 
 
 class RefreshRequest(BaseModel):
@@ -44,3 +45,7 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     default_company_id: uuid.UUID
+    # Defaulted so any other TokenResponse constructor site compiles before
+    # being updated — but login and refresh MUST wire this explicitly per
+    # spec Decision 3, never rely on the default.
+    mfa_enrollment_required: bool = False

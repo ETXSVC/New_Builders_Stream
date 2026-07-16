@@ -158,6 +158,22 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
         if user is None or not password_valid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
+        # MFA challenge (spec Decision 6): only past the password check, so
+        # MFA status is never disclosed to a caller who hasn't proved the
+        # password. Distinct details are deliberate — the client needs
+        # "TOTP code required" to prompt for the second factor. Placed
+        # before _default_membership and before the refresh-token mint so a
+        # failed challenge raises inside session_scope() before anything is
+        # committed (session_scope() itself never commits on its own; the
+        # explicit commit is further down, after mint_refresh_token) —
+        # verify_totp_code's replay-guard mutation on user.totp_last_used_step
+        # only takes effect on the success path that reaches that commit.
+        if user.mfa_activated_at is not None:
+            if payload.totp_code is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+            if not verify_totp_code(user, payload.totp_code):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+
         membership = await _default_membership(session, user.id)
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
@@ -179,6 +195,9 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
             access_token=token,
             refresh_token=refresh_secret,
             default_company_id=membership.company_id,
+            mfa_enrollment_required=(
+                membership.role == "admin" and user.mfa_activated_at is None
+            ),
         )
 
 
@@ -226,6 +245,17 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             # so the presented token remains usable if memberships
             # are later restored.
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+
+        # mfa_enrollment_required is recomputed here (not carried over from
+        # login) because it must re-evaluate on EVERY token issuance: an
+        # admin who activates (or disables) MFA mid-session should see the
+        # nudge state change at the very next refresh, not stay pinned to
+        # whatever was true when the original access token was minted.
+        # Loaded in the SAME session, before the commit below, so this read
+        # is part of the same transaction as the rotation it accompanies.
+        user_result = await session.execute(select(User).where(User.id == old_row.user_id))
+        user = user_result.scalar_one()
+
         await session.commit()
         # RFC 6749 §5.1: responses carrying tokens must not be cached.
         response.headers["Cache-Control"] = "no-store"
@@ -235,6 +265,9 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             ),
             refresh_token=new_secret,
             default_company_id=membership.company_id,
+            mfa_enrollment_required=(
+                membership.role == "admin" and user.mfa_activated_at is None
+            ),
         )
 
 
