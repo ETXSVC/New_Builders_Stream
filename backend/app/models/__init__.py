@@ -27,6 +27,7 @@ from app.models.bill_payment import BillPayment
 from app.models.expense import Expense
 from app.models.integration_connection import IntegrationConnection
 from app.models.integration_sync_record import IntegrationSyncRecord
+from app.models.refresh_token import RefreshToken
 
 __all__ = [
     "Base",
@@ -60,4 +61,5 @@ __all__ = [
     "Expense",
     "IntegrationConnection",
     "IntegrationSyncRecord",
+    "RefreshToken",
 ]
