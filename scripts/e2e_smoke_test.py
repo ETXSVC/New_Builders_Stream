@@ -84,7 +84,31 @@ exists to avoid. The 201 proves the route-level wiring (including the
 enqueuing event handler) didn't error; the consume-and-push path (fake
 provider push, per-record status upsert, failure/retry) is already
 exercised directly and thoroughly by
-`backend/tests/test_accounting_sync.py`."""
+`backend/tests/test_accounting_sync.py`.
+
+Task 5.10 note on tier gating (docs/superpowers/specs/2026-07-15-tier-gating-design.md):
+registration can only ever produce a trialing/pro subscription (Task 3.19),
+and Tasks 5.1-5.9 gated Accounting, Integrations, and child-branch creation
+behind the Enterprise tier, so this script now bumps three companies to
+enterprise via `_set_subscription_tier` (the same raw-SQL owner-role
+approach as `_set_subscription_status`): company A (its nested
+child-company creation check hits the now-Enterprise-gated
+POST /companies/{id}/children), company G (the Invoicing/AR-AP block —
+bumped BEFORE its Estimate approval, because the deposit-invoice
+auto-draft that block asserts on is itself tier-gated inside the
+ESTIMATE_APPROVED handler since Task 5.8 and would silently not draft at
+pro), and company H (the Integrations block). Company H additionally
+proves the gate exists in the running stack with one live 403 probe:
+GET /integrations/quickbooks/connect at the trial's pro tier must return
+403 BEFORE the bump. Company D's Estimate-to-Approval block deliberately
+stays at the trial's pro tier — Estimation is Pro+, and that block never
+asserts on the (now Enterprise-only) deposit-invoice side effect. Company
+F's Billing block also stays untouched: it asserts the trial's own
+tier='pro' from GET /subscriptions/me. Unlike company F's read-only status
+flip (restored below because 'canceled' BLOCKS writes for anything running
+against this same live stack afterward), the tier bumps are deliberately
+not restored: enterprise only ever broadens access, and A/G/H are
+per-run throwaway companies nothing else reuses."""
 
 import asyncio
 import re
@@ -206,6 +230,31 @@ async def _set_subscription_status(company_id: str, status: str) -> None:
         await conn.close()
 
 
+async def _set_subscription_tier(company_id: str, tier: str) -> None:
+    """Task 5.10: directly overwrite a `subscriptions` row's `tier` column
+    via a raw owner-role connection — registration can only ever produce a
+    trialing/pro subscription (Task 3.19), and there is no HTTP route that
+    changes a tier (in production only a real Stripe webhook event does,
+    Task 3.21), so the blocks that exercise Enterprise-gated modules
+    (companies A, G, and H — see the module docstring's Task 5.10 note)
+    bump themselves here first. Same owner-DSN raw-SQL approach, same
+    `asyncio.run()`-at-each-call-site shape, and same exactly-one-row
+    assertion as `_set_subscription_status` above."""
+    conn = await asyncpg.connect(OWNER_DATABASE_DSN)
+    try:
+        result = await conn.execute(
+            "UPDATE subscriptions SET tier = $1 WHERE company_id = $2",
+            tier,
+            uuid.UUID(company_id),
+        )
+        assert result == "UPDATE 1", (
+            f"expected exactly one subscriptions row updated setting tier={tier!r} "
+            f"for company_id={company_id!r}, got {result!r}"
+        )
+    finally:
+        await conn.close()
+
+
 def _sign_integration_oauth_state(company_id: str, provider: str) -> str:
     """Task 4.16: replicate `sign_oauth_state` from
     `backend/app/services/integration_oauth_state.py` exactly — an HS256
@@ -252,6 +301,15 @@ def run() -> None:
             f"got {cross_tenant.status_code}: {cross_tenant.text}"
         )
         checks_passed.append("cross-tenant isolation holds over real HTTP (company A cannot read company B)")
+
+        # Tier gating (Task 5.10): child-branch creation is Enterprise-gated
+        # (Task 5.7) and registration only produces a trialing/pro
+        # subscription — bump company A first or the 201 below would be a 403.
+        asyncio.run(_set_subscription_tier(company_a["company_id"], "enterprise"))
+        checks_passed.append(
+            "company A bumped to enterprise tier via raw-SQL owner connection "
+            "(tier gating, Task 5.10: child-branch creation is Enterprise-gated)"
+        )
 
         child = client.post(
             f"/companies/{company_a['company_id']}/children",
@@ -819,6 +877,14 @@ def run() -> None:
         headers_g = {"Authorization": f"Bearer {token_g}"}
         checks_passed.append("company G (Invoicing/AR-AP flow) registered and logged in over real HTTP")
 
+        # Tier gating (Task 5.10): this block's invoice/bill mutations are
+        # Enterprise-gated (Task 5.5), and the deposit-invoice auto-draft it
+        # asserts on after Estimate approval is tier-gated inside the
+        # ESTIMATE_APPROVED handler too (Task 5.8) — the bump must happen
+        # BEFORE the approval or the draft would silently not be created.
+        asyncio.run(_set_subscription_tier(company_g["company_id"], "enterprise"))
+        checks_passed.append("company G bumped to enterprise tier (tier gating, Task 5.10)")
+
         invoicing_project = client.post(
             "/projects",
             json={"name": f"E2E Invoicing Project {run_id}", "site_address": "321 E2E Terrace"},
@@ -1047,6 +1113,28 @@ def run() -> None:
         token_h = login(client, f"admin-h-{run_id}@e2e.example")["access_token"]
         headers_h = {"Authorization": f"Bearer {token_h}"}
         checks_passed.append("company H (Integrations flow) registered and logged in over real HTTP")
+
+        # Tier gating (Task 5.10): one live 403 probe BEFORE the tier bump —
+        # real-HTTP proof the Integrations gate (Task 5.6) exists in the
+        # running stack. Registration left company H at the trial's pro tier,
+        # which is exactly the below-tier case for the Enterprise-gated
+        # connect route.
+        blocked_connect = client.get("/integrations/quickbooks/connect", headers=headers_h)
+        assert blocked_connect.status_code == 403, (
+            f"pro-tier company should be tier-blocked from integrations connect, "
+            f"got {blocked_connect.status_code}: {blocked_connect.text}"
+        )
+        # "enterprise" in the detail pins this 403 to the TIER gate — a role
+        # or read-only 403 would also be 403 but wouldn't name the plan
+        # (same disambiguation backend/tests/test_tier_gating.py uses).
+        assert "enterprise" in blocked_connect.text, (
+            f"403 should come from the tier gate (naming the enterprise plan), "
+            f"got: {blocked_connect.text}"
+        )
+        checks_passed.append("pro-tier company gets 403 from integrations connect (tier gating)")
+
+        asyncio.run(_set_subscription_tier(company_h["company_id"], "enterprise"))
+        checks_passed.append("company H bumped to enterprise tier (tier gating, Task 5.10)")
 
         integration_connect = client.get("/integrations/quickbooks/connect", headers=headers_h)
         assert integration_connect.status_code == 200, (
