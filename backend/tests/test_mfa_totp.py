@@ -4,21 +4,36 @@ Covers: enroll/activate (Task 7.3), the login challenge +
 mfa_enrollment_required signal (7.4), disable + change-password
 hardening (7.5). One file for the feature, real pyotp codes throughout.
 """
+import time
 import uuid
 
 import pyotp
 
 from tests.test_auth_token_lifecycle import _register_and_login
 
+_TOTP_PERIOD_SECONDS = 30
+
 
 async def _enroll_and_activate(client, ctx) -> str:
-    """Enrolls + activates MFA for ctx's user; returns the base32 secret."""
+    """Enrolls + activates MFA for ctx's user; returns the base32 secret.
+
+    Activates with a code from the PREVIOUS 30s step, not .now(): the
+    ±1-step skew window accepts it, but the replay guard then records that
+    PRIOR step as spent — leaving the CURRENT step free. Using .now() here
+    would burn the current step at activation, and a caller then logging
+    in immediately afterward with pyotp.TOTP(secret).now() would collide
+    with that same step and get refused (candidate_step <= last_used) on
+    ~97% of runs, since the two calls land in the same 30s window far more
+    often than not. This ordering is what makes back-to-back
+    activate-then-login deterministic (Task 7.3 review finding 3).
+    """
     enroll = await client.post("/auth/mfa/enroll", headers=ctx["headers"])
     assert enroll.status_code == 200, enroll.text
     secret = enroll.json()["secret"]
+    previous_step_code = pyotp.TOTP(secret).at(int(time.time()) - _TOTP_PERIOD_SECONDS)
     activate = await client.post(
         "/auth/mfa/activate",
-        json={"totp_code": pyotp.TOTP(secret).now()},
+        json={"totp_code": previous_step_code},
         headers=ctx["headers"],
     )
     assert activate.status_code == 204, activate.text
