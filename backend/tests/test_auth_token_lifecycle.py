@@ -53,3 +53,35 @@ async def test_access_token_lifetime_honors_settings(client):
         options={"verify_signature": False},
     )
     assert claims["exp"] - claims["iat"] == settings.jwt_expire_minutes * 60
+
+
+async def test_login_returns_a_refresh_token(client):
+    ctx = await _register_and_login(client)
+    body = ctx["login"]
+    assert "refresh_token" in body, body
+    assert isinstance(body["refresh_token"], str) and len(body["refresh_token"]) >= 32
+    assert body["refresh_token"] != body["access_token"]
+
+
+async def test_stored_refresh_token_is_hashed_not_plaintext(client):
+    """Owner-DSN check (same direct-DB test-setup precedent as
+    set_subscription_tier): the DB row holds a 64-char hex SHA-256, never
+    the presentable secret."""
+    import asyncpg
+
+    from tests.conftest import TEST_DATABASE_URL
+
+    ctx = await _register_and_login(client)
+    secret = ctx["login"]["refresh_token"]
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        rows = await conn.fetch(
+            "SELECT token_hash FROM refresh_tokens WHERE user_id = $1",
+            __import__("uuid").UUID(ctx["user_id"]),
+        )
+    finally:
+        await conn.close()
+    assert len(rows) == 1
+    stored = rows[0]["token_hash"]
+    assert len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
+    assert stored != secret

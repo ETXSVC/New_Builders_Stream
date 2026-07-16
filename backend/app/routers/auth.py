@@ -10,6 +10,7 @@ from app.models import Company, CompanyUser, Subscription, User
 from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
+from app.services.refresh_tokens import mint_refresh_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -133,5 +134,17 @@ async def login(payload: LoginRequest) -> TokenResponse:
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
 
+        # Refresh-token INSERT needs a commit; session_scope() never commits
+        # on its own (register's explicit session.begin() is the precedent).
+        # set_current_user above used set_config(..., is_local=true), which
+        # is transaction-scoped — SQLAlchemy autobegan a transaction for it,
+        # so commit via the session, not a nested begin().
+        _, refresh_secret = await mint_refresh_token(session, user_id=user.id)
+        await session.commit()
+
         token = create_access_token(user_id=str(user.id), default_company_id=str(membership.company_id))
-        return TokenResponse(access_token=token, default_company_id=membership.company_id)
+        return TokenResponse(
+            access_token=token,
+            refresh_token=refresh_secret,
+            default_company_id=membership.company_id,
+        )
