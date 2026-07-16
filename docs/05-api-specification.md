@@ -20,10 +20,13 @@ This document describes API contracts conceptually. The authoritative, machine-r
 | Route | Method | Purpose | Key Inputs |
 |---|---|---|---|
 | `/auth/register` | POST | Create a new company + first Admin user | Company name, admin email/password |
-| `/auth/login` | POST | Authenticate, issue access JWT + refresh token | Email, password |
+| `/auth/login` | POST | Authenticate, issue access JWT + refresh token; requires a TOTP code once MFA is active | Email, password, TOTP code (if MFA active) |
 | `/auth/refresh` | POST | Rotate a refresh token; reuse of a spent token revokes its whole family | Refresh token |
 | `/auth/logout` | POST | Revoke the presented refresh token's family (idempotent, always 204) | Refresh token |
-| `/auth/change-password` | POST | Verify current password, set new one, revoke all the user's refresh tokens | Current + new password (authenticated) |
+| `/auth/change-password` | POST | Verify current password, set new one, revoke all the user's refresh tokens; requires a TOTP code once MFA is active | Current + new password, TOTP code if active (authenticated) |
+| `/auth/mfa/enroll` | POST | Begin (or restart, while pending) TOTP enrollment; secret shown exactly once | — (authenticated) |
+| `/auth/mfa/activate` | POST | Prove possession of the enrolled secret; MFA starts gating login from here | TOTP code (authenticated) |
+| `/auth/mfa/disable` | POST | Disable MFA and revoke all the user's refresh tokens; both current password and a TOTP code required | Current password, TOTP code (authenticated) |
 | `/companies/{id}` | GET | Retrieve company detail | — |
 | `/companies/{id}/children` | POST | Create a child branch company | Name, parent implied by path |
 | `/companies/{id}/users` | GET | List users in a company | Pagination |
