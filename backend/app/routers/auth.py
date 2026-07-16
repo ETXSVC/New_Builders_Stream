@@ -106,6 +106,34 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
     return RegisterResponse(company_id=company_id, user_id=user_id, email=payload.admin_email)
 
 
+async def _default_membership(session, user_id) -> CompanyUser | None:
+    """The user's default membership — the ONE rule login and refresh must
+    never disagree on (spec Decision 9): a token minted at login and a token
+    rotated at refresh must resolve the same default_company_id for the same
+    user. Sets app.current_user_id first (the self_membership RLS policy,
+    design decision #3, is what makes company_users visible at all here).
+
+    company_id as a tiebreaker is not cosmetic: company_users has no
+    surrogate id (composite PK on company_id, user_id), and created_at
+    alone collides often enough to matter — measured at ~32% of rapid
+    successive inserts sharing a timestamp on ordinary hardware, since
+    datetime.now() resolution is coarser than typical call overhead.
+    Without a deterministic secondary key, which membership .first()
+    returns after a tie is unspecified by Postgres and can differ between
+    two logically identical queries, making a user's "default company" not
+    actually stable. Not reachable today (registration only ever creates
+    one membership), but this is exactly the ordering Task 14's
+    invitation-acceptance flow will start exercising with multiple
+    memberships per user."""
+    await set_current_user(session, str(user_id))
+    result = await session.execute(
+        select(CompanyUser)
+        .where(CompanyUser.user_id == user_id)
+        .order_by(CompanyUser.created_at, CompanyUser.company_id)
+    )
+    return result.scalars().first()
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     async with session_scope() as session:
@@ -121,27 +149,7 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
         if user is None or not password_valid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
-        # Membership lookup needs app.current_user_id set for the self_membership
-        # RLS policy to allow it (design decision #3).
-        await set_current_user(session, str(user.id))
-        result = await session.execute(
-            select(CompanyUser)
-            .where(CompanyUser.user_id == user.id)
-            # company_id as a tiebreaker is not cosmetic: company_users has no
-            # surrogate id (composite PK on company_id, user_id), and
-            # created_at alone collides often enough to matter — measured at
-            # ~32% of rapid successive inserts sharing a timestamp on ordinary
-            # hardware, since datetime.now() resolution is coarser than
-            # typical call overhead. Without a deterministic secondary key,
-            # which membership .first() returns after a tie is unspecified by
-            # Postgres and can differ between two logically identical queries,
-            # making a user's "default company" not actually stable. Not
-            # reachable today (registration only ever creates one membership),
-            # but this is exactly the ordering Task 14's invitation-acceptance
-            # flow will start exercising with multiple memberships per user.
-            .order_by(CompanyUser.created_at, CompanyUser.company_id)
-        )
-        membership = result.scalars().first()
+        membership = await _default_membership(session, user.id)
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
 
@@ -170,13 +178,13 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
     """Rotate a refresh token (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md).
 
     Reuse of a spent token is suspected compromise: the service revokes the
-    whole family, and this route must COMMIT that revocation before the 401
-    leaves — an exception inside the transaction would roll the containment
-    back, which is why the error is carried out of the session block in a
-    flag instead of raised inside it. All failure modes share one message
-    (no oracle for which of unknown/expired/revoked/reused it was).
+    whole family, and that containment must be COMMITTED before the 401
+    leaves. Committing first and raising after is safe even inside the
+    session block — close() only rolls back a PENDING transaction, and after
+    commit() nothing is pending (login's post-commit return relies on the
+    same fact). All failure modes share one message (no oracle for which of
+    unknown/expired/revoked/reused it was).
     """
-    reuse_detected = False
     async with session_scope() as session:
         try:
             old_row, new_secret = await rotate_refresh_token(session, payload.refresh_token)
@@ -185,13 +193,7 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             # resolves default_company_id. If the user has no memberships
             # left, skip the row (there is no company to file it under) —
             # the family revocation itself still commits.
-            await set_current_user(session, str(exc.user_id))
-            result = await session.execute(
-                select(CompanyUser)
-                .where(CompanyUser.user_id == exc.user_id)
-                .order_by(CompanyUser.created_at, CompanyUser.company_id)
-            )
-            membership = result.scalars().first()
+            membership = await _default_membership(session, exc.user_id)
             if membership is not None:
                 await set_current_tenant(session, str(membership.company_id))
                 await write_audit_log(
@@ -204,32 +206,24 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
                     metadata={"family_id": str(exc.family_id)},
                 )
             await session.commit()
-            reuse_detected = True
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
         except RefreshTokenError:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
-        else:
-            await set_current_user(session, str(old_row.user_id))
-            result = await session.execute(
-                select(CompanyUser)
-                .where(CompanyUser.user_id == old_row.user_id)
-                .order_by(CompanyUser.created_at, CompanyUser.company_id)
-            )
-            membership = result.scalars().first()
-            if membership is None:
-                # Same outcome login gives a membership-less user. The
-                # rotation rolls back with the session (never committed),
-                # so the presented token remains usable if memberships
-                # are later restored.
-                raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
-            await session.commit()
-            access = create_access_token(
+
+        membership = await _default_membership(session, old_row.user_id)
+        if membership is None:
+            # Same outcome login gives a membership-less user. The
+            # rotation rolls back with the session (never committed),
+            # so the presented token remains usable if memberships
+            # are later restored.
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+        await session.commit()
+        # RFC 6749 §5.1: responses carrying tokens must not be cached.
+        response.headers["Cache-Control"] = "no-store"
+        return TokenResponse(
+            access_token=create_access_token(
                 user_id=str(old_row.user_id), default_company_id=str(membership.company_id)
-            )
-            company_id = membership.company_id
-    if reuse_detected:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
-    # RFC 6749 §5.1: responses carrying tokens must not be cached.
-    response.headers["Cache-Control"] = "no-store"
-    return TokenResponse(
-        access_token=access, refresh_token=new_secret, default_company_id=company_id
-    )
+            ),
+            refresh_token=new_secret,
+            default_company_id=membership.company_id,
+        )

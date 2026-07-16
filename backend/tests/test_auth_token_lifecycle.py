@@ -99,9 +99,7 @@ async def test_refresh_rotates_and_rederives_company(client):
     second = r.json()
     assert second["access_token"] != first["access_token"]
     assert second["refresh_token"] != first["refresh_token"]
-    assert second["default_company_id"] == str(first["default_company_id"]) or second[
-        "default_company_id"
-    ] == first["default_company_id"]
+    assert second["default_company_id"] == first["default_company_id"]
 
     # the rotated-away token is spent: a second use is refused
     dead = await _refresh(client, first["refresh_token"])
@@ -117,6 +115,10 @@ async def test_rotation_chain_each_token_works_exactly_once(client):
         assert r.status_code == 200, r.text
         tokens.append(r.json()["refresh_token"])
     assert len(set(tokens)) == 3
+    # ...and "exactly once" means a mid-chain token is spent, not just
+    # distinct: re-presenting it must be refused.
+    dead = await _refresh(client, tokens[1])
+    assert dead.status_code == 401
 
 
 async def test_reuse_of_a_spent_token_kills_the_whole_family(client):
@@ -165,8 +167,11 @@ async def test_concurrent_refresh_of_same_token_one_wins_then_family_dies(client
     """Race coverage promised by commit e956459: rotate_refresh_token's
     SELECT ... FOR UPDATE serializes two simultaneous rotations of the SAME
     token. Whichever request takes the row lock first rotates and commits;
-    the other blocks on the lock, then reads the committed revoked_at and
-    deterministically takes the reuse branch — so the status multiset is
+    the other typically blocks on the lock (cooperative scheduling makes
+    true overlap the overwhelmingly common path, not a guaranteed one — in
+    a degenerate schedule this reduces to the sequential-reuse case, which
+    satisfies the same assertions), then reads the committed revoked_at and
+    takes the reuse branch — so the status multiset is
     exactly {200, 401}, never {200, 200} (the lost-update attack the lock
     exists to prevent). And because the loser's reuse branch revokes the
     WHOLE family, the winner's freshly minted successor dies with it: the
