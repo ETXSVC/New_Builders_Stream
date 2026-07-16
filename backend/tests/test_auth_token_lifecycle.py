@@ -77,7 +77,7 @@ async def test_stored_refresh_token_is_hashed_not_plaintext(client):
     try:
         rows = await conn.fetch(
             "SELECT token_hash FROM refresh_tokens WHERE user_id = $1",
-            __import__("uuid").UUID(ctx["user_id"]),
+            uuid.UUID(ctx["user_id"]),
         )
     finally:
         await conn.close()

@@ -135,10 +135,12 @@ async def login(payload: LoginRequest) -> TokenResponse:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
 
         # Refresh-token INSERT needs a commit; session_scope() never commits
-        # on its own (register's explicit session.begin() is the precedent).
-        # set_current_user above used set_config(..., is_local=true), which
-        # is transaction-scoped — SQLAlchemy autobegan a transaction for it,
-        # so commit via the session, not a nested begin().
+        # on its own. Register can use an explicit session.begin() because it
+        # begins before touching the session; here SQLAlchemy already
+        # autobegan a transaction at the first execute() (the User SELECT
+        # above), so a begin() would raise — commit via the session instead.
+        # Post-commit attribute reads below are safe only because SessionLocal
+        # sets expire_on_commit=False (app/db.py).
         _, refresh_secret = await mint_refresh_token(session, user_id=user.id)
         await session.commit()
 
