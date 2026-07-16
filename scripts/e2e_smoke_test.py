@@ -127,7 +127,47 @@ sits at the END of the block (the plan's documented simpler alternative)
 so the block's pre-existing flow is untouched; access tokens are
 stateless 15-minute JWTs (revocation is refresh-time, not access-time),
 so burning company A's refresh family never invalidates `token_a`
-anyway."""
+anyway.
+
+Task 7.7 note on MFA/TOTP
+(docs/superpowers/specs/2026-07-16-mfa-totp-design.md): company A's block,
+immediately after the Task 6.9 token-lifecycle sequence above, now also
+proves enroll/activate/login-challenge/disable end-to-end over real HTTP.
+Company A's registering user is an Admin, so `login_a`'s own
+`mfa_enrollment_required` flag is asserted True right where `login_a` is
+first captured (before any MFA state exists), and the sequence at the end
+of the block asserts it flips to False once MFA is active. Enrollment
+asserts the returned `secret` + `otpauth_uri` + `Cache-Control: no-store`;
+activation uses a code from the PREVIOUS 30s TOTP step, not `.now()` —
+mirrors `backend/tests/test_mfa_totp.py`'s `_enroll_and_activate` docstring
+exactly (its own `_TOTP_PERIOD_SECONDS` pattern is replicated inline here
+too, since this script never imports from `backend/`): the +/-1-step skew
+window accepts the previous step, but the replay guard then records THAT
+step as spent, leaving the current step free for an immediately-following
+`.now()`-coded login. The login-challenge probes then run (missing code ->
+401 "TOTP code required"; a valid code -> 200 with
+`mfa_enrollment_required` now False), followed by disable with both
+factors (204) and a final code-less login (200) proving the gate is gone.
+The login-with-code and disable calls use explicit `base_step`/`base_step
++ 1` TOTP codes rather than two back-to-back `.now()` calls — the same
+replay-avoidance reasoning `test_disable_requires_both_factors_and_clears_state`
+documents for its own second-session/disable codes, since two `.now()`
+calls seconds apart risk landing in the same 30s window and colliding with
+the replay guard.
+
+Post-plan context this sequence relies on: `mfa_disable`'s route (commit
+8c6aad8, added after this plan was written) revokes EVERY refresh-token
+family the user holds, matching change-password's existing revoke-all
+behavior. That's moot for what this sequence itself does — by the time it
+starts, company A's admin already has NO live refresh token at all, because
+the Task 6.9 sequence immediately above already burned `login_a`'s family
+(reuse probe), `refreshed_body`'s successor family (family containment),
+and `lifecycle_login`'s family (logout) in turn. This sequence therefore
+relies entirely on `token_a`'s still-live access token (stateless JWTs are
+unaffected by refresh-token revocation) for `headers_a`, and mints fresh
+logins of its own throughout rather than reusing any refresh token from
+above. Noted explicitly because a future reordering of these two sequences
+must not assume a survivable refresh token exists going into disable."""
 
 import asyncio
 import re
@@ -139,6 +179,7 @@ from datetime import date, datetime, timedelta, timezone
 import asyncpg
 import httpx
 import jwt
+import pyotp
 
 # Task 3.29: owner-role Postgres DSN for this script's one direct-DB write
 # (flipping a subscription's status outside of any real Stripe webhook, to
@@ -175,6 +216,12 @@ JWT_SECRET = "dev-only-secret-change-me"
 BACKEND_URL = "http://localhost:8000"
 FRONTEND_URL = "http://localhost:3000"
 PASSWORD = "supersecret123"
+# Task 7.7: matches backend/tests/test_mfa_totp.py's own _TOTP_PERIOD_SECONDS
+# exactly (pyotp's TOTP default step width) — needed here for the same
+# previous-step/explicit-step TOTP code arithmetic that file's
+# _enroll_and_activate helper and disable test use, replicated inline per
+# this script's established "never import from backend/ or tests/" rule.
+_TOTP_PERIOD_SECONDS = 30
 # Test emails use the "e2e.example" domain, not "e2e.test". pydantic's EmailStr
 # calls email_validator.validate_email() with no way to pass test_environment=True,
 # so by default it rejects RFC 2606 reserved-use TLDs. The pytest suite works
@@ -311,6 +358,18 @@ def run() -> None:
         token_a = login_a["access_token"]
         headers_a = {"Authorization": f"Bearer {token_a}"}
         checks_passed.append("company A registered and logged in over real HTTP")
+
+        # Task 7.7: company A's registering user is an Admin (register's
+        # default role), so mfa_enrollment_required must be True on this
+        # very first login, before any MFA state exists — the MFA sequence
+        # at the end of this block re-checks it flips to False post-activation.
+        assert login_a["mfa_enrollment_required"] is True, (
+            f"expected mfa_enrollment_required=True for an Admin with no MFA enrolled yet, "
+            f"got {login_a['mfa_enrollment_required']!r}"
+        )
+        checks_passed.append(
+            "company A's first login shows mfa_enrollment_required=True (Admin, no MFA yet)"
+        )
 
         own_company = client.get(f"/companies/{company_a['company_id']}", headers=headers_a)
         assert own_company.status_code == 200, own_company.text
@@ -453,6 +512,123 @@ def run() -> None:
         checks_passed.append(
             "refreshing a logged-out family's token is rejected with 401 over real HTTP "
             "(logout revokes the family)"
+        )
+
+        # --- Task 7.7 exit criterion: MFA/TOTP, over real HTTP. Continues
+        # company A's block right after the Task 6.9 token-lifecycle
+        # sequence above — see this module's own docstring for exactly what
+        # state company A's tokens are in by this point (no live refresh
+        # token survives the sequence above; `token_a`'s access token is
+        # still good, since access tokens are stateless and refresh-token
+        # revocation never touches them). `headers_a` (built from
+        # `token_a`) is reused below for every authenticated MFA call.
+        mfa_enroll = client.post("/auth/mfa/enroll", headers=headers_a)
+        assert mfa_enroll.status_code == 200, mfa_enroll.text
+        mfa_enroll_body = mfa_enroll.json()
+        assert set(mfa_enroll_body) == {"secret", "otpauth_uri"}, (
+            f"expected exactly {{'secret', 'otpauth_uri'}}, got {sorted(mfa_enroll_body)}"
+        )
+        mfa_secret = mfa_enroll_body["secret"]
+        assert mfa_enroll_body["otpauth_uri"].startswith("otpauth://totp/"), (
+            f"expected otpauth_uri to start with 'otpauth://totp/', got "
+            f"{mfa_enroll_body['otpauth_uri']!r}"
+        )
+        assert f"secret={mfa_secret}" in mfa_enroll_body["otpauth_uri"], (
+            f"expected the enrolled secret to appear in its own otpauth_uri, got "
+            f"{mfa_enroll_body['otpauth_uri']!r}"
+        )
+        assert mfa_enroll.headers.get("Cache-Control") == "no-store", (
+            f"expected 'Cache-Control: no-store' on the MFA enroll response (a shared "
+            f"secret transits this body), got {mfa_enroll.headers.get('Cache-Control')!r}"
+        )
+        checks_passed.append(
+            "POST /auth/mfa/enroll over real HTTP returns 200 with a secret, an "
+            "otpauth_uri embedding that secret, and Cache-Control: no-store"
+        )
+
+        # Activate with a code from the PREVIOUS 30s TOTP step, not .now() —
+        # mirrors backend/tests/test_mfa_totp.py's _enroll_and_activate
+        # docstring exactly. The +/-1-step skew window accepts it, but the
+        # replay guard then records that PRIOR step as spent, leaving the
+        # CURRENT step free. Activating with .now() would burn the current
+        # step, and an immediately-following .now()-coded login would then
+        # collide with it (candidate_step <= last_used) on ~97% of runs.
+        mfa_activate_code = pyotp.TOTP(mfa_secret).at(int(time.time()) - _TOTP_PERIOD_SECONDS)
+        mfa_activate = client.post(
+            "/auth/mfa/activate", json={"totp_code": mfa_activate_code}, headers=headers_a
+        )
+        assert mfa_activate.status_code == 204, mfa_activate.text
+        checks_passed.append(
+            "POST /auth/mfa/activate over real HTTP with a previous-timestep TOTP code "
+            "returns 204 (leaves the current step free for the following login)"
+        )
+
+        # Login count/step bookkeeping for this sequence: the missing-code
+        # probe below fails before any TOTP code is even checked (payload.
+        # totp_code is None), so it burns no step. base_step is then read
+        # ONCE, immediately before the code-bearing login, and the login
+        # uses that exact step while disable (further below) uses
+        # base_step + 1 — two explicit, strictly-increasing steps rather
+        # than two back-to-back .now() calls, which risk landing in the
+        # same 30s window and colliding with the replay guard (same
+        # reasoning backend/tests/test_mfa_totp.py's
+        # test_disable_requires_both_factors_and_clears_state applies to
+        # its own second-session/disable codes).
+        mfa_login_missing_code = client.post(
+            "/auth/login",
+            json={"email": f"admin-a-{run_id}@e2e.example", "password": PASSWORD},
+        )
+        assert mfa_login_missing_code.status_code == 401, (
+            f"expected 401 logging in with no totp_code once MFA is active, got "
+            f"{mfa_login_missing_code.status_code}: {mfa_login_missing_code.text}"
+        )
+        assert mfa_login_missing_code.json()["detail"] == "TOTP code required", (
+            f"expected detail='TOTP code required', got "
+            f"{mfa_login_missing_code.json()['detail']!r}"
+        )
+        checks_passed.append(
+            "POST /auth/login without totp_code once MFA is active is rejected with 401 "
+            "'TOTP code required' over real HTTP"
+        )
+
+        mfa_base_step = int(time.time()) // _TOTP_PERIOD_SECONDS
+        mfa_login_with_code = client.post(
+            "/auth/login",
+            json={
+                "email": f"admin-a-{run_id}@e2e.example",
+                "password": PASSWORD,
+                "totp_code": pyotp.TOTP(mfa_secret).at(mfa_base_step * _TOTP_PERIOD_SECONDS),
+            },
+        )
+        assert mfa_login_with_code.status_code == 200, mfa_login_with_code.text
+        assert mfa_login_with_code.json()["mfa_enrollment_required"] is False, (
+            f"expected mfa_enrollment_required=False once MFA is active, got "
+            f"{mfa_login_with_code.json()['mfa_enrollment_required']!r}"
+        )
+        checks_passed.append(
+            "POST /auth/login with a valid TOTP code over real HTTP returns 200 with "
+            "mfa_enrollment_required=False (was True before enrollment)"
+        )
+
+        mfa_disable = client.post(
+            "/auth/mfa/disable",
+            json={
+                "current_password": PASSWORD,
+                "totp_code": pyotp.TOTP(mfa_secret).at((mfa_base_step + 1) * _TOTP_PERIOD_SECONDS),
+            },
+            headers=headers_a,
+        )
+        assert mfa_disable.status_code == 204, mfa_disable.text
+        checks_passed.append("POST /auth/mfa/disable with both factors over real HTTP returns 204")
+
+        mfa_final_login = client.post(
+            "/auth/login",
+            json={"email": f"admin-a-{run_id}@e2e.example", "password": PASSWORD},
+        )
+        assert mfa_final_login.status_code == 200, mfa_final_login.text
+        checks_passed.append(
+            "POST /auth/login without totp_code succeeds again over real HTTP once MFA "
+            "is disabled"
         )
 
         # --- Phase 1 exit criterion: Lead -> Won -> Project, over real HTTP ---
