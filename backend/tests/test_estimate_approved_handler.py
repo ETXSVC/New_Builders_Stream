@@ -36,7 +36,7 @@ import asyncpg
 import pytest
 
 from app.core.event_handlers import register_event_handlers
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -54,6 +54,10 @@ async def _register_and_login(client, company_name, email):
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
     assert login.status_code == 200, login.text
+    # Tier gating (Task 5.6): the Task-4.13-era sync test drives the
+    # Enterprise-gated integrations callback; registration can only
+    # produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],

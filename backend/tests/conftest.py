@@ -194,3 +194,34 @@ async def _clean_tables():
     from app.db import engine
 
     await engine.dispose()
+
+
+async def set_subscription_tier(company_id, tier) -> None:
+    """Task 5.2 (tier-gating spec, Section 5): flips a registered company's
+    subscription tier via the RLS-exempt owner connection. Registration can
+    only ever produce trialing/pro (docs/08 Section 5), so any test that
+    exercises an Enterprise-gated module (accounting, integrations,
+    child-branch creation) — or a Starter-blocked scenario — sets the tier
+    it needs explicitly with this. Same owner-connection test-setup
+    rationale as _clean_tables above and the tenant-isolation files'
+    _insert_*_directly helpers. Accepts company_id as str or UUID (asyncpg
+    takes either for a uuid column, so no conversion happens here).
+
+    The UPDATE-1 assertion matters (Task 5.2 code-quality review): a wrong
+    or stale company_id would otherwise silently update zero rows, leaving
+    the company at its registration default (pro) — and a "starter is
+    blocked" test would still pass, because pro is blocked from the same
+    Enterprise module too, silently never testing starter at all. Same
+    guard scripts/e2e_smoke_test.py's _set_subscription_status already has."""
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        result = await conn.execute(
+            "UPDATE subscriptions SET tier = $1 WHERE company_id = $2",
+            tier,
+            company_id,
+        )
+        assert result == "UPDATE 1", (
+            f"expected exactly one subscriptions row for company_id={company_id!r}, got {result!r}"
+        )
+    finally:
+        await conn.close()

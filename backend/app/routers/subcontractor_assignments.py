@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module
 from app.models import ComplianceDocument, SubcontractorAssignment
 from app.models.compliance_document import VALID_DOC_TYPES
 from app.routers.projects import _get_project_or_404
@@ -103,6 +104,7 @@ async def create_subcontractor_assignment(
     payload: SubcontractorAssignmentCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("compliance")),
 ) -> SubcontractorAssignmentResponse:
     """Task 3.11: the Admin-override-required expired-compliance rule.
 

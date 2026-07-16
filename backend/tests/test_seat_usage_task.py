@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models import Subscription
 from app.services.billing import get_stripe_client
 from app.tasks.seat_usage import _report_seat_usage
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 
 async def _register(client, company_name, email):
@@ -26,6 +26,11 @@ async def _register(client, company_name, email):
         },
     )
     assert response.status_code == 201, response.text
+    # Tier gating (Task 5.7): child-branch creation is Enterprise-gated;
+    # registration can only produce trialing/pro. Only the tier column
+    # changes - included_seats stays at the registration default (10) that
+    # every overage assertion below is built on.
+    await set_subscription_tier(response.json()["company_id"], "enterprise")
     return response.json()
 
 

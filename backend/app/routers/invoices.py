@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module
 from app.models import Invoice, InvoicePayment
 from app.routers.projects import _get_project_or_404
 from app.schemas.invoice import (
@@ -78,6 +79,7 @@ async def create_invoice(
     body: InvoiceCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> InvoiceResponse:
     project = await _get_project_or_404(current, project_id)
 
@@ -114,6 +116,7 @@ async def send_invoice(
     body: InvoiceSendRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> InvoiceResponse:
     invoice = await _get_invoice_or_404(current, invoice_id)
     if invoice.status != "draft":
@@ -152,6 +155,7 @@ async def record_invoice_payment(
     body: InvoicePaymentCreateRequest,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> InvoicePaymentResponse:
     invoice = await _get_invoice_or_404(current, invoice_id)
 
@@ -230,6 +234,7 @@ async def void_invoice(
     invoice_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> InvoiceResponse:
     invoice = await _get_invoice_or_404(current, invoice_id)
 

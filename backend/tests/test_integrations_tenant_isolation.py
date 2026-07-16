@@ -5,7 +5,7 @@ import uuid
 import asyncpg
 
 from app.services.integration_oauth_state import sign_oauth_state
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
@@ -23,6 +23,11 @@ async def _register_and_login(client, company_name, email):
     )
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    # Tier gating (Task 5.6): integrations is Enterprise-gated;
+    # registration can only produce trialing/pro. Child-branch flows get
+    # their enterprise tier from this same bump (the subscription belongs
+    # to the root).
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],

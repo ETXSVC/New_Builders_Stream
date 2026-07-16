@@ -5,6 +5,7 @@ import uuid
 
 from app.core.event_handlers import register_event_handlers
 from app.core.events import publish
+from tests.conftest import set_subscription_tier
 
 
 async def _register_and_login(client, company_name, email):
@@ -19,6 +20,11 @@ async def _register_and_login(client, company_name, email):
     )
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    # Tier gating (Task 5.5): these suites exercise Enterprise-gated
+    # accounting routes; registration can only produce trialing/pro.
+    # (The plan expected this file to pass unchanged, but its three
+    # "via the real route" tests POST to the gated accounting routes.)
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},

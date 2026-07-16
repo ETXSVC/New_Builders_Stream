@@ -1,6 +1,6 @@
 import asyncpg
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, set_subscription_tier
 
 
 async def _register_and_login(client, company_name, email):
@@ -15,6 +15,9 @@ async def _register_and_login(client, company_name, email):
     )
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
     body = login.json()
+    # Tier gating (Task 5.7): child-branch creation is Enterprise-gated;
+    # registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "headers": {"Authorization": f"Bearer {body['access_token']}"},

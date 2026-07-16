@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import publish
 from app.core.money import CENTS
+from app.core.tier_gating import tier_allows
 from app.models import Invoice
 from app.services.audit import write_audit_log
 from app.services.invoicing import DEFAULT_DEPOSIT_PERCENTAGE, next_invoice_number
@@ -62,6 +63,14 @@ async def handle_estimate_approved(
     **_ignored: object,
 ) -> None:
     if project_id is None:
+        return
+
+    # Tier gating (spec Decision 4): the deposit invoice is an ACCOUNTING-
+    # module write reached through the event bus, not that module's routes —
+    # without this check a pro company would get invoices auto-drafted into
+    # a module its plan doesn't include. Same silent no-op shape as the
+    # project_id early-return above.
+    if not await tier_allows(session, company_id, "accounting"):
         return
 
     # Quantized to CENTS/ROUND_HALF_UP before it ever reaches the Numeric

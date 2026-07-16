@@ -31,7 +31,7 @@ Three tiers gate access by **module availability** and scale cost by **active us
 | QuickBooks / FreshBooks Integration | — | — | ✓ |
 | Nested child-branch companies | — | Single branch only | ✓ |
 
-Enforcement happens server-side: the `TenantMiddleware` (see [Technical Architecture](03-technical-architecture.md), Section 5) resolves the active company's `subscriptions.tier` and the relevant module's FastAPI dependency rejects requests with `403` if the tier doesn't include that module — never enforced only in the frontend UI.
+Enforcement happens server-side: a per-route FastAPI dependency (`require_module`, see [`docs/superpowers/specs/2026-07-15-tier-gating-design.md`](superpowers/specs/2026-07-15-tier-gating-design.md)) resolves the active company's ROOT-company `subscriptions.tier` and rejects requests with `403` if the tier doesn't include that module — never enforced only in the frontend UI. (Earlier versions of this document attributed tier resolution to the `TenantMiddleware`; the middleware has no database session — enforcement lives in the same per-route dependency layer as role checks and read-only enforcement.) Gating applies to a module's **mutating** routes; read routes stay open at every tier so existing data remains visible after a downgrade — see Section 6.
 
 ## 4. Stripe Implementation Mapping
 
@@ -48,4 +48,5 @@ Enforcement happens server-side: the `TenantMiddleware` (see [Technical Architec
 ## 6. Upgrade / Downgrade Rules
 
 - Upgrades take effect immediately (proration handled by Stripe).
-- Downgrades that would remove access to a module currently in use (e.g., Enterprise → Pro while QuickBooks integration is active) surface a confirmation warning listing exactly what will become inaccessible, and take effect at the end of the current billing period rather than immediately.
+- Downgrades that would remove access to a module currently in use (e.g., Enterprise → Pro while QuickBooks integration is active) surface a confirmation warning listing exactly what will be affected, and take effect at the end of the current billing period rather than immediately.
+- After a downgrade, the removed module's **mutating** actions are blocked (`403`), but its existing data remains readable — a company that drops Enterprise can still view (not modify) its old invoices, bills, and expenses, consistent with Section 5's trial-expiry precedent (data preserved, write access blocked) and the data retention policy in [Security & Compliance](07-security-compliance.md), Section 7. Event-driven writes into a removed module stop too: e.g., approving an Estimate below Enterprise no longer auto-drafts a deposit invoice, and leftover integration connections stop enqueuing syncs.

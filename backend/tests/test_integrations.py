@@ -14,6 +14,9 @@ async def _register_and_login(client, company_name, email):
     )
     assert register.status_code == 201, register.text
     login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    # Tier gating (Task 5.6): integrations is Enterprise-gated;
+    # registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
         "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
@@ -58,7 +61,7 @@ async def test_project_manager_cannot_connect(client):
 import asyncpg
 
 from app.services.integration_oauth_state import sign_oauth_state
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
