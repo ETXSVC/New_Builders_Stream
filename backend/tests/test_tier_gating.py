@@ -221,9 +221,11 @@ async def test_gate_fires_for_a_child_branch_acting_session_via_rls_root_resolut
     import asyncpg as _asyncpg
 
     admin = await _register_and_login(client, "Tier Co RLS1", "tier-rls1@example.test")
-    # Create the child while the parent is still pro (child creation isn't
-    # gated until Task 5.7), grant the admin a membership in it directly,
-    # then downgrade the ROOT to starter.
+    # Bump to enterprise first so the (Task 5.7) child_branches gate lets the
+    # child be created, grant the admin a membership in it directly, then
+    # downgrade the ROOT to starter — the gate-under-test still fires from
+    # the child's acting session against the root's (now starter) tier.
+    await set_subscription_tier(admin["company_id"], "enterprise")
     create = await client.post(
         f"/companies/{admin['company_id']}/children", json={"name": "RLS Branch"}, headers=admin["headers"]
     )
@@ -257,6 +259,68 @@ async def test_gate_fires_for_a_child_branch_acting_session_via_rls_root_resolut
     assert "requires the pro plan" in response.json()["detail"]  # not bare "pro" -
     # the role-403 message contains "project_manager", which a bare
     # substring check would falsely match (Task 5.3 code-quality review)
+
+
+async def test_existing_child_branches_keep_operating_after_a_downgrade_to_pro(client):
+    """Task 5.7 code-quality review: the allow-direction companion to the
+    starter RLS test above. Pro-root-with-existing-children is a legitimate
+    post-downgrade production state (child CREATION is enterprise-gated,
+    but writes-only gating means existing branches must keep working at
+    whatever their root's tier still includes) — and after Task 5.7's
+    blanket enterprise bumps, no other test in the suite exercises a
+    sub-enterprise root with children on a SUCCESS path. Without this, an
+    over-blocking regression (e.g. 403ing all child-tenant activity when
+    root < enterprise, a plausible misreading of "child branches are
+    enterprise-gated") would be invisible: the enterprise suites pass and
+    the starter test above still sees its 403."""
+    import asyncpg as _asyncpg
+
+    admin = await _register_and_login(client, "Tier Co RLS2", "tier-rls2@example.test")
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    create = await client.post(
+        f"/companies/{admin['company_id']}/children", json={"name": "Surviving Branch"}, headers=admin["headers"]
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+
+    conn = await _asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        user_row = await conn.fetchrow(
+            "SELECT user_id FROM company_users WHERE company_id = $1", uuid.UUID(admin["company_id"])
+        )
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) VALUES ($1, $2, 'admin', now())",
+            uuid.UUID(child_id),
+            user_row["user_id"],
+        )
+    finally:
+        await conn.close()
+
+    await set_subscription_tier(admin["company_id"], "pro")
+
+    child_headers = {**admin["headers"], "X-Tenant-ID": child_id}
+    response = await client.post(
+        "/catalogs/items",
+        json={"category": "materials", "name": "Lumber", "unit": "board_ft", "unit_rate": "5.00"},
+        headers=child_headers,
+    )
+    assert response.status_code == 201, response.text
+
+
+async def test_pro_company_cannot_create_a_child_branch_but_enterprise_can(client):
+    admin = await _register_and_login(client, "Tier Co C1", "tier-c1@example.test")
+
+    blocked = await client.post(
+        f"/companies/{admin['company_id']}/children", json={"name": "Blocked Branch"}, headers=admin["headers"]
+    )
+    assert blocked.status_code == 403
+    assert "enterprise" in blocked.json()["detail"]
+
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    allowed = await client.post(
+        f"/companies/{admin['company_id']}/children", json={"name": "Allowed Branch"}, headers=admin["headers"]
+    )
+    assert allowed.status_code == 201, allowed.text
 
 
 async def test_pro_company_cannot_create_accounting_records(client):

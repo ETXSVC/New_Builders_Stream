@@ -25,7 +25,7 @@ rather than sharing them via conftest.py.
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 
 async def _register_and_login(client, company_name, email):
@@ -42,6 +42,9 @@ async def _register_and_login(client, company_name, email):
     login = await client.post("/auth/login", json={"email": email, "password": "correct horse battery staple"})
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
+    # Tier gating (Task 5.7): child-branch creation is Enterprise-gated;
+    # registration can only produce trialing/pro.
+    await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "headers": {"Authorization": f"Bearer {token}"},
         "company_id": register.json()["company_id"],
