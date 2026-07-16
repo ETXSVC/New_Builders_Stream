@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, String
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +25,9 @@ class User(Base, UUIDPKMixin, TimestampMixin):
     # pending (NOT yet enforced at login); both set = active.
     # totp_last_used_step records the last successfully used 30s timestep
     # so an intercepted code cannot be replayed inside its window.
-    totp_secret_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Text, not String — matches 0015's own DDL and the Fernet-ciphertext
+    # convention integration_connection.py established.
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     mfa_activated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
