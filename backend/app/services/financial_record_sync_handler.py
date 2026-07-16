@@ -26,6 +26,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.tier_gating import tier_allows
 from app.models import IntegrationConnection
 from app.tasks.accounting_sync import sync_financial_record
 
@@ -38,6 +39,14 @@ async def handle_financial_record_created(
     company_id: uuid.UUID,
     **_ignored: object,
 ) -> None:
+    # Tier gating (spec Decision 4): a downgraded company's leftover
+    # integration_connections rows must stop producing sync messages. The
+    # Dramatiq actor does NOT re-check tier - enqueue-time is the gate;
+    # re-checking per message in the worker buys a seconds-wide race window
+    # at the cost of a query per sync.
+    if not await tier_allows(session, company_id, "integrations"):
+        return
+
     connections_result = await session.execute(
         select(IntegrationConnection).where(IntegrationConnection.company_id == company_id)
     )

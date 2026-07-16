@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models.compliance_notification import ComplianceNotification
 from app.tasks.compliance_expiry import _check_compliance_expiry, _owner_engine
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 _test_owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
 _TestOwnerSessionLocal = async_sessionmaker(_test_owner_engine, expire_on_commit=False, class_=AsyncSession)
@@ -307,3 +307,45 @@ async def test_document_crossing_into_14_day_window_fires_only_new_notification_
 
     # The new 14_day row is genuinely new, for the same document.
     assert str(by_threshold["14_day"].compliance_document_id) == document_id
+
+
+# =============================================================================
+# Tier gating: below-tier (starter) companies get no new notifications
+# =============================================================================
+
+
+async def test_starter_company_gets_no_new_notifications_while_pro_company_still_does(client):
+    """Task 5.8 scope addition (tier-gating spec Decision 4, found by Task
+    5.4's code-quality review): this actor is an owner-role cross-tenant
+    scan that WRITES into the Compliance module (pro+). Without a tier
+    check, a company downgraded to starter keeps accumulating unread
+    ComplianceNotification rows it can never dismiss (dismiss is a gated
+    mutating route; reads stay open) — monotonically growing, permanently
+    undismissable. The starter company here is built the realistic way:
+    upload while pro (registration default), THEN downgrade — the document
+    row survives, but must stop producing notifications."""
+    starter = await _register_and_login(client, "Downgraded Co", "expiry-starter@acme.test")
+    pro = await _register_and_login(client, "Still Pro Co", "expiry-pro@acme.test")
+
+    sub_starter = await _create_subcontractor(client, starter, name="Downgraded Co Sub")
+    sub_pro = await _create_subcontractor(client, pro, name="Still Pro Co Sub")
+
+    expires_on = (date.today() + timedelta(days=5)).isoformat()
+    await _upload_compliance_document(client, starter, sub_starter, expires_on=expires_on)
+    document_pro = await _upload_compliance_document(client, pro, sub_pro, expires_on=expires_on)
+
+    # Downgrade AFTER uploading — compliance uploads are pro+-gated routes,
+    # so a real starter company with documents can only exist via downgrade.
+    await set_subscription_tier(starter["company_id"], "starter")
+
+    await _check_compliance_expiry(session_factory=_TestOwnerSessionLocal)
+
+    starter_notifications = await _fetch_notifications(company_id=starter["company_id"])
+    assert starter_notifications == [], (
+        "a starter-tier company must not accumulate compliance notifications"
+    )
+
+    pro_notifications = await _fetch_notifications(company_id=pro["company_id"])
+    assert len(pro_notifications) == 3
+    for notification in pro_notifications:
+        assert str(notification.compliance_document_id) == document_pro

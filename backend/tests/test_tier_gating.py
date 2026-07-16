@@ -407,3 +407,83 @@ async def test_pro_company_can_still_read_sync_status_for_an_existing_connection
     await set_subscription_tier(admin["company_id"], "pro")
     sync_status = await client.get("/integrations/quickbooks/sync-status", headers=admin["headers"])
     assert sync_status.status_code == 200
+
+
+async def test_pro_company_estimate_approval_drafts_no_deposit_invoice(client):
+    """Spec Decision 4: event-driven writes into gated modules are gated
+    too. A pro company approving an estimate gets the approval (estimation
+    is in its tier) but NO auto-drafted invoice (accounting is not) and NO
+    invoice.auto_generated audit row. Uses the full real approval flow -
+    the same helpers test_estimate_approved_handler.py uses, imported from
+    there rather than duplicated."""
+    from app.core.event_handlers import register_event_handlers
+    from tests.test_estimate_approved_handler import (
+        _create_and_approve_estimate,
+        _create_catalog_item,
+        _create_markup_profile,
+        _create_project,
+        _fetch_invoices_for_estimate,
+        _invite_and_login_as,
+    )
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Tier Co E1", "tier-e1@example.test")
+    # Deliberately NOT bumped to enterprise: pro is the case under test.
+    # (test_estimate_approved_handler's own helper bumps ITS callers to
+    # enterprise as of Task 5.6 - which is why this test registers through
+    # THIS file's helper instead.)
+    client_role = await _invite_and_login_as(client, admin, "client", "tier-e1-client@example.test")
+    project = await _create_project(client, admin["headers"])
+    markup_profile_id = await _create_markup_profile(client, admin["headers"])
+    catalog_item_id = await _create_catalog_item(client, admin["headers"])
+
+    estimate_id, _total = await _create_and_approve_estimate(
+        client, admin["headers"], client_role["headers"],
+        project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
+    )
+
+    invoices = await _fetch_invoices_for_estimate(estimate_id)
+    assert invoices == [], "a pro-tier approval must not auto-draft an (enterprise-module) invoice"
+
+    # And no invoice.auto_generated audit row either — asserted in code, not
+    # just claimed in the docstring (Task 5.8 code-quality review): the skip
+    # must leave the audit log clean, not record a phantom drafting.
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        audit_rows = await conn.fetch(
+            "SELECT id FROM audit_log WHERE company_id = $1 AND action = 'invoice.auto_generated'",
+            uuid.UUID(admin["company_id"]),
+        )
+    finally:
+        await conn.close()
+    assert audit_rows == []
+
+
+async def test_below_tier_company_with_a_leftover_connection_enqueues_no_sync(client, monkeypatch, db_session):
+    from app.core.event_handlers import register_event_handlers
+    from app.core.events import publish
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Tier Co E2", "tier-e2@example.test")
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    assert connected.status_code == 200, connected.text
+
+    # Downgrade AFTER connecting - the leftover connection row survives, but
+    # must stop producing sync messages (spec Decision 4).
+    await set_subscription_tier(admin["company_id"], "pro")
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append((a, kw)))
+
+    await publish(
+        "INVOICE_CREATED",
+        session=db_session,
+        entity_type="invoice",
+        entity_id=uuid.uuid4(),
+        company_id=uuid.UUID(admin["company_id"]),
+    )
+    assert calls == []

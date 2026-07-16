@@ -79,6 +79,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.tier_gating import tier_allows
 from app.models.compliance_document import ComplianceDocument
 from app.models.compliance_notification import VALID_THRESHOLDS, ComplianceNotification
 from app.tasks import broker  # noqa: F401 - import-time side effect (see estimate_pdf.py's docstring)
@@ -145,7 +146,27 @@ async def _check_compliance_expiry(
         )
         already_fired = {(doc_id, threshold) for doc_id, threshold in already_fired_result.all()}
 
+        # Tier gating (Task 5.8 scope addition, spec Decision 4; hole found
+        # by Task 5.4's code-quality review): this scan WRITES into the
+        # Compliance module (pro+). Without this skip, a company downgraded
+        # to starter keeps accumulating unread notifications it can never
+        # dismiss (dismiss is a gated mutating route; reads stay open).
+        # Checked once per distinct company_id, memoized across the document
+        # loop — tier_allows is a plain SELECT on subscriptions via
+        # get_root_company_id, which the owner-role session sees without any
+        # tenant context (owner is RLS-exempt), so at most one extra query
+        # per company per daily run, matching this actor's existing
+        # "prefetch/loop in memory, no per-row round trips" shape.
+        compliance_allowed: dict = {}
+
         for document in documents:
+            allowed = compliance_allowed.get(document.company_id)
+            if allowed is None:
+                allowed = await tier_allows(session, document.company_id, "compliance")
+                compliance_allowed[document.company_id] = allowed
+            if not allowed:
+                continue
+
             days_until_expiry = (document.expires_on - today).days
 
             for threshold in VALID_THRESHOLDS:
