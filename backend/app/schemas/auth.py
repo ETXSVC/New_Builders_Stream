@@ -29,6 +29,7 @@ class RefreshRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
+    totp_code: str | None = None
 
 
 class MfaEnrollResponse(BaseModel):
@@ -37,6 +38,11 @@ class MfaEnrollResponse(BaseModel):
 
 
 class MfaActivateRequest(BaseModel):
+    totp_code: str
+
+
+class MfaDisableRequest(BaseModel):
+    current_password: str
     totp_code: str
 
 

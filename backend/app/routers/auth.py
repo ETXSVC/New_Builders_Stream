@@ -13,6 +13,7 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
     MfaActivateRequest,
+    MfaDisableRequest,
     MfaEnrollResponse,
     RefreshRequest,
     RegisterRequest,
@@ -293,6 +294,15 @@ async def change_password(
     user = current.user  # already loaded by get_current_user, same session
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    # MFA challenge (spec Decision 6): if active, a TOTP code is required
+    # too, so a hijacked access token plus a shoulder-surfed password
+    # alone cannot rotate the password and then strip MFA. Same disclosure
+    # ordering as login — this only runs past the password check.
+    if user.mfa_activated_at is not None:
+        if payload.totp_code is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+        if not verify_totp_code(user, payload.totp_code):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
     user.password_hash = hash_password(payload.new_password)
     await revoke_all_for_user(current.session, user.id)
     await write_audit_log(
@@ -345,6 +355,33 @@ async def mfa_activate(
         company_id=current.company_id,
         actor_id=current.user.id,
         action="auth.mfa_activated",
+        entity_type="user",
+        entity_id=current.user.id,
+    )
+
+
+@router.post("/mfa/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def mfa_disable(
+    payload: MfaDisableRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """BOTH factors required (spec Decision 6): a hijacked 15-minute access
+    token alone must not be able to strip MFA. Password first (same
+    ordering rationale as login), then the code."""
+    if current.user.mfa_activated_at is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA is not active")
+    if not verify_password(payload.current_password, current.user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    if not verify_totp_code(current.user, payload.totp_code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+    current.user.totp_secret_encrypted = None
+    current.user.mfa_activated_at = None
+    current.user.totp_last_used_step = None
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="auth.mfa_disabled",
         entity_type="user",
         entity_id=current.user.id,
     )

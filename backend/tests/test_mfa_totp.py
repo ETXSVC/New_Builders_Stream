@@ -246,3 +246,91 @@ async def test_mfa_enrollment_required_signal(client):
     )
     assert nonadmin.status_code == 200, nonadmin.text
     assert nonadmin.json()["mfa_enrollment_required"] is False
+
+
+async def test_disable_requires_both_factors_and_clears_state(client):
+    import asyncpg
+
+    from tests.conftest import TEST_DATABASE_URL
+
+    ctx = await _register_and_login(client)
+    secret = await _enroll_and_activate(client, ctx)
+
+    wrong_pw = await client.post(
+        "/auth/mfa/disable",
+        json={"current_password": "nope-nope-1", "totp_code": pyotp.TOTP(secret).now()},
+        headers=ctx["headers"],
+    )
+    assert wrong_pw.status_code == 401
+    assert wrong_pw.json()["detail"] == "Invalid current password"
+
+    wrong_code = await client.post(
+        "/auth/mfa/disable",
+        json={"current_password": ctx["password"], "totp_code": pyotp.TOTP(secret).at(0)},
+        headers=ctx["headers"],
+    )
+    assert wrong_code.status_code == 401
+    assert wrong_code.json()["detail"] == "Invalid TOTP code"
+
+    ok = await client.post(
+        "/auth/mfa/disable",
+        json={"current_password": ctx["password"], "totp_code": pyotp.TOTP(secret).now()},
+        headers=ctx["headers"],
+    )
+    assert ok.status_code == 204, ok.text
+
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        row = await conn.fetchrow(
+            "SELECT totp_secret_encrypted, mfa_activated_at, totp_last_used_step FROM users WHERE id = $1",
+            uuid.UUID(ctx["user_id"]),
+        )
+        audit = await conn.fetch(
+            "SELECT action FROM audit_log WHERE action = 'auth.mfa_disabled'"
+        )
+    finally:
+        await conn.close()
+    assert row["totp_secret_encrypted"] is None
+    assert row["mfa_activated_at"] is None
+    assert row["totp_last_used_step"] is None
+    assert len(audit) == 1
+
+    plain = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}
+    )
+    assert plain.status_code == 200, plain.text  # login no longer gated
+
+
+async def test_disable_when_not_active_is_400(client):
+    ctx = await _register_and_login(client)
+    r = await client.post(
+        "/auth/mfa/disable",
+        json={"current_password": ctx["password"], "totp_code": "123456"},
+        headers=ctx["headers"],
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "MFA is not active"
+
+
+async def test_change_password_requires_totp_when_active(client):
+    ctx = await _register_and_login(client)
+    secret = await _enroll_and_activate(client, ctx)
+
+    without = await client.post(
+        "/auth/change-password",
+        json={"current_password": ctx["password"], "new_password": "fresh-password-2"},
+        headers=ctx["headers"],
+    )
+    assert without.status_code == 401
+    assert without.json()["detail"] == "TOTP code required"
+
+    with_code = await client.post(
+        "/auth/change-password",
+        json={
+            "current_password": ctx["password"],
+            "new_password": "fresh-password-2",
+            "totp_code": pyotp.TOTP(secret).now(),
+        },
+        headers=ctx["headers"],
+    )
+    assert with_code.status_code == 204, with_code.text
