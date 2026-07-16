@@ -21,7 +21,8 @@ def _register_payload():
 
 
 async def _register_and_login(client) -> dict:
-    """Returns {"email", "password", "company_id", "user_id", "login": <login response json>}."""
+    """Returns {"email", "password", "company_id", "user_id", "login": <login
+    response json>, "headers": <Authorization header dict>}."""
     payload = _register_payload()
     register = await client.post("/auth/register", json=payload)
     assert register.status_code == 201, register.text
@@ -36,6 +37,7 @@ async def _register_and_login(client) -> dict:
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],
         "login": login.json(),
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
     }
 
 
@@ -273,3 +275,68 @@ async def test_logout_with_a_spent_mid_chain_token_kills_the_live_tail(client):
         "logout with the spent predecessor must revoke the live successor: "
         f"{dead_tail.status_code}: {dead_tail.text}"
     )
+
+
+async def test_change_password_revokes_everything_and_rotates_credentials(client):
+    import asyncpg
+
+    from tests.conftest import TEST_DATABASE_URL
+
+    ctx = await _register_and_login(client)
+    # a second login = a second family; change-password must kill BOTH
+    second_login = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}
+    )
+    assert second_login.status_code == 200
+
+    wrong = await client.post(
+        "/auth/change-password",
+        json={"current_password": "not-the-password", "new_password": "brand-new-pass-1"},
+        headers=ctx["headers"],
+    )
+    assert wrong.status_code == 401
+    assert wrong.json()["detail"] == "Invalid current password"
+    # a wrong guess must NOT revoke anything
+    still_alive = await _refresh(client, second_login.json()["refresh_token"])
+    assert still_alive.status_code == 200, still_alive.text
+
+    ok = await client.post(
+        "/auth/change-password",
+        json={"current_password": ctx["password"], "new_password": "brand-new-pass-1"},
+        headers=ctx["headers"],
+    )
+    assert ok.status_code == 204
+
+    # every refresh token from before the change is dead (both families)
+    dead1 = await _refresh(client, ctx["login"]["refresh_token"])
+    dead2 = await _refresh(client, still_alive.json()["refresh_token"])
+    assert dead1.status_code == 401 and dead2.status_code == 401
+
+    # old password refused, new one works
+    old = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}
+    )
+    assert old.status_code == 401
+    new = await client.post(
+        "/auth/login", json={"email": ctx["email"], "password": "brand-new-pass-1"}
+    )
+    assert new.status_code == 200, new.text
+
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        audit = await conn.fetch(
+            "SELECT action FROM audit_log WHERE action = 'auth.password_changed'"
+        )
+    finally:
+        await conn.close()
+    assert len(audit) == 1
+
+
+async def test_change_password_enforces_min_length(client):
+    ctx = await _register_and_login(client)
+    r = await client.post(
+        "/auth/change-password",
+        json={"current_password": ctx["password"], "new_password": "short"},
+        headers=ctx["headers"],
+    )
+    assert r.status_code == 422

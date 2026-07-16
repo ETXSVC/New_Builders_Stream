@@ -1,13 +1,15 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.core.deps import CurrentUser, get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, Subscription, User
 from app.schemas.auth import (
+    ChangePasswordRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -21,6 +23,7 @@ from app.services.refresh_tokens import (
     RefreshTokenReuseError,
     find_by_secret,
     mint_refresh_token,
+    revoke_all_for_user,
     revoke_family,
     rotate_refresh_token,
 )
@@ -229,6 +232,40 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             refresh_token=new_secret,
             default_company_id=membership.company_id,
         )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Verify-then-rehash, then revoke EVERY refresh token the user holds
+    across all families/devices (docs/07 Section 1's 'password change'
+    revocation trigger). current_password is required so a hijacked
+    15-minute access token alone cannot rotate the password. A wrong
+    current_password revokes nothing — an attacker guessing must not be
+    able to DoS the real user's sessions (the 401 below makes
+    get_current_user roll back the whole transaction, so nothing here
+    survives it). No role gate (self-service), no block_if_read_only (a
+    read-only company's users must still rotate a compromised password),
+    no tier gate.
+
+    No explicit commit — get_current_user commits current.session once,
+    after this handler returns (same convention as every gated route,
+    e.g. invoices.send_invoice)."""
+    user = current.user  # already loaded by get_current_user, same session
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    user.password_hash = hash_password(payload.new_password)
+    await revoke_all_for_user(current.session, user.id)
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=user.id,
+        action="auth.password_changed",
+        entity_type="user",
+        entity_id=user.id,
+    )
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
