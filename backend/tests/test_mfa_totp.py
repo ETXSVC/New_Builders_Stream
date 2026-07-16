@@ -256,6 +256,27 @@ async def test_disable_requires_both_factors_and_clears_state(client):
     ctx = await _register_and_login(client)
     secret = await _enroll_and_activate(client, ctx)
 
+    # A second session (its own refresh-token family), established while
+    # MFA is active, to prove disable's revoke-all reaches sessions beyond
+    # the one making the disable call. Uses an EXPLICIT step (not .now())
+    # because this test verifies several TOTP codes in quick succession —
+    # relying on wall-clock .now() calls seconds apart risks two of them
+    # landing in the same 30s window and colliding with the replay guard
+    # (the same class of bug _enroll_and_activate's docstring explains).
+    # base_step anchors every subsequent code to a step strictly after
+    # whatever _enroll_and_activate already burned.
+    base_step = int(time.time()) // _TOTP_PERIOD_SECONDS
+    second_login = await client.post(
+        "/auth/login",
+        json={
+            "email": ctx["email"],
+            "password": ctx["password"],
+            "totp_code": pyotp.TOTP(secret).at(base_step * _TOTP_PERIOD_SECONDS),
+        },
+    )
+    assert second_login.status_code == 200, second_login.text
+    second_session_refresh_token = second_login.json()["refresh_token"]
+
     wrong_pw = await client.post(
         "/auth/mfa/disable",
         json={"current_password": "nope-nope-1", "totp_code": pyotp.TOTP(secret).now()},
@@ -272,9 +293,13 @@ async def test_disable_requires_both_factors_and_clears_state(client):
     assert wrong_code.status_code == 401
     assert wrong_code.json()["detail"] == "Invalid TOTP code"
 
+    # One step past second_login's code (base_step) — never a replay of it.
     ok = await client.post(
         "/auth/mfa/disable",
-        json={"current_password": ctx["password"], "totp_code": pyotp.TOTP(secret).now()},
+        json={
+            "current_password": ctx["password"],
+            "totp_code": pyotp.TOTP(secret).at((base_step + 1) * _TOTP_PERIOD_SECONDS),
+        },
         headers=ctx["headers"],
     )
     assert ok.status_code == 204, ok.text
@@ -294,6 +319,18 @@ async def test_disable_requires_both_factors_and_clears_state(client):
     assert row["mfa_activated_at"] is None
     assert row["totp_last_used_step"] is None
     assert len(audit) == 1
+
+    # Disable revokes every refresh-token family the user holds (review
+    # decision, 2026-07-16) — both the original registration-login session
+    # and the second session established above must be dead.
+    dead_original = await client.post(
+        "/auth/refresh", json={"refresh_token": ctx["login"]["refresh_token"]}
+    )
+    assert dead_original.status_code == 401, dead_original.text
+    dead_second = await client.post(
+        "/auth/refresh", json={"refresh_token": second_session_refresh_token}
+    )
+    assert dead_second.status_code == 401, dead_second.text
 
     plain = await client.post(
         "/auth/login", json={"email": ctx["email"], "password": ctx["password"]}

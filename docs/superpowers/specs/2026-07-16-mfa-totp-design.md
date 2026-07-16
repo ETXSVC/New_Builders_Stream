@@ -18,7 +18,7 @@ Designed and executed under the user's standing autonomous-continue instruction;
 6. **Flows:**
    - `POST /auth/mfa/enroll` (authenticated): 409 if MFA already activated (disable first); otherwise generate a fresh secret, store encrypted (overwriting any earlier un-activated one), return `{secret, otpauth_uri}` — the ONLY time the secret is presentable. `Cache-Control: no-store`.
    - `POST /auth/mfa/activate` (authenticated): `{totp_code}` — verified against the pending secret; sets `mfa_activated_at`; audit row `auth.mfa_activated`. 400 if no enrollment is pending; 401 on a wrong code.
-   - `POST /auth/mfa/disable` (authenticated): `{current_password, totp_code}` — BOTH factors required, so a hijacked 15-minute access token alone cannot strip MFA. Clears all three columns; audit row `auth.mfa_disabled`.
+   - `POST /auth/mfa/disable` (authenticated): `{current_password, totp_code}` — BOTH factors required, so a hijacked 15-minute access token alone cannot strip MFA. Clears all three columns; revokes every refresh token the user holds (same posture as change-password — user-confirmed 2026-07-16, during implementation review: disabling MFA is a security-posture downgrade exactly like a password change, and every route requiring proof of both factors is this codebase's established trigger for "force re-authentication everywhere"); audit row `auth.mfa_disabled`.
    - **Login**: `LoginRequest` gains optional `totp_code`. Password is verified FIRST (unchanged timing-equalized path); only for a password-valid user with active MFA is the code checked: missing → 401 `"TOTP code required"` (distinct detail — it leaks MFA-enabled only to a caller who already proved the password, and the client needs it to prompt), wrong/replayed → 401 `"Invalid TOTP code"`. Success records the used timestep.
    - **Refresh**: NO TOTP — rotation continues an already-MFA-proven session; the refresh token is the credential. (Decision, matching industry practice.)
    - **Change-password**: if MFA is active, `totp_code` becomes required there too (optional field, enforced conditionally) — otherwise a hijacked access token plus a shoulder-surfed password could rotate the password and then disable MFA.
@@ -41,7 +41,7 @@ ALTER TABLE users ADD COLUMN totp_last_used_step BIGINT;
 |---|---|
 | `POST /auth/mfa/enroll` (new) | Authenticated. 200 `{secret, otpauth_uri}`; 409 if already active. no-store. |
 | `POST /auth/mfa/activate` (new) | Authenticated. `{totp_code}` → 204; 400 no pending enrollment; 401 bad code. |
-| `POST /auth/mfa/disable` (new) | Authenticated. `{current_password, totp_code}` → 204; 401 either factor wrong. |
+| `POST /auth/mfa/disable` (new) | Authenticated. `{current_password, totp_code}` → 204, revokes all refresh tokens; 401 either factor wrong. |
 | `POST /auth/login` | Optional `totp_code`; conditional 401s per Decision 6. `TokenResponse` gains `mfa_enrollment_required: bool`. |
 | `POST /auth/change-password` | Optional `totp_code`, required (401) when MFA active. |
 

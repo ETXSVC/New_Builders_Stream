@@ -367,7 +367,17 @@ async def mfa_disable(
 ) -> None:
     """BOTH factors required (spec Decision 6): a hijacked 15-minute access
     token alone must not be able to strip MFA. Password first (same
-    ordering rationale as login), then the code."""
+    ordering rationale as login), then the code.
+
+    Revokes every refresh token the user holds, same as change-password
+    (post-review addition — user-confirmed 2026-07-16): disabling MFA is a
+    security-posture downgrade exactly like a password change, and every
+    route that requires proof of BOTH factors to execute is the codebase's
+    established trigger for "force re-authentication everywhere." A
+    session minted while MFA was required should re-prove itself once
+    that requirement is gone, rather than riding on a policy that no
+    longer applies to it.
+    """
     if current.user.mfa_activated_at is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA is not active")
     if not verify_password(payload.current_password, current.user.password_hash):
@@ -377,6 +387,7 @@ async def mfa_disable(
     current.user.totp_secret_encrypted = None
     current.user.mfa_activated_at = None
     current.user.totp_last_used_step = None
+    await revoke_all_for_user(current.session, current.user.id)
     await write_audit_log(
         current.session,
         company_id=current.company_id,
