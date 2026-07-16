@@ -135,7 +135,14 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
     own portal to FIX a lapsed subscription, which is itself a POST),
     /invitations/{id}/accept (structurally has no CurrentUser — Task
     3.25's own note), /integrations/{provider}/callback (same reason —
-    Task 4.9's own note).
+    Task 4.9's own note), and the three token-lifecycle routes
+    /auth/refresh, /auth/logout, /auth/change-password (Task 6.x, spec
+    docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md:
+    session management must keep working for a read-only company for the
+    same reason /auth/login does — and change-password especially so,
+    since rotating a compromised password must never be blocked by a
+    lapsed subscription; refresh and logout also carry no CurrentUser at
+    all, the refresh token itself is the credential).
 
     Coverage caveats, for whoever extends this codebase later: (1) this
     walks `app.routes` and checks each route's own top-level
@@ -158,6 +165,9 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
     excluded_paths = {
         "/auth/register",
         "/auth/login",
+        "/auth/refresh",
+        "/auth/logout",
+        "/auth/change-password",
         "/webhooks/stripe",
         "/subscriptions/portal-session",
         "/invitations/{invitation_id}/accept",

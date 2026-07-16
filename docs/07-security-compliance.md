@@ -7,7 +7,7 @@
 ## 1. Authentication
 
 - OIDC/JWT-based session management. Passwords hashed with a modern, salted algorithm (e.g., Argon2id) — never reversible encryption.
-- JWTs are short-lived (e.g., 15 minutes) with a refresh-token rotation flow; refresh tokens are revocable server-side (e.g., on logout, password change, or suspected compromise).
+- JWTs are short-lived (e.g., 15 minutes) with a refresh-token rotation flow; refresh tokens are revocable server-side (e.g., on logout, password change, or suspected compromise). Implemented per [`docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md`](superpowers/specs/2026-07-16-auth-token-lifecycle-design.md): 15-minute access tokens, opaque SHA-256-hashed refresh tokens with 14-day absolute expiry, rotation with family-level reuse detection (`/auth/refresh`), and revocation via `/auth/logout` (family) and `/auth/change-password` (all the user's tokens). MFA/TOTP below remains this section's one open item — its own follow-up spec.
 - Multi-factor authentication (TOTP) is a requirement for the Admin role at minimum, strongly recommended for all roles — should be scoped into an early phase given the platform handles client financial/contract data.
 
 ## 2. Authorization (RBAC Matrix)

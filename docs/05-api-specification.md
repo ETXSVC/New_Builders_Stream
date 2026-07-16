@@ -20,7 +20,10 @@ This document describes API contracts conceptually. The authoritative, machine-r
 | Route | Method | Purpose | Key Inputs |
 |---|---|---|---|
 | `/auth/register` | POST | Create a new company + first Admin user | Company name, admin email/password |
-| `/auth/login` | POST | Authenticate, issue JWT | Email, password |
+| `/auth/login` | POST | Authenticate, issue access JWT + refresh token | Email, password |
+| `/auth/refresh` | POST | Rotate a refresh token; reuse of a spent token revokes its whole family | Refresh token |
+| `/auth/logout` | POST | Revoke the presented refresh token's family (idempotent, always 204) | Refresh token |
+| `/auth/change-password` | POST | Verify current password, set new one, revoke all the user's refresh tokens | Current + new password (authenticated) |
 | `/companies/{id}` | GET | Retrieve company detail | — |
 | `/companies/{id}/children` | POST | Create a child branch company | Name, parent implied by path |
 | `/companies/{id}/users` | GET | List users in a company | Pagination |

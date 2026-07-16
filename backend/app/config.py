@@ -12,7 +12,10 @@ class Settings(BaseSettings):
     migrations_database_url: str
     test_database_url: str
     jwt_secret: str
-    jwt_expire_minutes: int = 60
+    # docs/07 Section 1: access tokens are short-lived; refresh tokens
+    # (Task 6.2+) carry the long-lived session. 15 is the spec's number.
+    jwt_expire_minutes: int = 15
+    refresh_token_expire_days: int = 14
     redis_url: str = "redis://localhost:6379/0"
     # Local-filesystem root for Document uploads (Task 1.15, design decision
     # #4 in docs/superpowers/plans/2026-07-08-phase-1-crm-project-management.md):

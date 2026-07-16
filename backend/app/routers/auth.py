@@ -1,15 +1,32 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.core.deps import CurrentUser, get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, Subscription, User
-from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    RegisterResponse,
+    TokenResponse,
+)
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
+from app.services.refresh_tokens import (
+    RefreshTokenError,
+    RefreshTokenReuseError,
+    find_by_secret,
+    mint_refresh_token,
+    revoke_all_for_user,
+    revoke_family,
+    rotate_refresh_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -94,8 +111,36 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
     return RegisterResponse(company_id=company_id, user_id=user_id, email=payload.admin_email)
 
 
+async def _default_membership(session, user_id) -> CompanyUser | None:
+    """The user's default membership — the ONE rule login and refresh must
+    never disagree on (spec Decision 9): a token minted at login and a token
+    rotated at refresh must resolve the same default_company_id for the same
+    user. Sets app.current_user_id first (the self_membership RLS policy,
+    design decision #3, is what makes company_users visible at all here).
+
+    company_id as a tiebreaker is not cosmetic: company_users has no
+    surrogate id (composite PK on company_id, user_id), and created_at
+    alone collides often enough to matter — measured at ~32% of rapid
+    successive inserts sharing a timestamp on ordinary hardware, since
+    datetime.now() resolution is coarser than typical call overhead.
+    Without a deterministic secondary key, which membership .first()
+    returns after a tie is unspecified by Postgres and can differ between
+    two logically identical queries, making a user's "default company" not
+    actually stable. Not reachable today (registration only ever creates
+    one membership), but this is exactly the ordering Task 14's
+    invitation-acceptance flow will start exercising with multiple
+    memberships per user."""
+    await set_current_user(session, str(user_id))
+    result = await session.execute(
+        select(CompanyUser)
+        .where(CompanyUser.user_id == user_id)
+        .order_by(CompanyUser.created_at, CompanyUser.company_id)
+    )
+    return result.scalars().first()
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest) -> TokenResponse:
+async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     async with session_scope() as session:
         result = await session.execute(select(User).where(User.email == payload.email))
         user = result.scalar_one_or_none()
@@ -109,29 +154,129 @@ async def login(payload: LoginRequest) -> TokenResponse:
         if user is None or not password_valid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
-        # Membership lookup needs app.current_user_id set for the self_membership
-        # RLS policy to allow it (design decision #3).
-        await set_current_user(session, str(user.id))
-        result = await session.execute(
-            select(CompanyUser)
-            .where(CompanyUser.user_id == user.id)
-            # company_id as a tiebreaker is not cosmetic: company_users has no
-            # surrogate id (composite PK on company_id, user_id), and
-            # created_at alone collides often enough to matter — measured at
-            # ~32% of rapid successive inserts sharing a timestamp on ordinary
-            # hardware, since datetime.now() resolution is coarser than
-            # typical call overhead. Without a deterministic secondary key,
-            # which membership .first() returns after a tie is unspecified by
-            # Postgres and can differ between two logically identical queries,
-            # making a user's "default company" not actually stable. Not
-            # reachable today (registration only ever creates one membership),
-            # but this is exactly the ordering Task 14's invitation-acceptance
-            # flow will start exercising with multiple memberships per user.
-            .order_by(CompanyUser.created_at, CompanyUser.company_id)
-        )
-        membership = result.scalars().first()
+        membership = await _default_membership(session, user.id)
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
 
+        # Refresh-token INSERT needs a commit; session_scope() never commits
+        # on its own. Register can use an explicit session.begin() because it
+        # begins before touching the session; here SQLAlchemy already
+        # autobegan a transaction at the first execute() (the User SELECT
+        # above), so a begin() would raise — commit via the session instead.
+        # Post-commit attribute reads below are safe only because SessionLocal
+        # sets expire_on_commit=False (app/db.py).
+        _, refresh_secret = await mint_refresh_token(session, user_id=user.id)
+        await session.commit()
+
         token = create_access_token(user_id=str(user.id), default_company_id=str(membership.company_id))
-        return TokenResponse(access_token=token, default_company_id=membership.company_id)
+        # RFC 6749 §5.1: responses carrying tokens must not be cached.
+        response.headers["Cache-Control"] = "no-store"
+        return TokenResponse(
+            access_token=token,
+            refresh_token=refresh_secret,
+            default_company_id=membership.company_id,
+        )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
+    """Rotate a refresh token (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md).
+
+    Reuse of a spent token is suspected compromise: the service revokes the
+    whole family, and that containment must be COMMITTED before the 401
+    leaves. Committing first and raising after is safe even inside the
+    session block — close() only rolls back a PENDING transaction, and after
+    commit() nothing is pending (login's post-commit return relies on the
+    same fact). All failure modes share one message (no oracle for which of
+    unknown/expired/revoked/reused it was).
+    """
+    async with session_scope() as session:
+        try:
+            old_row, new_secret = await rotate_refresh_token(session, payload.refresh_token)
+        except RefreshTokenReuseError as exc:
+            # Audit needs a company scope; resolve it the same way login
+            # resolves default_company_id. If the user has no memberships
+            # left, skip the row (there is no company to file it under) —
+            # the family revocation itself still commits.
+            membership = await _default_membership(session, exc.user_id)
+            if membership is not None:
+                await set_current_tenant(session, str(membership.company_id))
+                await write_audit_log(
+                    session,
+                    company_id=membership.company_id,
+                    actor_id=exc.user_id,
+                    action="auth.refresh_reuse_detected",
+                    entity_type="refresh_token",
+                    entity_id=exc.family_id,
+                    metadata={"family_id": str(exc.family_id)},
+                )
+            await session.commit()
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+        except RefreshTokenError:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+
+        membership = await _default_membership(session, old_row.user_id)
+        if membership is None:
+            # Same outcome login gives a membership-less user. The
+            # rotation rolls back with the session (never committed),
+            # so the presented token remains usable if memberships
+            # are later restored.
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+        await session.commit()
+        # RFC 6749 §5.1: responses carrying tokens must not be cached.
+        response.headers["Cache-Control"] = "no-store"
+        return TokenResponse(
+            access_token=create_access_token(
+                user_id=str(old_row.user_id), default_company_id=str(membership.company_id)
+            ),
+            refresh_token=new_secret,
+            default_company_id=membership.company_id,
+        )
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Verify-then-rehash, then revoke EVERY refresh token the user holds
+    across all families/devices (docs/07 Section 1's 'password change'
+    revocation trigger). current_password is required so a hijacked
+    15-minute access token alone cannot rotate the password. A wrong
+    current_password revokes nothing — an attacker guessing must not be
+    able to DoS the real user's sessions (the 401 below makes
+    get_current_user roll back the whole transaction, so nothing here
+    survives it). No role gate (self-service), no block_if_read_only (a
+    read-only company's users must still rotate a compromised password),
+    no tier gate.
+
+    No explicit commit — get_current_user commits current.session once,
+    after this handler returns (same convention as every gated route,
+    e.g. invoices.send_invoice)."""
+    user = current.user  # already loaded by get_current_user, same session
+    if not verify_password(payload.current_password, user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    user.password_hash = hash_password(payload.new_password)
+    await revoke_all_for_user(current.session, user.id)
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=user.id,
+        action="auth.password_changed",
+        entity_type="user",
+        entity_id=user.id,
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(payload: RefreshRequest) -> None:
+    """Revoke the presented token's whole rotation family. Possession of
+    the refresh token is the credential (same no-bearer reasoning as the
+    OAuth callback and invitation-accept routes). Always 204 — a logout
+    endpoint must not be a validity oracle, so unknown/spent tokens
+    succeed silently."""
+    async with session_scope() as session:
+        row = await find_by_secret(session, payload.refresh_token)
+        if row is not None:
+            await revoke_family(session, row.family_id)
+            await session.commit()
