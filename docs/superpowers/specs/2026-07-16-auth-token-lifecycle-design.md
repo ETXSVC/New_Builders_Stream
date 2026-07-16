@@ -33,15 +33,16 @@ What is **already compliant** (verified directly, correcting the comparison doc'
 CREATE TABLE refresh_tokens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id),
-    token_hash CHAR(64) NOT NULL UNIQUE,      -- SHA-256 hex of the opaque secret
+    token_hash VARCHAR(64) NOT NULL UNIQUE,   -- SHA-256 hex of the opaque secret
     family_id UUID NOT NULL,                  -- rotation family, minted at login
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
     revoked_at TIMESTAMPTZ,                   -- NULL = live
-    replaced_by_id UUID REFERENCES refresh_tokens(id)  -- set on rotation
+    replaced_by_id UUID REFERENCES refresh_tokens(id),  -- set on rotation
+    CHECK (replaced_by_id IS NULL OR revoked_at IS NOT NULL)  -- a rotated token can never still be redeemable
 );
-CREATE INDEX ix_refresh_tokens_user_id ON refresh_tokens (user_id);
-CREATE INDEX ix_refresh_tokens_family_id ON refresh_tokens (family_id);
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
+CREATE INDEX idx_refresh_tokens_family_id ON refresh_tokens (family_id);
 -- GRANT SELECT, INSERT, UPDATE ON refresh_tokens TO app_user;  (no DELETE)
 -- No RLS (user-scoped, never API-readable; see Decision 7).
 ```
