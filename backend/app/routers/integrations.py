@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.tier_gating import require_module, tier_allows
 from app.db import session_scope, set_current_tenant
 from app.models import IntegrationConnection, IntegrationSyncRecord
 from app.schemas.integration import (
@@ -42,6 +43,7 @@ Provider = Literal["quickbooks", "freshbooks"]
 async def connect(
     provider: Provider,
     current: CurrentUser = Depends(require_role(*_ROLES)),
+    _tier: CurrentUser = Depends(require_module("integrations")),
 ) -> AuthorizationUrlResponse:
     state = sign_oauth_state(company_id=str(current.company_id), provider=provider)
     client = get_accounting_client(provider)
@@ -166,6 +168,17 @@ async def callback(
     async with session_scope() as session:
         async with session.begin():
             await set_current_tenant(session, str(company_id))
+
+            # Tier gating (spec Section 3): callback has no CurrentUser for
+            # require_module to hang off — the signed state IS its auth — so
+            # the check runs in-route. This also closes the one bypass the
+            # dependency couldn't: a state minted while Enterprise, redeemed
+            # within its 10-minute TTL after a downgrade.
+            if not await tier_allows(session, company_id, "integrations"):
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "This feature requires the enterprise plan",
+                )
 
             client = get_accounting_client(provider)
             access_token, refresh_token = await client.exchange_code_for_tokens(code=code)

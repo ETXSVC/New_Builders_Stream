@@ -309,3 +309,37 @@ async def test_enterprise_company_can_create_an_invoice_and_pro_can_still_read(c
         "/reports/profitability?start_date=2026-01-01&end_date=2026-12-31", headers=admin["headers"]
     )
     assert report.status_code == 200
+
+
+async def test_pro_company_cannot_start_or_complete_the_oauth_flow(client):
+    from app.services.integration_oauth_state import sign_oauth_state
+
+    admin = await _register_and_login(client, "Tier Co I1", "tier-i1@example.test")
+
+    connect = await client.get("/integrations/quickbooks/connect", headers=admin["headers"])
+    assert connect.status_code == 403
+    assert "enterprise" in connect.json()["detail"]
+
+    # callback: a validly SIGNED state for a below-tier company must also be
+    # rejected — this is the spec Section 3 "state minted while Enterprise,
+    # redeemed after a downgrade" hole, closed in-route since callback has
+    # no CurrentUser for the dependency to hang off.
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    callback = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    assert callback.status_code == 403
+    assert "enterprise" in callback.json()["detail"]
+
+
+async def test_pro_company_can_still_read_sync_status_for_an_existing_connection(client):
+    from app.services.integration_oauth_state import sign_oauth_state
+
+    admin = await _register_and_login(client, "Tier Co I2", "tier-i2@example.test")
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    assert connected.status_code == 200, connected.text
+
+    # Downgrade: the read route stays open (spec Decision 3).
+    await set_subscription_tier(admin["company_id"], "pro")
+    sync_status = await client.get("/integrations/quickbooks/sync-status", headers=admin["headers"])
+    assert sync_status.status_code == 200
