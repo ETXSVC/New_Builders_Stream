@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,6 +18,18 @@ class User(Base, UUIDPKMixin, TimestampMixin):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # MFA/TOTP (docs/superpowers/specs/2026-07-16-mfa-totp-design.md).
+    # totp_secret_encrypted is Fernet ciphertext via app/services/
+    # token_encryption.py — the base32 secret is presentable exactly once,
+    # at enrollment. Secret present + mfa_activated_at NULL = enrollment
+    # pending (NOT yet enforced at login); both set = active.
+    # totp_last_used_step records the last successfully used 30s timestep
+    # so an intercepted code cannot be replayed inside its window.
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(String, nullable=True)
+    mfa_activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    totp_last_used_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class CompanyUser(Base):
