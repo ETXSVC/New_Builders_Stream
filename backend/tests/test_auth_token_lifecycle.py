@@ -253,3 +253,23 @@ async def test_logout_revokes_the_family_and_is_idempotent(client):
 
     garbage = await client.post("/auth/logout", json={"refresh_token": "nope"})
     assert garbage.status_code == 204
+
+
+async def test_logout_with_a_spent_mid_chain_token_kills_the_live_tail(client):
+    """The distinctive Decision 5 property, through the LOGOUT path (not the
+    refresh reuse-detection path, which test_reuse_of_a_spent_token... covers):
+    find_by_secret deliberately returns revoked rows, so logging out with an
+    already-rotated token still revokes the family's live successor —
+    logout means logout even if only an older rotation sibling leaked."""
+    ctx = await _register_and_login(client)
+    token_a = ctx["login"]["refresh_token"]
+    token_b = (await _refresh(client, token_a)).json()["refresh_token"]  # A is now spent
+
+    out = await client.post("/auth/logout", json={"refresh_token": token_a})
+    assert out.status_code == 204
+
+    dead_tail = await _refresh(client, token_b)
+    assert dead_tail.status_code == 401, (
+        "logout with the spent predecessor must revoke the live successor: "
+        f"{dead_tail.status_code}: {dead_tail.text}"
+    )
