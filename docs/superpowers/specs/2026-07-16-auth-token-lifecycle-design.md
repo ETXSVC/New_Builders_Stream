@@ -53,7 +53,7 @@ SQLAlchemy model `RefreshToken` in `app/models/refresh_token.py`, exported from 
 
 One module owns every lifecycle operation; routes stay thin:
 
-- `mint_refresh_token(session, user_id, family_id=None) -> str` — generates the secret, inserts the hashed row (new family when `family_id` is None), returns the presentable secret. The ONLY place the plaintext secret exists.
+- `mint_refresh_token(session, user_id, family_id=None) -> tuple[RefreshToken, str]` — generates the secret, inserts the hashed row (new family when `family_id` is None), returns the row plus the presentable secret (rotation needs the row's id for `replaced_by_id`). The ONLY place the plaintext secret exists.
 - `_hash(secret) -> str` — `hashlib.sha256(secret.encode()).hexdigest()`.
 - `rotate_refresh_token(session, presented_secret) -> tuple[RefreshToken, str]` — looks up by hash; raises `RefreshTokenError` on unknown/expired; on a row that is already revoked or rotated, revokes the whole family (`UPDATE ... WHERE family_id = ... AND revoked_at IS NULL`), emits the reuse audit row, and raises; otherwise marks it revoked+replaced and mints the successor in the same family.
 - `revoke_family(session, family_id) -> None`
