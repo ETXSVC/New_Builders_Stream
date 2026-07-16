@@ -8,9 +8,12 @@ from app.core.deps import CurrentUser, get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, Subscription, User
+from app.models.base import utcnow
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
+    MfaActivateRequest,
+    MfaEnrollResponse,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -18,6 +21,7 @@ from app.schemas.auth import (
 )
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
+from app.services.mfa import generate_enrollment, verify_totp_code
 from app.services.refresh_tokens import (
     RefreshTokenError,
     RefreshTokenReuseError,
@@ -265,6 +269,51 @@ async def change_password(
         action="auth.password_changed",
         entity_type="user",
         entity_id=user.id,
+    )
+
+
+@router.post("/mfa/enroll", response_model=MfaEnrollResponse)
+async def mfa_enroll(
+    response: Response,
+    current: CurrentUser = Depends(get_current_user),
+) -> MfaEnrollResponse:
+    """Begin (or restart) TOTP enrollment. The base32 secret is presentable
+    exactly once, here; storage is Fernet ciphertext. Re-enrolling while
+    still PENDING rotates the secret (the user may have lost the first QR
+    before scanning); re-enrolling while ACTIVE is refused — disable first,
+    which requires both factors."""
+    if current.user.mfa_activated_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "MFA is already active")
+    secret, uri, encrypted = generate_enrollment(current.user.email)
+    current.user.totp_secret_encrypted = encrypted
+    current.user.totp_last_used_step = None
+    # RFC 6749 §5.1 spirit: a shared secret is transiting the body.
+    response.headers["Cache-Control"] = "no-store"
+    return MfaEnrollResponse(secret=secret, otpauth_uri=uri)
+
+
+@router.post("/mfa/activate", status_code=status.HTTP_204_NO_CONTENT)
+async def mfa_activate(
+    payload: MfaActivateRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Prove possession of the enrolled secret; only then does MFA start
+    gating login. The replay guard starts here too (the activation code's
+    timestep is recorded)."""
+    if current.user.totp_secret_encrypted is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No MFA enrollment pending")
+    if current.user.mfa_activated_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "MFA is already active")
+    if not verify_totp_code(current.user, payload.totp_code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+    current.user.mfa_activated_at = utcnow()
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="auth.mfa_activated",
+        entity_type="user",
+        entity_id=current.user.id,
     )
 
 

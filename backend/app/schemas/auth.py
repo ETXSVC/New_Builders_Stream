@@ -30,6 +30,15 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class MfaEnrollResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class MfaActivateRequest(BaseModel):
+    totp_code: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
