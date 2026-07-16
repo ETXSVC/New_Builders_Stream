@@ -43,7 +43,16 @@ def upgrade() -> None:
     op.create_table(
         "refresh_tokens",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column(
+            "user_id",
+            UUID(as_uuid=True),
+            # CASCADE matches company_users (0001): a hard-deleted user takes
+            # their tokens with them. All of a user's rows die in one
+            # statement, so the replaced_by_id self-FK stays consistent
+            # (FK checks run at statement end).
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("token_hash", sa.String(64), nullable=False, unique=True),
         sa.Column("family_id", UUID(as_uuid=True), nullable=False),
         sa.Column(

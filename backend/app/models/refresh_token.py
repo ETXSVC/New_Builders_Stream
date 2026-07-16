@@ -28,8 +28,13 @@ class RefreshToken(Base, UUIDPKMixin):
 
     __tablename__ = "refresh_tokens"
 
+    # ondelete=CASCADE matches company_users' precedent: a hard-deleted user
+    # (no app route does this, but owner-role admin/GDPR paths and
+    # test_deps' deleted-user simulation do) takes their tokens with them —
+    # a refresh token is meaningless without its user, and "retained as
+    # evidence" (see migration 0014) is about revocation, not user deletion.
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
