@@ -19,7 +19,9 @@ from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
 from app.services.refresh_tokens import (
     RefreshTokenError,
     RefreshTokenReuseError,
+    find_by_secret,
     mint_refresh_token,
+    revoke_family,
     rotate_refresh_token,
 )
 
@@ -227,3 +229,17 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             refresh_token=new_secret,
             default_company_id=membership.company_id,
         )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(payload: RefreshRequest) -> None:
+    """Revoke the presented token's whole rotation family. Possession of
+    the refresh token is the credential (same no-bearer reasoning as the
+    OAuth callback and invitation-accept routes). Always 204 — a logout
+    endpoint must not be a validity oracle, so unknown/spent tokens
+    succeed silently."""
+    async with session_scope() as session:
+        row = await find_by_secret(session, payload.refresh_token)
+        if row is not None:
+            await revoke_family(session, row.family_id)
+            await session.commit()

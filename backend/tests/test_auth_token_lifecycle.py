@@ -236,3 +236,20 @@ async def test_token_responses_are_cache_control_no_store(client):
     r = await _refresh(client, login.json()["refresh_token"])
     assert r.status_code == 200, r.text
     assert r.headers.get("Cache-Control") == "no-store"
+
+
+async def test_logout_revokes_the_family_and_is_idempotent(client):
+    ctx = await _register_and_login(client)
+    token = ctx["login"]["refresh_token"]
+
+    out = await client.post("/auth/logout", json={"refresh_token": token})
+    assert out.status_code == 204
+
+    dead = await _refresh(client, token)
+    assert dead.status_code == 401
+
+    again = await client.post("/auth/logout", json={"refresh_token": token})
+    assert again.status_code == 204  # idempotent, not an oracle
+
+    garbage = await client.post("/auth/logout", json={"refresh_token": "nope"})
+    assert garbage.status_code == 204
