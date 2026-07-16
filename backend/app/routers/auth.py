@@ -1,16 +1,27 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, Subscription, User
-from app.schemas.auth import LoginRequest, RegisterRequest, RegisterResponse, TokenResponse
+from app.schemas.auth import (
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    RegisterResponse,
+    TokenResponse,
+)
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
-from app.services.refresh_tokens import mint_refresh_token
+from app.services.refresh_tokens import (
+    RefreshTokenError,
+    RefreshTokenReuseError,
+    mint_refresh_token,
+    rotate_refresh_token,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -96,7 +107,7 @@ async def register(payload: RegisterRequest) -> RegisterResponse:
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest) -> TokenResponse:
+async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     async with session_scope() as session:
         result = await session.execute(select(User).where(User.email == payload.email))
         user = result.scalar_one_or_none()
@@ -145,8 +156,80 @@ async def login(payload: LoginRequest) -> TokenResponse:
         await session.commit()
 
         token = create_access_token(user_id=str(user.id), default_company_id=str(membership.company_id))
+        # RFC 6749 §5.1: responses carrying tokens must not be cached.
+        response.headers["Cache-Control"] = "no-store"
         return TokenResponse(
             access_token=token,
             refresh_token=refresh_secret,
             default_company_id=membership.company_id,
         )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
+    """Rotate a refresh token (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md).
+
+    Reuse of a spent token is suspected compromise: the service revokes the
+    whole family, and this route must COMMIT that revocation before the 401
+    leaves — an exception inside the transaction would roll the containment
+    back, which is why the error is carried out of the session block in a
+    flag instead of raised inside it. All failure modes share one message
+    (no oracle for which of unknown/expired/revoked/reused it was).
+    """
+    reuse_detected = False
+    async with session_scope() as session:
+        try:
+            old_row, new_secret = await rotate_refresh_token(session, payload.refresh_token)
+        except RefreshTokenReuseError as exc:
+            # Audit needs a company scope; resolve it the same way login
+            # resolves default_company_id. If the user has no memberships
+            # left, skip the row (there is no company to file it under) —
+            # the family revocation itself still commits.
+            await set_current_user(session, str(exc.user_id))
+            result = await session.execute(
+                select(CompanyUser)
+                .where(CompanyUser.user_id == exc.user_id)
+                .order_by(CompanyUser.created_at, CompanyUser.company_id)
+            )
+            membership = result.scalars().first()
+            if membership is not None:
+                await set_current_tenant(session, str(membership.company_id))
+                await write_audit_log(
+                    session,
+                    company_id=membership.company_id,
+                    actor_id=exc.user_id,
+                    action="auth.refresh_reuse_detected",
+                    entity_type="refresh_token",
+                    entity_id=exc.family_id,
+                    metadata={"family_id": str(exc.family_id)},
+                )
+            await session.commit()
+            reuse_detected = True
+        except RefreshTokenError:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+        else:
+            await set_current_user(session, str(old_row.user_id))
+            result = await session.execute(
+                select(CompanyUser)
+                .where(CompanyUser.user_id == old_row.user_id)
+                .order_by(CompanyUser.created_at, CompanyUser.company_id)
+            )
+            membership = result.scalars().first()
+            if membership is None:
+                # Same outcome login gives a membership-less user. The
+                # rotation rolls back with the session (never committed),
+                # so the presented token remains usable if memberships
+                # are later restored.
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+            await session.commit()
+            access = create_access_token(
+                user_id=str(old_row.user_id), default_company_id=str(membership.company_id)
+            )
+            company_id = membership.company_id
+    if reuse_detected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+    # RFC 6749 §5.1: responses carrying tokens must not be cached.
+    response.headers["Cache-Control"] = "no-store"
+    return TokenResponse(
+        access_token=access, refresh_token=new_secret, default_company_id=company_id
+    )
