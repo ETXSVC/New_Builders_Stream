@@ -16,6 +16,8 @@
 - `NEXT_PUBLIC_API_URL` is already wired in `docker-compose.yml`'s frontend service (`http://backend:8000`) — reuse it rather than inventing a new env var name, even though only server-side Route Handlers will read it (nothing in this plan imports it into a client component, so it never reaches the browser bundle despite the `NEXT_PUBLIC_` prefix).
 - Marketing pages (`about/`, `security/`, `solutions/`, `early-access/`, `page.tsx`) currently import shared chrome from `../components` (relative import) — when moved into a route group, that relative path is unchanged as long as the whole subtree moves together.
 - `frontend/tests/` doesn't exist yet — Playwright specs go in `frontend/e2e/` (kept separate from any future component/unit test directory).
+- **`frontend/tsconfig.json` self-normalizes on every `next dev`/`next build`**: Next 13+'s App Router rewrites `"jsx"` to `"react-jsx"` and appends `.next/types/**/*.ts` + `.next/dev/types/**/*.ts` to `"include"` (needed for its typed-routes feature) — confirmed stable/idempotent (two consecutive dev-server runs produced zero further drift) during Task 1. This is correct, expected behavior, not a regression from Task 1's original `"preserve"`/short-include-list text — do NOT revert it in any later task's verification step; it will just drift right back on the next `npm run dev`.
+- `next` is exact-pinned (no caret), matching every other dependency in `package.json` — Task 1 also had to bump it off the originally-scaffolded `16.0.0` (a critical CVSS 10.0 RCE, GHSA-9qr9-h5gf-34mp) to `16.2.10`. Don't downgrade it.
 
 ---
 
