@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,12 @@ export function RegisterForm() {
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  // Set once /auth/register has succeeded, so the account-already-exists
+  // fallback below can never suggest resubmitting the form (which would
+  // just hit a 409 for an email that's now taken) — it instead points the
+  // user at /login. Also drives the button label so a slow auto-login
+  // doesn't look like a hung "Create account" click.
+  const [accountCreated, setAccountCreated] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -22,6 +29,7 @@ export function RegisterForm() {
     if (submitting) return;
     setError(null);
     setSubmitting(true);
+    let justRegistered = false;
     try {
       const registerResponse = await fetch("/api/auth/register", {
         method: "POST",
@@ -38,6 +46,8 @@ export function RegisterForm() {
         setError(registerData.detail ?? "Registration failed");
         return;
       }
+      justRegistered = true;
+      setAccountCreated(true);
 
       const loginResponse = await fetch("/api/auth/login", {
         method: "POST",
@@ -46,17 +56,21 @@ export function RegisterForm() {
       });
       const loginData = await loginResponse.json();
       if (!loginResponse.ok) {
-        setError("Account created — please log in.");
-        router.push("/login");
+        setError("Your account was created, but automatic sign-in failed. Use the link below to log in.");
         return;
       }
       setSession(loginData.access_token, loginData.mfa_enrollment_required);
       router.push(loginData.mfa_enrollment_required ? "/account" : "/dashboard");
     } catch {
-      // Network-level failure (offline, DNS, backend unreachable) — same
-      // treatment as LoginForm's fetch: surface it rather than leaving the
-      // form silently stuck with the submit button disabled.
-      setError("Unable to reach the server. Check your connection and try again.");
+      // Network-level failure (offline, DNS, backend unreachable). If it
+      // struck after registration already succeeded, resubmitting this
+      // form would just hit a 409 for the now-taken email — point at
+      // /login instead of inviting a retry.
+      setError(
+        justRegistered
+          ? "Your account was created, but we couldn't reach the server to sign you in. Use the link below to log in."
+          : "Unable to reach the server. Check your connection and try again."
+      );
     } finally {
       setSubmitting(false);
     }
@@ -68,6 +82,7 @@ export function RegisterForm() {
         <Label htmlFor="companyName">Company name</Label>
         <Input
           id="companyName"
+          autoComplete="organization"
           value={companyName}
           onChange={(e) => setCompanyName(e.target.value)}
           disabled={submitting}
@@ -79,6 +94,7 @@ export function RegisterForm() {
         <Label htmlFor="fullName">Your name</Label>
         <Input
           id="fullName"
+          autoComplete="name"
           value={fullName}
           onChange={(e) => setFullName(e.target.value)}
           disabled={submitting}
@@ -116,8 +132,15 @@ export function RegisterForm() {
           {error}
         </p>
       )}
-      <Button type="submit" disabled={submitting}>
-        Create account
+      {accountCreated && !submitting && (
+        <p className="text-sm">
+          <Link href="/login" className="underline">
+            Go to login
+          </Link>
+        </p>
+      )}
+      <Button type="submit" disabled={submitting || accountCreated}>
+        {accountCreated ? (submitting ? "Signing you in…" : "Account created") : submitting ? "Creating account…" : "Create account"}
       </Button>
     </form>
   );
