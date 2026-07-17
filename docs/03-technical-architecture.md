@@ -12,7 +12,7 @@
 
 | Layer | Technology | Rationale |
 |---|---|---|
-| Frontend | Next.js 16 (App Router), TypeScript, Tailwind CSS | Modern DX, strong ecosystem, SSR for client-facing dashboards. |
+| Frontend | Next.js 16 (App Router), TypeScript, Tailwind CSS v4 (+ hand-written, shadcn/ui-style Radix primitives) | Modern DX, strong ecosystem, SSR for client-facing dashboards. Foundation layer (auth, session handling, app shell, MFA management) implemented per [`docs/superpowers/specs/2026-07-16-frontend-foundation-design.md`](superpowers/specs/2026-07-16-frontend-foundation-design.md). |
 | Backend | FastAPI (Python 3.12) | Async I/O, native OpenAPI schema generation, strong typing via Pydantic v2. |
 | Database | PostgreSQL 16+ | Relational integrity, native Row-Level Security, JSONB for flexible fields. |
 | ORM / Migrations | SQLAlchemy (async) + Alembic | Industry-standard Python persistence and migration tooling. |
