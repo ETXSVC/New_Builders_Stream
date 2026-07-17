@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "lint": "eslint .",
     "generate:api-types": "openapi-typescript http://localhost:8000/openapi.json -o lib/api/types.ts",
     "test:e2e": "playwright test"
   },
@@ -27,6 +28,8 @@
     "@types/node": "22.10.0",
     "@types/react": "19.0.0",
     "@types/react-dom": "19.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.2.10",
     "openapi-typescript": "7.13.0",
     "postcss": "8.5.19",
     "tailwindcss": "4.3.3",

@@ -38,7 +38,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ accessToken: null, mfaEnrollmentRequired: false });
   }, []);
 
-  const scheduleRefresh = React.useCallback(() => {
+  // Named function expression (not an arrow assigned to the outer const):
+  // the recursive call inside the timeout below binds to this function's
+  // own name, not to the `scheduleRefresh` const it's assigned to. That
+  // avoids a forward reference to a binding that isn't finished
+  // initializing yet from the compiler/lint's point of view, while
+  // preserving the exact same recursive-timer behavior.
+  const scheduleRefresh = React.useCallback(function scheduleRefresh() {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(async () => {
       try {
