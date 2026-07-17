@@ -25,6 +25,88 @@ const AuthContext = React.createContext<AuthContextValue | null>(null);
 const ACCESS_TOKEN_LIFETIME_MS = 15 * 60 * 1000;
 const REFRESH_MARGIN_MS = 60 * 1000;
 
+// Cross-tab coordination for /api/auth/refresh (closes the documented
+// multi-tab refresh race — docs/superpowers/plans/2026-07-16-frontend-
+// foundation.md, Task 7 review). The backend's refresh tokens are
+// single-use with family-level reuse detection: two tabs whose scheduled
+// refreshes fire close enough together can both send the SAME
+// not-yet-rotated cookie, and the backend treats the loser as a replay
+// attack and revokes the whole family, logging both tabs out. The Web
+// Locks API serializes every tab's refresh network call through one
+// origin-wide mutex, so a queued tab's request always carries whatever
+// cookie value is current by the time it actually runs — never a stale,
+// already-rotated one — which is what removes the race, not knowing
+// which tab "won." Locks auto-release if their holding tab closes or
+// crashes (a core Web Locks guarantee), so there's no leader/heartbeat
+// bookkeeping to get wrong here, unlike a hand-rolled coordination
+// scheme would need. Each tab still ends up with its own independent
+// access token, same as before this fix — this only serializes the
+// network calls, it doesn't share one token across tabs.
+const REFRESH_LOCK_NAME = "builders-stream-auth-refresh";
+
+type RefreshResult = { access_token: string; mfa_enrollment_required: boolean };
+
+async function performRealRefresh(): Promise<RefreshResult | null> {
+  try {
+    const response = await fetch("/api/auth/refresh", { method: "POST" });
+    if (!response.ok) return null;
+    return (await response.json()) as RefreshResult;
+  } catch {
+    // Network-level failure (offline, DNS, backend unreachable) — treat
+    // the same as a failed refresh, not an unhandled rejection.
+    return null;
+  }
+}
+
+// Module-level, not a hook: it has no component state of its own beyond
+// the in-flight-promise ref each caller passes in, and the Web Locks call
+// itself needs no React lifecycle.
+async function coordinatedRefresh(
+  inFlightRef: React.RefObject<Promise<RefreshResult | null> | null>
+): Promise<RefreshResult | null> {
+  // Shared by every caller in THIS tab that wants a refresh right now, so
+  // React's dev-only Strict Mode double-invoking the mount effect below —
+  // or any other source of overlapping calls within one tab — triggers at
+  // most one real network request, not two.
+  if (inFlightRef.current) return inFlightRef.current;
+
+  const promise = (async () => {
+    try {
+      const hasWebLocks = typeof navigator !== "undefined" && "locks" in navigator;
+      if (!hasWebLocks) {
+        // Very old/unusual environment without the Web Locks API — fall
+        // back to firing the request directly. Not worse than before this
+        // fix; it just doesn't get the cross-tab serialization benefit.
+        return await performRealRefresh();
+      }
+      return await navigator.locks.request(REFRESH_LOCK_NAME, () => performRealRefresh());
+    } catch {
+      // navigator.locks.request itself can reject (e.g. AbortError if the
+      // document stops being fully active mid-request, such as during a
+      // hard navigation) even though performRealRefresh() never throws on
+      // its own. Without this, a rejection here would propagate out of
+      // coordinatedRefresh and past scheduleRefresh's `await` — skipping
+      // its own re-arm call and silently ending the tab's refresh cycle
+      // for good, with nothing to bring it back except a full reload.
+      // Treat it the same as a failed refresh.
+      return null;
+    }
+  })();
+
+  // inFlightRef.current is guaranteed cleared before any caller's `await
+  // coordinatedRefresh(...)` resumes: `.finally()` is registered here,
+  // before this function returns the SAME promise object it was called
+  // on, and promise handlers run in registration order. Don't reorder
+  // these two statements or swap `promise` below for `promise.finally(...)`'s
+  // own derived promise — either change breaks that guarantee silently,
+  // with no test currently exercising the ordering directly.
+  inFlightRef.current = promise;
+  promise.finally(() => {
+    inFlightRef.current = null;
+  });
+  return promise;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<AuthState>({
     accessToken: null,
@@ -32,8 +114,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   });
   const [isHydrating, setIsHydrating] = React.useState(true);
   const refreshTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped by every explicit session change (setSession/clearSession). An
+  // async refresh in flight when one of those happens captures the
+  // generation it started with and discards its own result if the
+  // generation has since moved on — otherwise a slow refresh that's
+  // already stale by the time it resolves could silently resurrect a
+  // session the user (or another code path) already explicitly ended.
+  const sessionGenerationRef = React.useRef(0);
+  const inFlightRefreshRef = React.useRef<Promise<RefreshResult | null> | null>(null);
 
   const clearSession = React.useCallback(() => {
+    sessionGenerationRef.current += 1;
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     setState({ accessToken: null, mfaEnrollmentRequired: false });
   }, []);
@@ -44,32 +135,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // avoids a forward reference to a binding that isn't finished
   // initializing yet from the compiler/lint's point of view, while
   // preserving the exact same recursive-timer behavior.
-  const scheduleRefresh = React.useCallback(function scheduleRefresh() {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(async () => {
-      try {
-        const response = await fetch("/api/auth/refresh", { method: "POST" });
-        if (!response.ok) {
+  const scheduleRefresh = React.useCallback(
+    function scheduleRefresh() {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(async () => {
+        const generationAtStart = sessionGenerationRef.current;
+        const data = await coordinatedRefresh(inFlightRefreshRef);
+        if (sessionGenerationRef.current !== generationAtStart) return;
+        if (data === null) {
           clearSession();
           return;
         }
-        const data = await response.json();
         setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required });
         scheduleRefresh();
-      } catch {
-        // Network-level failure (offline, DNS, backend unreachable) — an
-        // unhandled rejection here would silently kill the recursive
-        // refresh chain forever, leaving a stale accessToken in state
-        // with no path back to a valid session. Treat it the same as a
-        // failed refresh: clear the session rather than leave the UI
-        // believing it's authenticated.
-        clearSession();
-      }
-    }, ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS);
-  }, [clearSession]);
+      }, ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS);
+    },
+    [clearSession]
+  );
 
   const setSession = React.useCallback(
     (accessToken: string, mfaEnrollmentRequired: boolean) => {
+      sessionGenerationRef.current += 1;
       setState({ accessToken, mfaEnrollmentRequired });
       scheduleRefresh();
     },
@@ -83,26 +169,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // new tab — starts with accessToken null even when a valid
     // refresh_token cookie exists. Without this, every cold load onto a
     // page middleware let through (it only checks cookie presence, not
-    // validity) is permanently stuck at accessToken === null: nothing else
-    // in this file ever calls /api/auth/refresh except scheduleRefresh's
-    // own timer, and that timer is only armed by setSession, which nothing
-    // calls on mount.
+    // validity) is permanently stuck at accessToken === null.
     let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch("/api/auth/refresh", { method: "POST" });
-        if (cancelled) return;
-        if (!response.ok) return;
-        const data = await response.json();
-        if (cancelled) return;
-        setSession(data.access_token, data.mfa_enrollment_required);
-      } catch {
-        // No refresh cookie, or backend unreachable — stay logged out.
-        // Mirrors scheduleRefresh's own failure handling (silent, no retry).
-      } finally {
+    const generationAtStart = sessionGenerationRef.current;
+    coordinatedRefresh(inFlightRefreshRef)
+      .then((data) => {
+        if (cancelled || sessionGenerationRef.current !== generationAtStart) return;
+        if (data) setSession(data.access_token, data.mfa_enrollment_required);
+      })
+      .finally(() => {
         if (!cancelled) setIsHydrating(false);
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
