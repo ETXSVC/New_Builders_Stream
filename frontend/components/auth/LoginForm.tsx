@@ -44,7 +44,11 @@ export function LoginForm() {
         return;
       }
       setSession(data.access_token, data.mfa_enrollment_required);
-      router.push(data.mfa_enrollment_required ? "/account" : "/dashboard");
+      // Two-factor authentication is optional: land on the dashboard like
+      // any other successful login. mfa_enrollment_required still drives
+      // the "consider enabling 2FA" nudge on the account page, it just
+      // no longer forces a detour through it.
+      router.push("/dashboard");
     } catch {
       // Network-level failure (offline, DNS, backend unreachable) — same
       // treatment as AuthContext's refresh fetch: surface it rather than
