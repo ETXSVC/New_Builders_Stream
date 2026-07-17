@@ -34,14 +34,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const scheduleRefresh = React.useCallback(() => {
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(async () => {
-      const response = await fetch("/api/auth/refresh", { method: "POST" });
-      if (!response.ok) {
+      try {
+        const response = await fetch("/api/auth/refresh", { method: "POST" });
+        if (!response.ok) {
+          clearSession();
+          return;
+        }
+        const data = await response.json();
+        setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required });
+        scheduleRefresh();
+      } catch {
+        // Network-level failure (offline, DNS, backend unreachable) — an
+        // unhandled rejection here would silently kill the recursive
+        // refresh chain forever, leaving a stale accessToken in state
+        // with no path back to a valid session. Treat it the same as a
+        // failed refresh: clear the session rather than leave the UI
+        // believing it's authenticated.
         clearSession();
-        return;
       }
-      const data = await response.json();
-      setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required });
-      scheduleRefresh();
     }, ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS);
   }, [clearSession]);
 
