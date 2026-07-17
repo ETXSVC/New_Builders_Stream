@@ -142,7 +142,13 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
     same reason /auth/login does — and change-password especially so,
     since rotating a compromised password must never be blocked by a
     lapsed subscription; refresh and logout also carry no CurrentUser at
-    all, the refresh token itself is the credential).
+    all, the refresh token itself is the credential), and the three MFA
+    routes /auth/mfa/enroll, /auth/mfa/activate, /auth/mfa/disable (Task
+    7.x, spec docs/superpowers/specs/2026-07-16-mfa-totp-design.md:
+    credential/session management must keep working for a read-only
+    company — the same clause as the token-lifecycle routes; a lapsed
+    subscription must never stop a user from strengthening, proving, or
+    recovering control of their own second factor).
 
     Coverage caveats, for whoever extends this codebase later: (1) this
     walks `app.routes` and checks each route's own top-level
@@ -168,6 +174,14 @@ def test_every_write_route_has_block_if_read_only_except_deliberate_exclusions()
         "/auth/refresh",
         "/auth/logout",
         "/auth/change-password",
+        # All three MFA routes at once, disable included even though it
+        # lands in a later task — the completeness loop below only ever
+        # tests route.path membership for routes that EXIST in app.routes,
+        # so an exclusion for a not-yet-registered path is inert until the
+        # route appears.
+        "/auth/mfa/enroll",
+        "/auth/mfa/activate",
+        "/auth/mfa/disable",
         "/webhooks/stripe",
         "/subscriptions/portal-session",
         "/invitations/{invitation_id}/accept",

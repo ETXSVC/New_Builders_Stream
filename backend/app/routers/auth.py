@@ -8,9 +8,13 @@ from app.core.deps import CurrentUser, get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, Subscription, User
+from app.models.base import utcnow
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
+    MfaActivateRequest,
+    MfaDisableRequest,
+    MfaEnrollResponse,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -18,6 +22,7 @@ from app.schemas.auth import (
 )
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
+from app.services.mfa import generate_enrollment, verify_totp_code
 from app.services.refresh_tokens import (
     RefreshTokenError,
     RefreshTokenReuseError,
@@ -154,6 +159,22 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
         if user is None or not password_valid:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
 
+        # MFA challenge (spec Decision 6): only past the password check, so
+        # MFA status is never disclosed to a caller who hasn't proved the
+        # password. Distinct details are deliberate — the client needs
+        # "TOTP code required" to prompt for the second factor. Placed
+        # before _default_membership and before the refresh-token mint so a
+        # failed challenge raises inside session_scope() before anything is
+        # committed (session_scope() itself never commits on its own; the
+        # explicit commit is further down, after mint_refresh_token) —
+        # verify_totp_code's replay-guard mutation on user.totp_last_used_step
+        # only takes effect on the success path that reaches that commit.
+        if user.mfa_activated_at is not None:
+            if payload.totp_code is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+            if not verify_totp_code(user, payload.totp_code):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+
         membership = await _default_membership(session, user.id)
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
@@ -175,6 +196,9 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
             access_token=token,
             refresh_token=refresh_secret,
             default_company_id=membership.company_id,
+            mfa_enrollment_required=(
+                membership.role == "admin" and user.mfa_activated_at is None
+            ),
         )
 
 
@@ -222,6 +246,17 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             # so the presented token remains usable if memberships
             # are later restored.
             raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+
+        # mfa_enrollment_required is recomputed here (not carried over from
+        # login) because it must re-evaluate on EVERY token issuance: an
+        # admin who activates (or disables) MFA mid-session should see the
+        # nudge state change at the very next refresh, not stay pinned to
+        # whatever was true when the original access token was minted.
+        # Loaded in the SAME session, before the commit below, so this read
+        # is part of the same transaction as the rotation it accompanies.
+        user_result = await session.execute(select(User).where(User.id == old_row.user_id))
+        user = user_result.scalar_one()
+
         await session.commit()
         # RFC 6749 §5.1: responses carrying tokens must not be cached.
         response.headers["Cache-Control"] = "no-store"
@@ -231,6 +266,9 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             ),
             refresh_token=new_secret,
             default_company_id=membership.company_id,
+            mfa_enrollment_required=(
+                membership.role == "admin" and user.mfa_activated_at is None
+            ),
         )
 
 
@@ -256,6 +294,15 @@ async def change_password(
     user = current.user  # already loaded by get_current_user, same session
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    # MFA challenge (spec Decision 6): if active, a TOTP code is required
+    # too, so a hijacked access token plus a shoulder-surfed password
+    # alone cannot rotate the password and then strip MFA. Same disclosure
+    # ordering as login — this only runs past the password check.
+    if user.mfa_activated_at is not None:
+        if payload.totp_code is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+        if not verify_totp_code(user, payload.totp_code):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
     user.password_hash = hash_password(payload.new_password)
     await revoke_all_for_user(current.session, user.id)
     await write_audit_log(
@@ -265,6 +312,89 @@ async def change_password(
         action="auth.password_changed",
         entity_type="user",
         entity_id=user.id,
+    )
+
+
+@router.post("/mfa/enroll", response_model=MfaEnrollResponse)
+async def mfa_enroll(
+    response: Response,
+    current: CurrentUser = Depends(get_current_user),
+) -> MfaEnrollResponse:
+    """Begin (or restart) TOTP enrollment. The base32 secret is presentable
+    exactly once, here; storage is Fernet ciphertext. Re-enrolling while
+    still PENDING rotates the secret (the user may have lost the first QR
+    before scanning); re-enrolling while ACTIVE is refused — disable first,
+    which requires both factors."""
+    if current.user.mfa_activated_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "MFA is already active")
+    secret, uri, encrypted = generate_enrollment(current.user.email)
+    current.user.totp_secret_encrypted = encrypted
+    current.user.totp_last_used_step = None
+    # RFC 6749 §5.1 spirit: a shared secret is transiting the body.
+    response.headers["Cache-Control"] = "no-store"
+    return MfaEnrollResponse(secret=secret, otpauth_uri=uri)
+
+
+@router.post("/mfa/activate", status_code=status.HTTP_204_NO_CONTENT)
+async def mfa_activate(
+    payload: MfaActivateRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """Prove possession of the enrolled secret; only then does MFA start
+    gating login. The replay guard starts here too (the activation code's
+    timestep is recorded)."""
+    if current.user.totp_secret_encrypted is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No MFA enrollment pending")
+    if current.user.mfa_activated_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "MFA is already active")
+    if not verify_totp_code(current.user, payload.totp_code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+    current.user.mfa_activated_at = utcnow()
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="auth.mfa_activated",
+        entity_type="user",
+        entity_id=current.user.id,
+    )
+
+
+@router.post("/mfa/disable", status_code=status.HTTP_204_NO_CONTENT)
+async def mfa_disable(
+    payload: MfaDisableRequest,
+    current: CurrentUser = Depends(get_current_user),
+) -> None:
+    """BOTH factors required (spec Decision 6): a hijacked 15-minute access
+    token alone must not be able to strip MFA. Password first (same
+    ordering rationale as login), then the code.
+
+    Revokes every refresh token the user holds, same as change-password
+    (post-review addition — user-confirmed 2026-07-16): disabling MFA is a
+    security-posture downgrade exactly like a password change, and every
+    route that requires proof of BOTH factors to execute is the codebase's
+    established trigger for "force re-authentication everywhere." A
+    session minted while MFA was required should re-prove itself once
+    that requirement is gone, rather than riding on a policy that no
+    longer applies to it.
+    """
+    if current.user.mfa_activated_at is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "MFA is not active")
+    if not verify_password(payload.current_password, current.user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid current password")
+    if not verify_totp_code(current.user, payload.totp_code):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+    current.user.totp_secret_encrypted = None
+    current.user.mfa_activated_at = None
+    current.user.totp_last_used_step = None
+    await revoke_all_for_user(current.session, current.user.id)
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="auth.mfa_disabled",
+        entity_type="user",
+        entity_id=current.user.id,
     )
 
 
