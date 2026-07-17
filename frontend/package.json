@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "generate:api-types": "openapi-typescript http://localhost:8000/openapi.json -o lib/api/types.ts"
+    "generate:api-types": "openapi-typescript http://localhost:8000/openapi.json -o lib/api/types.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-label": "2.1.11",
@@ -21,6 +22,7 @@
     "tailwind-merge": "3.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "22.10.0",
     "@types/react": "19.0.0",
