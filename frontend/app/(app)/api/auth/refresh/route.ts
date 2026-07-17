@@ -34,6 +34,8 @@ export async function POST(request: NextRequest) {
       path: "/",
       maxAge: REFRESH_COOKIE_MAX_AGE_SECONDS,
     });
+    // RFC 6749 §5.1 — see login/route.ts's identical comment.
+    response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (err) {
     const response = NextResponse.json(

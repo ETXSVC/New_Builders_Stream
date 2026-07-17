@@ -27,6 +27,12 @@ export async function POST(request: NextRequest) {
       path: "/",
       maxAge: REFRESH_COOKIE_MAX_AGE_SECONDS,
     });
+    // RFC 6749 §5.1: responses carrying tokens must not be cached — the
+    // backend sets this on its own /auth/login response, but apiFetch
+    // only ever returns the parsed body, discarding the backend
+    // Response's headers, so it doesn't propagate automatically and must
+    // be re-set here (same pattern Task 12's mfa/enroll route uses).
+    response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (err) {
     if (err instanceof ApiError) {

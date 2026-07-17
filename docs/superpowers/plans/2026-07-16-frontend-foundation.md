@@ -1740,6 +1740,8 @@ git commit -m "feat: frontend CI - lint and build on every push/PR"
 - Modify: `docs/03-technical-architecture.md` (note Foundation's implementation, if the stack table needs any correction against what was actually built)
 - Modify: `docs/superpowers/specs/2026-07-16-frontend-foundation-design.md` (Implementation Status note, matching every prior feature's convention)
 
+**Known gap to record in the closeout note (Task 7 review):** `AuthContext` (Task 6) gives each browser tab its own independent refresh timer with no cross-tab coordination (no `BroadcastChannel`/localStorage leader-election). Two tabs opened close together in time have closely-aligned refresh schedules; if both fire nearly simultaneously, the backend's single-use rotation with family-level reuse detection means the LOSING tab's request is treated as suspected compromise and revokes the entire family — including the winning tab's freshly-issued successor. Net effect: both tabs eventually get logged out, though the winning tab's logout is silent and delayed (up to its next refresh cycle or a reload), not immediate. This is the backend's reuse-detection working exactly as designed against an unsynchronized caller — not a backend defect — but it will read to a real user as an occasional, hard-to-reproduce random session drop when multiple tabs are open. Acceptable for Foundation's scope (no sub-project before this one needed multi-tab session handling), but flag it explicitly as a fast-follow candidate (a `BroadcastChannel`-based single-leader refresh) rather than letting it go undocumented.
+
 - [ ] **Step 1: Full verification pass**
 
 Repeat Task 13 Step 5's live Playwright run once more, from a clean rebuild, to catch anything Tasks 14's lint/build fixes might have disturbed:
