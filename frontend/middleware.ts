@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const REFRESH_COOKIE = "refresh_token";
-const PROTECTED_PREFIXES = ["/dashboard", "/account"];
 
+// The `matcher` config below is the ONLY scope boundary — it's Next.js's
+// own path-to-regexp match, segment-safe by construction (":path*"
+// requires an exact match or a "/" before further segments, so a future
+// route like "/accounting" or "/dashboards" is never matched and this
+// function never runs for it). Keep it that way: an in-function prefix
+// re-check here would just be a second, WEAKER copy of the same rule
+// (a raw startsWith is not segment-safe) that could silently drift out
+// of sync with `matcher` if either is ever edited without the other.
 export function middleware(request: NextRequest) {
-  const isProtected = PROTECTED_PREFIXES.some((prefix) => request.nextUrl.pathname.startsWith(prefix));
-  if (!isProtected) return NextResponse.next();
-
   const hasSession = request.cookies.has(REFRESH_COOKIE);
   if (!hasSession) {
     const loginUrl = new URL("/login", request.url);
