@@ -15,8 +15,20 @@ export function Nav({ companyId }: { companyId: string }) {
     fetch(`/api/companies/current?company_id=${companyId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-      .then((r) => r.json())
-      .then((data) => setCompanyName(data.name ?? null))
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) {
+          // The route handler always returns valid JSON, even on failure
+          // (e.g. a stale access token, a bad company_id) — so a plain
+          // .then(r => r.json()) never distinguishes this from success.
+          // Surface it rather than silently falling back to the generic
+          // name with no signal anything went wrong.
+          console.error("Failed to load company name:", data.detail ?? r.statusText);
+          setCompanyName(null);
+          return;
+        }
+        setCompanyName(data.name ?? null);
+      })
       .catch(() => setCompanyName(null));
   }, [accessToken, companyId]);
 
