@@ -5,17 +5,34 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "eslint .",
+    "generate:api-types": "openapi-typescript http://localhost:8000/openapi.json -o lib/api/types.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
-    "next": "16.0.0",
+    "@radix-ui/react-label": "2.1.11",
+    "@radix-ui/react-slot": "1.3.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "1.24.0",
+    "next": "16.2.10",
     "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "react-dom": "19.0.0",
+    "server-only": "0.0.1",
+    "tailwind-merge": "3.6.0"
   },
   "devDependencies": {
-    "typescript": "5.6.3",
+    "@playwright/test": "1.61.1",
+    "@tailwindcss/postcss": "4.3.3",
     "@types/node": "22.10.0",
     "@types/react": "19.0.0",
-    "@types/react-dom": "19.0.0"
+    "@types/react-dom": "19.0.0",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.2.10",
+    "openapi-typescript": "7.13.0",
+    "postcss": "8.5.19",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.6.3"
   }
 }
