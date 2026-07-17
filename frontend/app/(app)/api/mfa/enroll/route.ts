@@ -9,7 +9,8 @@ export async function POST(request: NextRequest) {
       accessToken: authHeader.replace("Bearer ", ""),
     });
     const response = NextResponse.json(data);
-    // RFC 6749 §5.1: this response carries the TOTP shared secret in its body.
+    // This response carries the TOTP shared secret in its body — must
+    // never be cached by an intermediary or the browser's disk cache.
     response.headers.set("Cache-Control", "no-store");
     return response;
   } catch (err) {

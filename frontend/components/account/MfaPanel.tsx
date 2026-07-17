@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
-type Step = "idle" | "enrolling" | "activating";
+type Step = "idle" | "activating";
 
 export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
   const router = useRouter();
@@ -98,6 +98,19 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
     }
   }
 
+  // mfaActive (AccountPage's !mfaEnrollmentRequired proxy) is only
+  // trustworthy once a session has actually been confirmed. Before that —
+  // hydration still in flight, OR hydration finished but the refresh
+  // cookie turned out to be stale/invalid (middleware only checks cookie
+  // *presence*, not validity, so this page is reachable in that state) —
+  // mfaEnrollmentRequired sits at its unauthenticated default (false),
+  // making mfaActive read as true regardless of the real, unknown MFA
+  // status. Gating on isHydrating alone only covers the first case and
+  // leaves the second permanently showing (and enabling) the "Disable
+  // two-factor authentication" form — asking an unauthenticated visitor
+  // for their password — with no guard once isHydrating flips to false.
+  const hasConfirmedSession = !isHydrating && accessToken !== null;
+
   return (
     <Card className="max-w-md">
       <CardHeader>
@@ -110,13 +123,12 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
           </p>
         )}
 
-        {step === "idle" && !mfaActive && (
-          // Disabled while isHydrating: on a fresh page load (bookmark, hard
-          // refresh) accessToken is still null for one round-trip while the
-          // app re-derives it from the refresh cookie (AuthContext). Without
-          // this guard, a click during that window fires the request with
-          // the literal header "Bearer null".
-          <Button onClick={startEnroll} disabled={submitting || isHydrating}>
+        {!hasConfirmedSession && step === "idle" && (
+          <p className="text-sm text-slate-500">Loading account status…</p>
+        )}
+
+        {hasConfirmedSession && step === "idle" && !mfaActive && (
+          <Button onClick={startEnroll} disabled={submitting}>
             Enable two-factor authentication
           </Button>
         )}
@@ -152,7 +164,7 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
           </form>
         )}
 
-        {step === "idle" && mfaActive && (
+        {hasConfirmedSession && step === "idle" && mfaActive && (
           <form onSubmit={disableMfa} className="flex flex-col gap-3">
             <p className="text-sm text-slate-600">Two-factor authentication is on. Disabling it will log you out everywhere.</p>
             <div className="flex flex-col gap-1.5">
@@ -179,8 +191,7 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
                 required
               />
             </div>
-            {/* Same isHydrating guard as the enable button above. */}
-            <Button type="submit" variant="outline" disabled={submitting || isHydrating}>
+            <Button type="submit" variant="outline" disabled={submitting}>
               Disable two-factor authentication
             </Button>
           </form>
