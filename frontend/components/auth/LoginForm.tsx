@@ -23,6 +23,7 @@ export function LoginForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -44,9 +45,20 @@ export function LoginForm() {
       }
       setSession(data.access_token, data.mfa_enrollment_required);
       router.push(data.mfa_enrollment_required ? "/account" : "/dashboard");
+    } catch {
+      // Network-level failure (offline, DNS, backend unreachable) — same
+      // treatment as AuthContext's refresh fetch: surface it rather than
+      // silently doing nothing.
+      setError("Unable to reach the server. Check your connection and try again.");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleBack() {
+    setNeedsTotp(false);
+    setTotpCode("");
+    setError(null);
   }
 
   return (
@@ -55,11 +67,27 @@ export function LoginForm() {
         <>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              disabled={submitting}
+              required
+            />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="password">Password</Label>
-            <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            <Input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={submitting}
+              required
+            />
           </div>
         </>
       )}
@@ -72,12 +100,24 @@ export function LoginForm() {
             autoComplete="one-time-code"
             value={totpCode}
             onChange={(e) => setTotpCode(e.target.value)}
+            disabled={submitting}
             required
             autoFocus
           />
+          <button
+            type="button"
+            onClick={handleBack}
+            className="text-sm text-slate-500 hover:underline self-start"
+          >
+            Back
+          </button>
         </div>
       )}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p role="alert" aria-live="assertive" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
       <Button type="submit" disabled={submitting}>
         {needsTotp ? "Verify" : "Log in"}
       </Button>
