@@ -13,8 +13,9 @@ Thumbs.db
 # Git worktrees (isolated implementation workspaces)
 .worktrees/
 
-# Local environment secrets (keep .env.example trackable)
+# Local environment secrets (keep .env.example / .env.local.example trackable)
 .env
+.env*.local
 
 # Python
 __pycache__/
