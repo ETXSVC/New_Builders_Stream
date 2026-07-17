@@ -49,6 +49,14 @@ os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_EXPIRE_MINUTES", "60")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+# /auth/register's per-IP rate limit (app/config.py, app/services/rate_limit.py)
+# would otherwise trip almost immediately: httpx's ASGITransport reports the
+# same synthetic client address for every request in the whole test session,
+# and nearly every test file registers at least one company. Disabled here,
+# same pattern as the other test-environment overrides in this file — the
+# limiter itself is covered by its own dedicated test, not by leaving it live
+# against the shared-IP test client.
+os.environ.setdefault("REGISTER_RATE_LIMIT_ENABLED", "false")
 # Task 4.3: must be a real, valid Fernet key (not an arbitrary string like
 # "test-secret" above) — app.services.token_encryption constructs
 # Fernet(settings.integration_token_encryption_key.encode()) at import time,
