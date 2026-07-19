@@ -1,9 +1,12 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
+from app.config import settings
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
@@ -569,6 +572,37 @@ async def list_documents(
         items=[DocumentResponse.model_validate(row) for row in rows],
         next_cursor=next_cursor,
     )
+
+
+@router.get("/{project_id}/documents/{document_id}/download")
+async def download_document(
+    project_id: uuid.UUID,
+    document_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+) -> FileResponse:
+    """Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
+    Same visibility rules as the document list: _get_project_or_404 covers
+    tenant/role/project scope, and the document must belong to the path's
+    project (a mismatched pair 404s — same id-pair discipline as every
+    nested resource in this codebase). storage_path is always relative to
+    settings.storage_root (document_storage.py's invariant), and file_name
+    was traversal-validated at upload, so joining them is safe here."""
+    project = await _get_project_or_404(current, project_id)
+
+    result = await current.session.execute(
+        select(Document).where(Document.id == document_id, Document.project_id == project.id)
+    )
+    document = result.scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    file_path = Path(settings.storage_root) / document.storage_path
+    if not file_path.is_file():
+        # Row exists but the file is gone from disk — surface as 404 (the
+        # resource is unretrievable) rather than a raw 500.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document file missing from storage")
+
+    return FileResponse(file_path, filename=document.file_name, media_type="application/octet-stream")
 
 
 @router.post(
