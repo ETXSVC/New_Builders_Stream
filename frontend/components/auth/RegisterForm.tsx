@@ -60,7 +60,11 @@ export function RegisterForm() {
         return;
       }
       setSession(loginData.access_token, loginData.mfa_enrollment_required);
-      router.push(loginData.mfa_enrollment_required ? "/account" : "/dashboard");
+      // Two-factor authentication is optional: land on the dashboard like
+      // any other successful registration. mfa_enrollment_required still
+      // drives the "consider enabling 2FA" nudge on the account page, it
+      // just no longer forces a detour through it.
+      router.push("/dashboard");
     } catch {
       // Network-level failure (offline, DNS, backend unreachable). If it
       // struck after registration already succeeded, resubmitting this
