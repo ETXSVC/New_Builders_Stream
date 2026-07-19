@@ -9,6 +9,8 @@ import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProjectStatusActions } from "@/components/projects/ProjectStatusActions";
 import { PhasesTasksTab } from "@/components/projects/PhasesTasksTab";
+import { DocumentsTab } from "@/components/projects/DocumentsTab";
+import { DailyLogsTab } from "@/components/projects/DailyLogsTab";
 import { ClientProjectDashboard, ClientProjectShape } from "@/components/projects/ClientProjectDashboard";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -108,8 +110,8 @@ export default function ProjectDetailPage() {
 
       {tab === "Overview" && <OverviewTab project={project} onSaved={load} />}
       {tab === "Phases & tasks" && <PhasesTasksTab projectId={project.id} />}
-      {tab === "Documents" && <p className="text-sm text-slate-500">Coming in a later task.</p>}
-      {tab === "Daily logs" && <p className="text-sm text-slate-500">Coming in a later task.</p>}
+      {tab === "Documents" && <DocumentsTab projectId={project.id} />}
+      {tab === "Daily logs" && <DailyLogsTab projectId={project.id} />}
     </main>
   );
 }
