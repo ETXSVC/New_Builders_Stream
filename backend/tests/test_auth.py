@@ -1,7 +1,9 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.models import Subscription
+from app.services.rate_limit import _get_redis_client, _reset_redis_client_for_tests
 from tests.conftest import TEST_DATABASE_URL
 
 
@@ -34,6 +36,48 @@ async def test_register_rejects_duplicate_email(client):
 
     second = await client.post("/auth/register", json={**payload, "company_name": "Beta Builders"})
     assert second.status_code == 409
+
+
+async def test_register_rate_limited_after_max_attempts(client, monkeypatch):
+    # conftest.py disables this limiter globally (REGISTER_RATE_LIMIT_ENABLED=
+    # false) so the rest of the suite's dozens of /auth/register calls — all
+    # reported as the same 127.0.0.1 client under httpx's ASGITransport —
+    # don't trip it. Re-enabled here, scoped to this test only, with a low
+    # limit so the test doesn't need dozens of requests to exercise it.
+    monkeypatch.setattr(settings, "register_rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "register_rate_limit_max_attempts", 2)
+    monkeypatch.setattr(settings, "register_rate_limit_window_seconds", 60)
+
+    # Force a fresh Redis client bound to THIS test's own event loop — see
+    # _reset_redis_client_for_tests's docstring. Without this, whichever
+    # test in the suite happens to trigger rate_limit.py's module-level
+    # singleton first "wins" the loop it gets created on; any other test
+    # that reuses it from a different (later, by-then-closed) loop raises
+    # "Event loop is closed", the same class of bug already diagnosed once
+    # for the DB engine (see db_session's loop_scope="function" above).
+    _reset_redis_client_for_tests()
+    redis_client = _get_redis_client()
+    await redis_client.delete("ratelimit:register:127.0.0.1")
+
+    payload = {
+        "company_name": "Rate Limit Co",
+        "admin_full_name": "Rate Limiter",
+        "admin_email": "unused@example.test",
+        "admin_password": "supersecret123",
+    }
+
+    # The limiter counts attempts, not successful registrations, so two
+    # ordinary successes still consume the whole limit.
+    first = await client.post("/auth/register", json={**payload, "admin_email": "rl1@acme.test"})
+    assert first.status_code == 201
+    second = await client.post("/auth/register", json={**payload, "admin_email": "rl2@acme.test"})
+    assert second.status_code == 201
+
+    third = await client.post("/auth/register", json={**payload, "admin_email": "rl3@acme.test"})
+    assert third.status_code == 429
+    assert third.json()["detail"] == "Too many registration attempts. Please try again later."
+
+    await redis_client.delete("ratelimit:register:127.0.0.1")
 
 
 async def test_login_returns_token_for_valid_credentials(client):

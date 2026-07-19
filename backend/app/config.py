@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     # cryptographic purpose (symmetric encryption, not HMAC signing) and
     # must not be the same value as jwt_secret.
     integration_token_encryption_key: str
+    # POST /auth/register anti-enumeration (fast-follow closing the gap
+    # documented in docs/superpowers/plans/2026-07-16-frontend-foundation.md's
+    # Task 10 review): the endpoint's 409 "Email already registered" lets
+    # anyone learn which emails already have an account, at odds with
+    # /auth/login's own deliberate constant-time design above. A generic
+    # error message wouldn't actually help — the 409 status code alone is
+    # still the tell. Rate limiting the endpoint per source IP doesn't
+    # eliminate the signal, but makes bulk enumeration impractical without
+    # needing an email-verification subsystem this project doesn't have yet.
+    register_rate_limit_enabled: bool = True
+    register_rate_limit_max_attempts: int = 5
+    register_rate_limit_window_seconds: int = 3600
 
 
 settings = Settings()

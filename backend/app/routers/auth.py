@@ -1,9 +1,10 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.core.deps import CurrentUser, get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db import session_scope, set_current_tenant, set_current_user
@@ -23,6 +24,7 @@ from app.schemas.auth import (
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
 from app.services.mfa import generate_enrollment, verify_totp_code
+from app.services.rate_limit import check_rate_limit
 from app.services.refresh_tokens import (
     RefreshTokenError,
     RefreshTokenReuseError,
@@ -45,7 +47,40 @@ _DUMMY_PASSWORD_HASH = hash_password("dummy-password-never-used-for-real-auth")
 
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest) -> RegisterResponse:
+async def register(payload: RegisterRequest, request: Request) -> RegisterResponse:
+    # Anti-enumeration (see app/config.py's register_rate_limit_* settings):
+    # the 409 below on a duplicate email is itself the enumeration signal —
+    # a generic message wouldn't hide it, since the status code alone
+    # already discloses "this email exists." Rate limiting per source IP
+    # doesn't remove the signal, but makes bulk enumeration impractical.
+    #
+    # Production-correctness note (not fixed here, deliberately out of this
+    # task's scope — same class of gap already flagged in
+    # app/services/esignature.py's ip_address docstring): `request.client.host`
+    # reflects the IMMEDIATE peer, which is a reverse proxy's own address,
+    # not the true origin client, unless `X-Forwarded-For` (or similar) is
+    # parsed and trusted. This codebase's eventual deployment target sits
+    # behind Traefik/Nginx (docs/03-technical-architecture.md); today's
+    # docker-compose.yml exposes the backend directly with no proxy in
+    # front, so this is currently correct, but once a proxy IS added, every
+    # real client would collapse onto the proxy's one address here — turning
+    # this per-IP limit into a single global one for the whole deployment,
+    # which fails closed against legitimate signups, not just attackers.
+    # Deferred to whenever that proxy layer is actually configured, same as
+    # esignature.py's identical gap — flagged here rather than silently
+    # shipping an IP capture that will be wrong for the eventual topology.
+    if settings.register_rate_limit_enabled:
+        client_ip = request.client.host if request.client else "unknown"
+        allowed = await check_rate_limit(
+            f"ratelimit:register:{client_ip}",
+            settings.register_rate_limit_max_attempts,
+            settings.register_rate_limit_window_seconds,
+        )
+        if not allowed:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS, "Too many registration attempts. Please try again later."
+            )
+
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
