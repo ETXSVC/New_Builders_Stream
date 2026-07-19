@@ -55,3 +55,10 @@ class TokenResponse(BaseModel):
     # being updated — but login and refresh MUST wire this explicitly per
     # spec Decision 3, never rely on the default.
     mfa_enrollment_required: bool = False
+    # The user's role in their default company, from the same membership row
+    # login/refresh already resolve via _default_membership (CRM+PM frontend
+    # spec, Decision 1): the frontend needs it to choose which UI to render,
+    # and the JWT deliberately carries no role claim. Display/routing signal
+    # only — the backend's require_role checks remain the sole authorization
+    # boundary. No default: both mint sites must wire it explicitly.
+    role: str

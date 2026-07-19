@@ -234,6 +234,7 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
             mfa_enrollment_required=(
                 membership.role == "admin" and user.mfa_activated_at is None
             ),
+            role=membership.role,
         )
 
 
@@ -304,6 +305,7 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             mfa_enrollment_required=(
                 membership.role == "admin" and user.mfa_activated_at is None
             ),
+            role=membership.role,
         )
 
 
