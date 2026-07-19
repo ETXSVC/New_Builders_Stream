@@ -2,15 +2,21 @@ import "server-only";
 
 import type { paths } from "./types";
 
-const BACKEND_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Exported for the two Route Handlers that can't use the JSON-only
+// apiFetch below (document multipart upload and download streaming) and
+// must build their backend URL directly — still server-side only.
+export const BACKEND_API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-type Method = "get" | "post" | "put" | "delete";
+type Method = "get" | "post" | "put" | "patch" | "delete";
 
 interface RequestOptions {
   accessToken?: string;
   companyId?: string;
   body?: unknown;
   params?: Record<string, string>;
+  // Appended as a query string (?k=v&...). Entries with undefined values
+  // are skipped, so callers can pass optional filters unconditionally.
+  query?: Record<string, string | undefined>;
 }
 
 export class ApiError extends Error {
@@ -46,6 +52,15 @@ export async function apiFetch<Path extends keyof paths, M extends Method>(
   // against the backend instead of at the call site.
   if (/\{[^}]+\}/.test(url)) {
     throw new Error(`apiFetch: unresolved path parameter(s) in "${url}" — check the params keys`);
+  }
+
+  if (options.query) {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(options.query)) {
+      if (value !== undefined) search.set(key, value);
+    }
+    const qs = search.toString();
+    if (qs) url += `?${qs}`;
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
