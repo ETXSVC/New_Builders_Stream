@@ -1,10 +1,10 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
-from app.models import Phase, Task
+from app.models import Phase, Project, Task
 from app.routers.projects import _get_project_or_404
 from app.schemas.phase import (
     PhaseCreateRequest,
@@ -12,7 +12,13 @@ from app.schemas.phase import (
     PhaseResponse,
     PhaseWithTasksResponse,
 )
-from app.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
+from app.schemas.task import (
+    MyTaskListResponse,
+    MyTaskResponse,
+    TaskCreateRequest,
+    TaskResponse,
+    TaskUpdateRequest,
+)
 
 # Duplicated from projects.py rather than imported, matching leads.py's own
 # precedent for this identical ("admin", "project_manager") tuple
@@ -213,6 +219,47 @@ async def list_phases(
                 tasks=[TaskResponse.model_validate(t) for t in tasks_by_phase.get(phase.id, [])],
             )
             for phase in phases
+        ]
+    )
+
+
+@router.get("/tasks", response_model=MyTaskListResponse)
+async def list_my_tasks(
+    assignee: str = Query(...),
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> MyTaskListResponse:
+    """Cross-project list of the CURRENT USER's assigned tasks. `assignee`
+    accepts only the literal "me" — there is no legitimate frontend need to
+    list another user's assignments today (422 otherwise, YAGNI). Ordered
+    by due date (nulls last) then creation, capped at 200."""
+    if assignee != "me":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, 'assignee only supports the value "me"'
+        )
+
+    result = await current.session.execute(
+        select(Task, Project.id, Project.name)
+        .join(Phase, Task.phase_id == Phase.id)
+        .join(Project, Phase.project_id == Project.id)
+        .where(Task.assignee_id == current.user.id)
+        .order_by(Task.due_date.asc().nulls_last(), Task.created_at, Task.id)
+        .limit(200)
+    )
+    return MyTaskListResponse(
+        items=[
+            MyTaskResponse(
+                id=task.id,
+                phase_id=task.phase_id,
+                company_id=task.company_id,
+                name=task.name,
+                assignee_id=task.assignee_id,
+                due_date=task.due_date,
+                status=task.status,
+                created_at=task.created_at,
+                project_id=project_id,
+                project_name=project_name,
+            )
+            for task, project_id, project_name in result.all()
         ]
     )
 

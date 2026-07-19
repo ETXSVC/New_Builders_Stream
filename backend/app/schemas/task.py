@@ -63,3 +63,19 @@ class TaskResponse(BaseModel):
     due_date: date | None
     status: str
     created_at: datetime
+
+
+class MyTaskResponse(TaskResponse):
+    """`GET /tasks?assignee=me` item shape: TaskResponse enriched with
+    project context (tasks reference only their phase directly, but the My
+    Tasks view renders "task · project · due date" rows)."""
+
+    project_id: uuid.UUID
+    project_name: str
+
+
+class MyTaskListResponse(BaseModel):
+    """NOT cursor-paginated: one user's open assignment list is bounded
+    small in practice; capped at 200 in the route."""
+
+    items: list[MyTaskResponse]
