@@ -11,6 +11,7 @@ from app.models.project import VALID_STATUSES
 from app.schemas.daily_log import DailyLogCreateRequest, DailyLogListResponse, DailyLogResponse
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.schemas.project import (
+    ProjectClientDashboardListResponse,
     ProjectClientDashboardResponse,
     ProjectCreateRequest,
     ProjectListResponse,
@@ -31,22 +32,24 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # extension beyond the literal API spec route table).
 _WRITE_ROLES = ("admin", "project_manager")
 
-# Every role that has *some* read access to Project Management per the
+# Every role that gets the FULL ProjectResponse shape on reads per the
 # matrix: Admin/PM (full), Field Crew (assigned only), Accountant (read,
 # financial-fields-only — Phase 1 has no financial fields on `projects` yet,
-# so this collapses to plain read), Client (sanitized dashboard only, and
-# only via GET /projects/{id} — see _GET_ROLES below, which is a superset of
-# this tuple).
+# so this collapses to plain read). Client is deliberately absent (see
+# _GET_ROLES below, which is a superset of this tuple): every route that
+# still uses _LIST_ROLES directly (documents, daily logs) stays closed to
+# `client`.
 _LIST_ROLES = ("admin", "project_manager", "accountant", "field_crew")
 
-# GET /projects/{id} is the one route every read-capable role can hit — the
-# API spec (Section 4) documents exactly one GET /projects/{id} route and
-# design decision #8 makes it double as the client's sanitized dashboard
-# (response SHAPE differs by role, not access). `client` is deliberately
-# absent from _LIST_ROLES: the API spec only ever documents GET
-# /projects/{id} for clients, never a list route, so GET /projects blocks
-# `client` with a 403 (the more literal reading of "there's no list route
-# for clients at all" — see Task 1.12's spec and this router's tests).
+# The roles for GET /projects and GET /projects/{id} — every read-capable
+# role including `client`. Design decision #8 makes GET /projects/{id}
+# double as the client's sanitized dashboard (response SHAPE differs by
+# role, not access), and the CRM+PM frontend spec (Decision 2 item 6)
+# extends the same role-based-shape split to GET /projects: without a list
+# route, `client` could GET a project by id but had no route that would
+# ever tell them the id. This reverses Task 1.12's earlier "client gets
+# 403 on the list route" reading — see list_projects and this router's
+# tests.
 _GET_ROLES = (*_LIST_ROLES, "client")
 
 # Daily Logs are the one Project Management write field_crew has at all
@@ -183,13 +186,13 @@ async def create_project(
     return ProjectResponse.model_validate(project)
 
 
-@router.get("", response_model=ProjectListResponse)
+@router.get("", response_model=ProjectListResponse | ProjectClientDashboardListResponse)
 async def list_projects(
-    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+    current: CurrentUser = Depends(require_role(*_GET_ROLES)),
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
-) -> ProjectListResponse:
+) -> ProjectListResponse | ProjectClientDashboardListResponse:
     if status_filter is not None and status_filter not in VALID_STATUSES:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"status must be one of {VALID_STATUSES}"
@@ -219,6 +222,17 @@ async def list_projects(
         cursor=cursor,
         limit=limit,
     )
+
+    # Role-based response SHAPE, same split get_project already makes:
+    # `client` gets the sanitized dashboard shape per item. The per-row
+    # _client_dashboard_response COUNT queries are acceptable at list scale
+    # (page size is capped at MAX_LIMIT; a client typically has 1-2
+    # projects) — an aggregate rewrite is premature here.
+    if current.role == "client":
+        return ProjectClientDashboardListResponse(
+            items=[await _client_dashboard_response(current, row) for row in rows],
+            next_cursor=next_cursor,
+        )
 
     return ProjectListResponse(
         items=[ProjectResponse.model_validate(row) for row in rows],

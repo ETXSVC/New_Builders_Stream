@@ -150,3 +150,14 @@ class ProjectListResponse(BaseModel):
 
     items: list[ProjectResponse]
     next_cursor: str | None = None
+
+
+class ProjectClientDashboardListResponse(BaseModel):
+    """List envelope for the `client` role's `GET /projects` (CRM+PM
+    frontend spec, Decision 2 item 6): same sanitized per-project shape the
+    detail route already serves that role, so a client can discover their
+    project(s) at all — before this, `client` could GET a project by id but
+    had no route that would ever tell them the id."""
+
+    items: list[ProjectClientDashboardResponse]
+    next_cursor: str | None = None

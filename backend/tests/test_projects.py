@@ -202,16 +202,33 @@ async def test_accountant_can_list_projects(client):
     assert len(response.json()["items"]) == 1
 
 
-async def test_client_cannot_list_projects(client):
-    """Per the API spec, `GET /projects` is never documented for the
-    `client` role (only `GET /projects/{id}`'s sanitized dashboard is) — the
-    literal reading is that the list route itself is off-limits to
-    `client`, not merely returning an empty/filtered list."""
-    admin = await _register_and_login(client, "Acme Construction", "client-list-admin@acme.test")
-    client_role = await _invite_and_login_as(client, admin, "client", "client-list@acme.test")
+async def test_client_can_list_projects_sanitized(client):
+    """CRM+PM frontend spec, Decision 2 item 6 — deliberately REVERSES the
+    earlier `test_client_cannot_list_projects` (403) decision: without a
+    list route, `client` could GET a project by id but had no route that
+    would ever tell them the id. The list serves `client` the same
+    sanitized per-project shape the detail route already does."""
+    admin = await _register_and_login(client, "Client List Co", "client-list-admin@acme.test")
+    created = await client.post(
+        "/projects",
+        json={"name": "Visible To Client", "site_address": "1 Main St"},
+        headers=admin["headers"],
+    )
+    assert created.status_code == 201, created.text
 
-    response = await client.get("/projects", headers=client_role["headers"])
-    assert response.status_code == 403
+    member = await _invite_and_login_as(client, admin, "client", "client-list-user@acme.test")
+    listed = await client.get("/projects", headers=member["headers"])
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert len(items) == 1
+    item = items[0]
+    assert item["name"] == "Visible To Client"
+    # Sanitized shape: counts present, internal fields absent.
+    assert item["phase_count"] == 0
+    assert item["task_count"] == 0
+    assert item["completed_task_count"] == 0
+    assert "lead_id" not in item
+    assert "company_id" not in item
 
 
 async def test_list_projects_as_field_crew_shows_only_assigned(client):
