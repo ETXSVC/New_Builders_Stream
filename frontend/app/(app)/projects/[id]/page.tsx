@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProjectStatusActions } from "@/components/projects/ProjectStatusActions";
+import { PhasesTasksTab } from "@/components/projects/PhasesTasksTab";
 import { ClientProjectDashboard, ClientProjectShape } from "@/components/projects/ClientProjectDashboard";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -106,7 +107,7 @@ export default function ProjectDetailPage() {
       </div>
 
       {tab === "Overview" && <OverviewTab project={project} onSaved={load} />}
-      {tab === "Phases & tasks" && <p className="text-sm text-slate-500">Coming in a later task.</p>}
+      {tab === "Phases & tasks" && <PhasesTasksTab projectId={project.id} />}
       {tab === "Documents" && <p className="text-sm text-slate-500">Coming in a later task.</p>}
       {tab === "Daily logs" && <p className="text-sm text-slate-500">Coming in a later task.</p>}
     </main>
