@@ -37,6 +37,9 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [newPhaseName, setNewPhaseName] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
+  // Per-task in-flight guard: disables a row's status Select while its
+  // PATCH is pending so rapid changes can't interleave.
+  const [pendingTasks, setPendingTasks] = React.useState<Record<string, boolean>>({});
   const [error, setError] = React.useState<string | null>(null);
 
   const canEdit = role === "admin" || role === "project_manager";
@@ -100,8 +103,9 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
   }
 
   async function patchTask(taskId: string, body: Record<string, unknown>) {
-    if (!accessToken) return;
+    if (!accessToken || pendingTasks[taskId]) return;
     setError(null);
+    setPendingTasks((prev) => ({ ...prev, [taskId]: true }));
     try {
       const response = await fetch(`/api/tasks/${taskId}`, {
         method: "PATCH",
@@ -116,6 +120,8 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
       await load();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
+    } finally {
+      setPendingTasks((prev) => ({ ...prev, [taskId]: false }));
     }
   }
 
@@ -175,6 +181,7 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
                         className="w-32 h-8"
                         value={task.status}
                         onChange={(e) => patchTask(task.id, { status: e.target.value })}
+                        disabled={!!pendingTasks[task.id]}
                       >
                         {TASK_STATUSES.map((s) => (
                           <option key={s} value={s}>

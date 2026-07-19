@@ -18,7 +18,14 @@ interface DailyLog {
 export function DailyLogsTab({ projectId }: { projectId: string }) {
   const { accessToken, role } = useAuth();
   const [logs, setLogs] = React.useState<DailyLog[]>([]);
-  const [logDate, setLogDate] = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [logDate, setLogDate] = React.useState(() => {
+    // Built from local date parts — toISOString() is UTC and shifts the
+    // default to yesterday/tomorrow for users near midnight in other zones.
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${now.getFullYear()}-${month}-${day}`;
+  });
   const [weather, setWeather] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
@@ -26,26 +33,38 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
 
   const canWrite = role === "admin" || role === "project_manager" || role === "field_crew";
 
-  const load = React.useCallback(async () => {
+  const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
     try {
-      const response = await fetch(`/api/projects/${projectId}/daily-logs`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setError(data.detail ?? "Failed to load daily logs");
-        return;
-      }
-      setLogs(data.items);
+      // The backend pages at 25/entry ascending by created_at, so a
+      // just-created log lands on the LAST page — follow next_cursor to
+      // exhaustion so it (and everything else) is always visible. List
+      // sizes here are small enough that a few sequential requests are fine.
+      const all: DailyLog[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/projects/${projectId}/daily-logs?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setError(data.detail ?? "Failed to load daily logs");
+          return;
+        }
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setLogs(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
   }, [accessToken, projectId]);
 
   React.useEffect(() => {
-    load();
-  }, [load]);
+    loadAll();
+  }, [loadAll]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -65,7 +84,7 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
       }
       setWeather("");
       setNotes("");
-      await load();
+      await loadAll();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {

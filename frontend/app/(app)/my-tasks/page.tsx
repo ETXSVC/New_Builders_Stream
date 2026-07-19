@@ -20,6 +20,9 @@ export default function MyTasksPage() {
   const { accessToken } = useAuth();
   const [tasks, setTasks] = React.useState<MyTask[]>([]);
   const [loading, setLoading] = React.useState(true);
+  // Per-task in-flight guard: disables a row's status Select while its
+  // PATCH is pending so rapid changes can't interleave.
+  const [pendingTasks, setPendingTasks] = React.useState<Record<string, boolean>>({});
   const [error, setError] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
@@ -47,8 +50,9 @@ export default function MyTasksPage() {
   }, [load]);
 
   async function setStatus(taskId: string, status: string) {
-    if (!accessToken) return;
+    if (!accessToken || pendingTasks[taskId]) return;
     setError(null);
+    setPendingTasks((prev) => ({ ...prev, [taskId]: true }));
     try {
       const response = await fetch(`/api/tasks/${taskId}`, {
         method: "PATCH",
@@ -63,6 +67,8 @@ export default function MyTasksPage() {
       setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status } : t)));
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
+    } finally {
+      setPendingTasks((prev) => ({ ...prev, [taskId]: false }));
     }
   }
 
@@ -92,6 +98,7 @@ export default function MyTasksPage() {
               className="w-32 h-8"
               value={task.status}
               onChange={(e) => setStatus(task.id, e.target.value)}
+              disabled={!!pendingTasks[task.id]}
             >
               {TASK_STATUSES.map((s) => (
                 <option key={s} value={s}>

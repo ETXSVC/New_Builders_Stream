@@ -21,26 +21,38 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
 
   const canUpload = role === "admin" || role === "project_manager";
 
-  const load = React.useCallback(async () => {
+  const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
     try {
-      const response = await fetch(`/api/projects/${projectId}/documents`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        setError(data.detail ?? "Failed to load documents");
-        return;
-      }
-      setDocs(data.items);
+      // The backend pages at 25/entry ascending by created_at, so a
+      // just-uploaded document lands on the LAST page — follow next_cursor
+      // to exhaustion so it (and everything else) is always visible. List
+      // sizes here are small enough that a few sequential requests are fine.
+      const all: Doc[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/projects/${projectId}/documents?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          setError(data.detail ?? "Failed to load documents");
+          return;
+        }
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setDocs(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
   }, [accessToken, projectId]);
 
   React.useEffect(() => {
-    load();
-  }, [load]);
+    loadAll();
+  }, [loadAll]);
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
@@ -63,7 +75,7 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
       }
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      await load();
+      await loadAll();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
@@ -97,7 +109,9 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-      URL.revokeObjectURL(url);
+      // Deferred: revoking synchronously can cancel the download in
+      // browsers that resolve the URL after the click event returns.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }

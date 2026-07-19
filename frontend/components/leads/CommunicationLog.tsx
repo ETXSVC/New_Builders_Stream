@@ -24,14 +24,27 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  const load = React.useCallback(async () => {
+  const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
     try {
-      const response = await fetch(`/api/leads/${leadId}/communications`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const data = await response.json();
-      if (response.ok) setEntries(data.items);
+      // The backend pages at 25/entry ascending by created_at, so a
+      // just-created entry lands on the LAST page — follow next_cursor to
+      // exhaustion so it (and everything else) is always visible. Log sizes
+      // are small enough that a few sequential requests are fine.
+      const all: Entry[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/leads/${leadId}/communications?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await response.json();
+        if (!response.ok) return;
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setEntries(all);
     } catch {
       // Non-blocking: the log section shows empty; the add-form's own error
       // handling covers the interactive path.
@@ -39,8 +52,8 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
   }, [accessToken, leadId]);
 
   React.useEffect(() => {
-    load();
-  }, [load]);
+    loadAll();
+  }, [loadAll]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -59,7 +72,7 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
         return;
       }
       setBody("");
-      await load();
+      await loadAll();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {

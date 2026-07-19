@@ -25,10 +25,16 @@ export default function LeadsPage() {
   const [statusFilter, setStatusFilter] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Request generation: a replace load (fresh filter) starts a new
+  // generation, and any load resolving under an older one discards its
+  // result — otherwise an in-flight Load-more from the previous filter
+  // could append stale rows onto the new filter's list.
+  const requestGenRef = React.useRef(0);
 
   const load = React.useCallback(
     async (cursor: string | null, replace: boolean) => {
       if (!accessToken) return;
+      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
       setLoading(true);
       setError(null);
       try {
@@ -39,6 +45,7 @@ export default function LeadsPage() {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         const data = await response.json();
+        if (generation !== requestGenRef.current) return;
         if (!response.ok) {
           setError(data.detail ?? "Failed to load leads");
           return;
@@ -46,9 +53,11 @@ export default function LeadsPage() {
         setLeads((prev) => (replace ? data.items : [...prev, ...data.items]));
         setNextCursor(data.next_cursor);
       } catch {
-        setError("Unable to reach the server. Check your connection and try again.");
+        if (generation === requestGenRef.current) {
+          setError("Unable to reach the server. Check your connection and try again.");
+        }
       } finally {
-        setLoading(false);
+        if (generation === requestGenRef.current) setLoading(false);
       }
     },
     [accessToken, statusFilter]

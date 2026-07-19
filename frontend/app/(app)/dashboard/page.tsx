@@ -4,7 +4,6 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { Nav } from "@/components/app-shell/Nav";
 import { SummaryCards } from "@/components/dashboard/SummaryCards";
 
 export default function DashboardPage() {
@@ -42,37 +41,24 @@ export default function DashboardPage() {
   const isStaffDashboard = role === "admin" || role === "project_manager" || role === "accountant";
 
   return (
-    <div>
-      <Nav companyId={decodeCompanyId(accessToken)} />
-      <main className="p-6 flex flex-col gap-6">
-        <h1 className="text-xl font-semibold">Dashboard</h1>
-        {!isStaffDashboard && <p className="text-sm text-slate-500">Loading your workspace…</p>}
-        {isStaffDashboard && (
-          <>
-            {(role === "admin" || role === "project_manager") && <SummaryCards />}
-            <div className="flex gap-4 text-sm">
-              {(role === "admin" || role === "project_manager") && (
-                <Link href="/leads" className="underline text-slate-700">
-                  Go to leads
-                </Link>
-              )}
-              <Link href="/projects" className="underline text-slate-700">
-                Go to projects
+    <main className="p-6 flex flex-col gap-6">
+      <h1 className="text-xl font-semibold">Dashboard</h1>
+      {!isStaffDashboard && <p className="text-sm text-slate-500">Loading your workspace…</p>}
+      {isStaffDashboard && (
+        <>
+          {(role === "admin" || role === "project_manager") && <SummaryCards />}
+          <div className="flex gap-4 text-sm">
+            {(role === "admin" || role === "project_manager") && (
+              <Link href="/leads" className="underline text-slate-700">
+                Go to leads
               </Link>
-            </div>
-          </>
-        )}
-      </main>
-    </div>
+            )}
+            <Link href="/projects" className="underline text-slate-700">
+              Go to projects
+            </Link>
+          </div>
+        </>
+      )}
+    </main>
   );
-}
-
-function decodeCompanyId(accessToken: string | null): string {
-  if (!accessToken) return "";
-  try {
-    const payload = JSON.parse(atob(accessToken.split(".")[1]));
-    return payload.default_company_id ?? "";
-  } catch {
-    return "";
-  }
 }
