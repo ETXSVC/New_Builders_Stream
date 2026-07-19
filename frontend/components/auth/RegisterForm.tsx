@@ -59,7 +59,7 @@ export function RegisterForm() {
         setError("Your account was created, but automatic sign-in failed. Use the link below to log in.");
         return;
       }
-      setSession(loginData.access_token, loginData.mfa_enrollment_required);
+      setSession(loginData.access_token, loginData.mfa_enrollment_required, loginData.role);
       // Two-factor authentication is optional: land on the dashboard like
       // any other successful registration. mfa_enrollment_required still
       // drives the "consider enabling 2FA" nudge on the account page, it
