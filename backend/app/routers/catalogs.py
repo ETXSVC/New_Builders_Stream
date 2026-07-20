@@ -21,7 +21,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
 from app.core.tier_gating import require_module
-from app.models import CostCatalogItem, EstimateLineItem, MarkupProfile
+from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
     CostCatalogItemCreateRequest,
     CostCatalogItemListResponse,
@@ -31,6 +31,7 @@ from app.schemas.cost_catalog_item import (
 from app.schemas.markup_profile import (
     MarkupProfileCreateRequest,
     MarkupProfileListResponse,
+    MarkupProfilePatchRequest,
     MarkupProfileResponse,
 )
 from app.services.catalog_resolution import resolve_visible_catalog_items
@@ -415,6 +416,61 @@ async def create_markup_profile(
     # explicit commit — Inherited Invariant #4.
 
     return MarkupProfileResponse.model_validate(profile)
+
+
+async def _get_markup_profile_or_404(current: CurrentUser, profile_id: uuid.UUID) -> MarkupProfile:
+    result = await current.session.execute(
+        select(MarkupProfile).where(MarkupProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
+    return profile
+
+
+@router.patch("/markup-profiles/{profile_id}", response_model=MarkupProfileResponse)
+async def update_markup_profile(
+    profile_id: uuid.UUID,
+    payload: MarkupProfilePatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> MarkupProfileResponse:
+    profile = await _get_markup_profile_or_404(current, profile_id)
+
+    if payload.name is not None:
+        profile.name = payload.name
+    if payload.overhead_pct is not None:
+        profile.overhead_pct = payload.overhead_pct
+    if payload.profit_pct is not None:
+        profile.profit_pct = payload.profit_pct
+
+    await current.session.flush()
+    return MarkupProfileResponse.model_validate(profile)
+
+
+@router.delete("/markup-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_markup_profile(
+    profile_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """409 if any Estimate references this profile — same "real, in-use
+    reference blocks the delete" reasoning as delete_catalog_item above."""
+    profile = await _get_markup_profile_or_404(current, profile_id)
+
+    estimate_result = await current.session.execute(
+        select(Estimate.id).where(Estimate.markup_profile_id == profile_id).limit(1)
+    )
+    if estimate_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a markup profile referenced by an estimate",
+        )
+
+    await current.session.delete(profile)
+    await current.session.flush()
 
 
 def _encode_id_cursor(id_: uuid.UUID) -> str:

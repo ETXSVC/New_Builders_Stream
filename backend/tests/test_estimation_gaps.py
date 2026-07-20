@@ -296,3 +296,46 @@ async def test_delete_catalog_item_succeeds_when_unreferenced(client):
 
     list_response = await client.get("/catalogs/items", headers=admin["headers"])
     assert item["id"] not in [i["id"] for i in list_response.json()["items"]]
+
+
+# -----------------------------------------------------------------------
+# PATCH/DELETE /markup-profiles/{id}
+# -----------------------------------------------------------------------
+
+
+async def test_patch_markup_profile(client):
+    admin = await _register_and_login(client, "Acme Construction", "patch-markup-profile-admin@acme.test")
+    profile = await _create_markup_profile(
+        client, admin["headers"], overhead_pct="10.00", profit_pct="15.00"
+    )
+
+    response = await client.patch(
+        f"/markup-profiles/{profile['id']}", json={"profit_pct": "20.00"}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["profit_pct"] == "20.00"
+    assert response.json()["overhead_pct"] == "10.00"
+
+
+async def test_delete_markup_profile_blocked_when_referenced(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-markup-profile-referenced-admin@acme.test"
+    )
+    profile = await _create_markup_profile(client, admin["headers"])
+    project = await _create_project(client, admin["headers"])
+    await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=profile["id"]
+    )
+
+    response = await client.delete(f"/markup-profiles/{profile['id']}", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_delete_markup_profile_succeeds_when_unreferenced(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-markup-profile-unreferenced-admin@acme.test"
+    )
+    profile = await _create_markup_profile(client, admin["headers"])
+
+    response = await client.delete(f"/markup-profiles/{profile['id']}", headers=admin["headers"])
+    assert response.status_code == 204
