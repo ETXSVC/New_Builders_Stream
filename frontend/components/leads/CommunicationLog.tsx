@@ -52,7 +52,9 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
   }, [accessToken, leadId]);
 
   React.useEffect(() => {
-    loadAll();
+    // Deferred to a promise callback so no setState in loadAll's call path
+    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
+    void Promise.resolve().then(() => loadAll());
   }, [loadAll]);
 
   async function handleAdd(e: React.FormEvent) {

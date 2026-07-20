@@ -51,7 +51,9 @@ export default function LeadDetailPage() {
   }, [accessToken, id]);
 
   React.useEffect(() => {
-    load();
+    // Deferred to a promise callback so no setState in load's call path
+    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
+    void Promise.resolve().then(() => load());
   }, [load]);
 
   async function patchLead(body: unknown, onSuccess?: (updated: Lead) => void) {

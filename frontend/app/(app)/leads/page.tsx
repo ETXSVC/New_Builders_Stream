@@ -64,7 +64,9 @@ export default function LeadsPage() {
   );
 
   React.useEffect(() => {
-    load(null, true);
+    // Deferred to a promise callback so no setState in load's call path
+    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
+    void Promise.resolve().then(() => load(null, true));
   }, [load]);
 
   return (

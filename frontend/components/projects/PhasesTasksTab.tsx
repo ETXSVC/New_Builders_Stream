@@ -64,7 +64,9 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
   }, [accessToken, authHeaders, projectId]);
 
   React.useEffect(() => {
-    load();
+    // Deferred to a promise callback so no setState in load's call path
+    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
+    void Promise.resolve().then(() => load());
   }, [load]);
 
   React.useEffect(() => {
