@@ -1,12 +1,12 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
-from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
+from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor, paginate
 from app.core.tier_gating import require_module
-from app.models import ChangeOrder
+from app.models import ChangeOrder, Project
 from app.routers.projects import _get_project_or_404
 from app.schemas.change_order import (
     ChangeOrderCreateRequest,
@@ -79,6 +79,81 @@ async def _get_change_order_or_404(current: CurrentUser, change_order_id: uuid.U
     if change_order is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Change Order not found")
     return change_order
+
+
+@router.get("/change-orders/{change_order_id}", response_model=ChangeOrderResponse)
+async def get_change_order(
+    change_order_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> ChangeOrderResponse:
+    """No client status scoping here (unlike list_change_orders/
+    list_all_change_orders below) — same "direct-by-id access isn't scoped,
+    only list-and-act-on-it flows are" precedent `_get_estimate_or_404`'s
+    docstring establishes for Estimates."""
+    change_order = await _get_change_order_or_404(current, change_order_id)
+    return ChangeOrderResponse.model_validate(change_order)
+
+
+@router.get("/change-orders", response_model=ChangeOrderListResponse)
+async def list_all_change_orders(
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    cursor: str | None = Query(None),
+) -> ChangeOrderListResponse:
+    """Company-wide (not nested under a project_id) — the discovery
+    mechanism a client needs to find every pending Change Order awaiting
+    their action across ALL their projects, without N per-project list
+    calls (spec Decision 1, item 8). `client` is scoped to `status="pending"`,
+    same as list_change_orders' own per-project scoping.
+
+    Joined to `projects` for `project_name` — a bare ChangeOrder row alone
+    isn't enough context for a cross-project list row (unlike the
+    per-project list, where the caller already knows which project they're
+    looking at).
+
+    This route hand-rolls cursor pagination (join queries can't pass a plain
+    `Select[tuple[Row]]` through `paginate()` the way a single-model query
+    can) rather than reusing `paginate()` directly — mirroring `catalogs.py`'s
+    own precedent of a bespoke pagination helper where the generic one
+    doesn't fit.
+    """
+    if status_filter is not None and status_filter not in ("pending", "approved", "rejected"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "status must be one of ('pending', 'approved', 'rejected')",
+        )
+
+    query = select(ChangeOrder, Project.name).join(Project, ChangeOrder.project_id == Project.id)
+
+    if current.role == "client":
+        query = query.where(ChangeOrder.status == "pending")
+    if status_filter is not None:
+        query = query.where(ChangeOrder.status == status_filter)
+
+    query = query.order_by(ChangeOrder.created_at.asc(), ChangeOrder.id.asc()).limit(limit + 1)
+    if cursor is not None:
+        cursor_created_at, cursor_id = decode_cursor(cursor)
+        query = query.where(
+            tuple_(ChangeOrder.created_at, ChangeOrder.id) > (cursor_created_at, cursor_id)
+        )
+
+    result = await current.session.execute(query)
+    rows = result.all()
+
+    next_cursor: str | None = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last_co, _ = rows[-1]
+        next_cursor = encode_cursor(last_co.created_at, last_co.id)
+
+    items = []
+    for change_order, project_name in rows:
+        response = ChangeOrderResponse.model_validate(change_order)
+        response.project_name = project_name
+        items.append(response)
+
+    return ChangeOrderListResponse(items=items, next_cursor=next_cursor)
 
 
 def _require_change_order_pending(change_order: ChangeOrder) -> None:

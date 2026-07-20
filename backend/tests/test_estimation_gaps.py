@@ -421,3 +421,77 @@ async def test_delete_estimate_409_once_sent(client):
 
     response = await client.delete(f"/estimates/{estimate_id}", headers=admin["headers"])
     assert response.status_code == 409
+
+
+# -----------------------------------------------------------------------
+# GET /change-orders/{id}, GET /change-orders
+# -----------------------------------------------------------------------
+
+# Shortest legal-transition path from a freshly created ("draft") project to
+# "active" — a Change Order can only be created against an active Project
+# (create_change_order's own docstring, app/routers/change_orders.py).
+# Copied from test_change_orders.py's own _PRECONDITION_PATH['active'].
+_ACTIVE_PRECONDITION_PATH = ["pre_construction", "active"]
+
+
+async def _advance_project_to_active(client, headers, project_id):
+    for step_status in _ACTIVE_PRECONDITION_PATH:
+        response = await client.patch(
+            f"/projects/{project_id}/status", json={"status": step_status}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+
+
+async def _create_change_order(client, headers, *, project_id, **overrides):
+    payload = {"description": "Add deck stairs", "cost_delta": "500.00"}
+    payload.update(overrides)
+    response = await client.post(
+        f"/projects/{project_id}/change-orders", json=payload, headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def test_get_single_change_order(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "get-single-change-order-admin@acme.test"
+    )
+    project = await _create_project(client, admin["headers"])
+    await _advance_project_to_active(client, admin["headers"], project["id"])
+    change_order = await _create_change_order(client, admin["headers"], project_id=project["id"])
+
+    response = await client.get(f"/change-orders/{change_order['id']}", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["description"] == "Add deck stairs"
+
+
+async def test_get_single_change_order_cross_tenant_404(client):
+    admin_a = await _register_and_login(
+        client, "Acme Construction", "get-single-change-order-a-admin@acme.test"
+    )
+    project = await _create_project(client, admin_a["headers"])
+    await _advance_project_to_active(client, admin_a["headers"], project["id"])
+    change_order = await _create_change_order(client, admin_a["headers"], project_id=project["id"])
+
+    admin_b = await _register_and_login(
+        client, "Beta Builders", "get-single-change-order-b-admin@acme.test"
+    )
+
+    response = await client.get(f"/change-orders/{change_order['id']}", headers=admin_b["headers"])
+    assert response.status_code == 404
+
+
+async def test_list_all_change_orders_scoped_to_pending_for_client(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "list-all-change-orders-admin@acme.test"
+    )
+    project = await _create_project(client, admin["headers"])
+    await _advance_project_to_active(client, admin["headers"], project["id"])
+    await _create_change_order(
+        client, admin["headers"], project_id=project["id"], description="Pending one"
+    )
+
+    response = await client.get("/change-orders", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) == 1
+    assert response.json()["items"][0]["project_name"] == project["name"]
