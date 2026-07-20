@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
 
 test("lead to won to drafted project through documents and daily logs", async ({ page }) => {
+  // 3x the config's 60s: this arc touches every CRM/PM page and Route
+  // Handler for the first time on a cold `next dev` server (while the
+  // foundation spec compile-storms the same server in a parallel worker),
+  // and the summed on-demand compilation cost alone can exceed 60s. The
+  // per-assertion timeouts below still bound each individual transition.
+  test.setTimeout(180_000);
   const suffix = randomUUID().slice(0, 8);
   const email = `e2e-crm-${suffix}@foundation.example`;
   const password = "correct-horse-battery-9";
@@ -32,13 +38,18 @@ test("lead to won to drafted project through documents and daily logs", async ({
 
     await page.getByLabel("Communication summary").fill("Discussed budget range");
     await page.getByRole("button", { name: "Add", exact: true }).click();
-    await expect(page.getByText("Discussed budget range")).toBeVisible();
+    // 15s (not the 5s default) on every assertion that immediately follows
+    // the FIRST hit of a BFF route: `next dev` compiles Route Handlers on
+    // demand, and this suite touches each CRM/PM handler for the first
+    // time, so each of these transitions pays the cold-compile cost the
+    // config's timeout comment describes for the auth routes.
+    await expect(page.getByText("Discussed budget range")).toBeVisible({ timeout: 15_000 });
   });
 
   await test.step("walk the lead to won", async () => {
     for (const label of ["Mark contacted", "Mark estimating", "Mark qualified", "Mark won"]) {
       await page.getByRole("button", { name: label }).click();
-      await expect(page.getByRole("button", { name: label })).toBeHidden();
+      await expect(page.getByRole("button", { name: label })).toBeHidden({ timeout: 15_000 });
     }
     await expect(page.getByText("a draft project was created automatically")).toBeVisible();
   });
@@ -49,12 +60,12 @@ test("lead to won to drafted project through documents and daily logs", async ({
     await expect(page.getByRole("heading", { name: `Kitchen ${suffix}` })).toBeVisible({ timeout: 15_000 });
     await page.getByLabel("Site address").fill("412 Maple St");
     await page.getByRole("button", { name: "Save changes" }).click();
-    await expect(page.getByText("Saved.")).toBeVisible();
+    await expect(page.getByText("Saved.")).toBeVisible({ timeout: 15_000 });
   });
 
   await test.step("advance the project to active", async () => {
     await page.getByRole("button", { name: "Move to pre-construction" }).click();
-    await expect(page.getByRole("button", { name: "Move to active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move to active" })).toBeVisible({ timeout: 15_000 });
     await page.getByRole("button", { name: "Move to active" }).click();
     await expect(page.getByRole("button", { name: "Move to completed" })).toBeVisible();
   });
@@ -63,14 +74,14 @@ test("lead to won to drafted project through documents and daily logs", async ({
     await page.getByRole("tab", { name: "Phases & tasks" }).click();
     await page.getByLabel("New phase name").fill("Framing");
     await page.getByRole("button", { name: "Add phase" }).click();
-    await expect(page.getByRole("button", { name: /Framing/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Framing/ })).toBeVisible({ timeout: 15_000 });
 
     await page.getByLabel("New task name").fill("Frame walls");
     await page.getByRole("button", { name: "Add task" }).click();
-    await expect(page.getByText("Frame walls")).toBeVisible();
+    await expect(page.getByText("Frame walls")).toBeVisible({ timeout: 15_000 });
 
     await page.getByLabel("Status for Frame walls").selectOption("done");
-    await expect(page.getByText("1 done")).toBeVisible();
+    await expect(page.getByText("1 done")).toBeVisible({ timeout: 15_000 });
   });
 
   await test.step("upload a document and download it back", async () => {
@@ -81,7 +92,7 @@ test("lead to won to drafted project through documents and daily logs", async ({
       buffer: Buffer.from("blueprint bytes"),
     });
     await page.getByRole("button", { name: "Upload" }).click();
-    await expect(page.getByText("site-plan.txt")).toBeVisible();
+    await expect(page.getByText("site-plan.txt")).toBeVisible({ timeout: 15_000 });
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download" }).click();
@@ -96,7 +107,7 @@ test("lead to won to drafted project through documents and daily logs", async ({
     await page.getByRole("tab", { name: "Daily logs" }).click();
     await page.getByLabel("Notes").fill("Poured foundation, clear skies.");
     await page.getByRole("button", { name: "Add log entry" }).click();
-    await expect(page.getByText("Poured foundation, clear skies.")).toBeVisible();
+    await expect(page.getByText("Poured foundation, clear skies.")).toBeVisible({ timeout: 15_000 });
   });
 
   await test.step("dashboard reflects the data", async () => {
