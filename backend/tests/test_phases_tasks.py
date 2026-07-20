@@ -488,3 +488,24 @@ async def test_patch_nonexistent_task_returns_404(client):
         headers=admin["headers"],
     )
     assert response.status_code == 404
+
+
+# --- Phase list (GET /projects/{id}/phases) ----------------------------------
+
+
+async def test_list_phases_returns_phases_with_nested_tasks_in_sequence_order(client):
+    admin = await _register_and_login(client, "Phase List Co", "phase-list@acme.test")
+    project_id = await _create_project(
+        client, admin, name="Phase List Project", site_address="2 Main St"
+    )
+
+    await _create_phase(client, admin, project_id, name="Second", sequence=2)
+    first_id = await _create_phase(client, admin, project_id, name="First", sequence=1)
+    await _create_task(client, admin, project_id, first_id, name="In First")
+
+    listed = await client.get(f"/projects/{project_id}/phases", headers=admin["headers"])
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    assert [p["name"] for p in items] == ["First", "Second"]
+    assert [t["name"] for t in items[0]["tasks"]] == ["In First"]
+    assert items[1]["tasks"] == []

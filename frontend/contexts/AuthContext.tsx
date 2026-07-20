@@ -5,6 +5,10 @@ import * as React from "react";
 interface AuthState {
   accessToken: string | null;
   mfaEnrollmentRequired: boolean;
+  // From TokenResponse.role (the user's role in their default company) —
+  // UI-rendering signal only; the backend's require_role checks remain the
+  // sole authorization boundary. null until a session is confirmed.
+  role: string | null;
 }
 
 interface AuthContextValue extends AuthState {
@@ -14,7 +18,7 @@ interface AuthContextValue extends AuthState {
   // that render differently for "definitely logged out" vs. "haven't
   // heard back yet" can check this instead of misreading null as logged out.
   isHydrating: boolean;
-  setSession: (accessToken: string, mfaEnrollmentRequired: boolean) => void;
+  setSession: (accessToken: string, mfaEnrollmentRequired: boolean, role: string) => void;
   clearSession: () => void;
 }
 
@@ -44,7 +48,7 @@ const REFRESH_MARGIN_MS = 60 * 1000;
 // network calls, it doesn't share one token across tabs.
 const REFRESH_LOCK_NAME = "builders-stream-auth-refresh";
 
-type RefreshResult = { access_token: string; mfa_enrollment_required: boolean };
+type RefreshResult = { access_token: string; mfa_enrollment_required: boolean; role: string };
 
 async function performRealRefresh(): Promise<RefreshResult | null> {
   try {
@@ -111,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = React.useState<AuthState>({
     accessToken: null,
     mfaEnrollmentRequired: false,
+    role: null,
   });
   const [isHydrating, setIsHydrating] = React.useState(true);
   const refreshTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -126,7 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const clearSession = React.useCallback(() => {
     sessionGenerationRef.current += 1;
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    setState({ accessToken: null, mfaEnrollmentRequired: false });
+    setState({ accessToken: null, mfaEnrollmentRequired: false, role: null });
   }, []);
 
   // Named function expression (not an arrow assigned to the outer const):
@@ -146,7 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           clearSession();
           return;
         }
-        setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required });
+        setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required, role: data.role });
         scheduleRefresh();
       }, ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS);
     },
@@ -154,9 +159,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const setSession = React.useCallback(
-    (accessToken: string, mfaEnrollmentRequired: boolean) => {
+    (accessToken: string, mfaEnrollmentRequired: boolean, role: string) => {
       sessionGenerationRef.current += 1;
-      setState({ accessToken, mfaEnrollmentRequired });
+      setState({ accessToken, mfaEnrollmentRequired, role });
       scheduleRefresh();
     },
     [scheduleRefresh]
@@ -175,7 +180,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     coordinatedRefresh(inFlightRefreshRef)
       .then((data) => {
         if (cancelled || sessionGenerationRef.current !== generationAtStart) return;
-        if (data) setSession(data.access_token, data.mfa_enrollment_required);
+        if (data) setSession(data.access_token, data.mfa_enrollment_required, data.role);
       })
       .finally(() => {
         if (!cancelled) setIsHydrating(false);

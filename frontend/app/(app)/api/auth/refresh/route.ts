@@ -18,12 +18,14 @@ export async function POST(request: NextRequest) {
       refresh_token: string;
       default_company_id: string;
       mfa_enrollment_required: boolean;
+      role: string;
     };
 
     const response = NextResponse.json({
       access_token: data.access_token,
       default_company_id: data.default_company_id,
       mfa_enrollment_required: data.mfa_enrollment_required,
+      role: data.role,
     });
     // Rotation (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md
     // Decision 4): every refresh replaces the cookie with the new token.

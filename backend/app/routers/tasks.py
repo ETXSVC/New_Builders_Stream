@@ -1,13 +1,24 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
-from app.models import Phase, Task
+from app.models import Phase, Project, Task
 from app.routers.projects import _get_project_or_404
-from app.schemas.phase import PhaseCreateRequest, PhaseResponse
-from app.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
+from app.schemas.phase import (
+    PhaseCreateRequest,
+    PhaseListResponse,
+    PhaseResponse,
+    PhaseWithTasksResponse,
+)
+from app.schemas.task import (
+    MyTaskListResponse,
+    MyTaskResponse,
+    TaskCreateRequest,
+    TaskResponse,
+    TaskUpdateRequest,
+)
 
 # Duplicated from projects.py rather than imported, matching leads.py's own
 # precedent for this identical ("admin", "project_manager") tuple
@@ -15,6 +26,11 @@ from app.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
 # router owns its role constants rather than reaching into another
 # router's private (underscore-prefixed) namespace for a value this small.
 _WRITE_ROLES = ("admin", "project_manager")
+
+# Same read set projects.py's _LIST_ROLES grants (each router owns its role
+# constants — established convention, see _WRITE_ROLES above). client is
+# excluded: their project view is the counts-only dashboard shape.
+_READ_ROLES = ("admin", "project_manager", "accountant", "field_crew")
 
 # Task 1.14: Phases and Tasks. Deliberately its OWN file rather than more
 # additions to projects.py (already the largest router at ~310 lines before
@@ -164,6 +180,88 @@ async def create_task(
     # No audit_log entry — same reasoning as create_phase above.
 
     return TaskResponse.model_validate(task)
+
+
+@router.get("/projects/{project_id}/phases", response_model=PhaseListResponse)
+async def list_phases(
+    project_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> PhaseListResponse:
+    """Phases ordered by (sequence, id), each with its tasks nested,
+    ordered by (created_at, id). _get_project_or_404 covers existence,
+    tenant scope, and field_crew's assigned-projects-only visibility, same
+    as the create routes above."""
+    project = await _get_project_or_404(current, project_id)
+
+    phase_result = await current.session.execute(
+        select(Phase).where(Phase.project_id == project.id).order_by(Phase.sequence, Phase.id)
+    )
+    phases = phase_result.scalars().all()
+
+    task_result = await current.session.execute(
+        select(Task)
+        .join(Phase, Task.phase_id == Phase.id)
+        .where(Phase.project_id == project.id)
+        .order_by(Task.created_at, Task.id)
+    )
+    tasks_by_phase: dict[uuid.UUID, list[Task]] = {}
+    for task in task_result.scalars().all():
+        tasks_by_phase.setdefault(task.phase_id, []).append(task)
+
+    return PhaseListResponse(
+        items=[
+            PhaseWithTasksResponse(
+                id=phase.id,
+                project_id=phase.project_id,
+                company_id=phase.company_id,
+                name=phase.name,
+                sequence=phase.sequence,
+                tasks=[TaskResponse.model_validate(t) for t in tasks_by_phase.get(phase.id, [])],
+            )
+            for phase in phases
+        ]
+    )
+
+
+@router.get("/tasks", response_model=MyTaskListResponse)
+async def list_my_tasks(
+    assignee: str = Query(...),
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> MyTaskListResponse:
+    """Cross-project list of the CURRENT USER's assigned tasks. `assignee`
+    accepts only the literal "me" — there is no legitimate frontend need to
+    list another user's assignments today (422 otherwise, YAGNI). Ordered
+    by due date (nulls last) then creation, capped at 200."""
+    if assignee != "me":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, 'assignee only supports the value "me"'
+        )
+
+    result = await current.session.execute(
+        select(Task, Project.id, Project.name)
+        .join(Phase, Task.phase_id == Phase.id)
+        .join(Project, Phase.project_id == Project.id)
+        .where(Task.assignee_id == current.user.id)
+        .order_by(Task.due_date.asc().nulls_last(), Task.created_at, Task.id)
+        .limit(200)
+    )
+    return MyTaskListResponse(
+        items=[
+            MyTaskResponse(
+                id=task.id,
+                phase_id=task.phase_id,
+                company_id=task.company_id,
+                name=task.name,
+                assignee_id=task.assignee_id,
+                due_date=task.due_date,
+                status=task.status,
+                created_at=task.created_at,
+                project_id=project_id,
+                project_name=project_name,
+            )
+            for task, project_id, project_name in result.all()
+        ]
+    )
 
 
 @router.patch("/tasks/{task_id}", response_model=TaskResponse)

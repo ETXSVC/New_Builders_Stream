@@ -2,6 +2,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.task import TaskResponse
+
 
 class PhaseCreateRequest(BaseModel):
     """Body for `POST /projects/{id}/phases` (Task 1.14)."""
@@ -25,3 +27,20 @@ class PhaseResponse(BaseModel):
     company_id: uuid.UUID
     name: str
     sequence: int
+
+
+class PhaseWithTasksResponse(PhaseResponse):
+    """`GET /projects/{id}/phases` item shape (CRM+PM frontend spec,
+    Decision 2 item 3): a phase plus its tasks, nested — the frontend's
+    Phases & tasks accordion renders exactly this."""
+
+    tasks: list[TaskResponse]
+
+
+class PhaseListResponse(BaseModel):
+    """NOT cursor-paginated, deliberately (unlike every other list envelope
+    in this codebase): phases-per-project is bounded small by the domain (a
+    construction project has a handful of phases, not thousands), and the
+    accordion UI needs them all at once anyway."""
+
+    items: list[PhaseWithTasksResponse]

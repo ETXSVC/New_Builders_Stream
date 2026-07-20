@@ -1,13 +1,14 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 
 export function Nav({ companyId }: { companyId: string }) {
   const router = useRouter();
-  const { accessToken, clearSession } = useAuth();
+  const { accessToken, role, clearSession } = useAuth();
   const [companyName, setCompanyName] = React.useState<string | null>(null);
 
   React.useEffect(() => {
@@ -42,9 +43,24 @@ export function Nav({ companyId }: { companyId: string }) {
     <header className="border-b border-slate-200 px-6 py-4 flex items-center justify-between">
       <span className="font-semibold">{companyName ?? "Builders Stream"}</span>
       <div className="flex items-center gap-4">
-        <a href="/account" className="text-sm text-slate-600 hover:text-slate-900">
+        {(role === "admin" || role === "project_manager") && (
+          <Link href="/leads" className="text-sm text-slate-600 hover:text-slate-900">
+            Leads
+          </Link>
+        )}
+        {(role === "admin" || role === "project_manager" || role === "accountant") && (
+          <Link href="/projects" className="text-sm text-slate-600 hover:text-slate-900">
+            Projects
+          </Link>
+        )}
+        {role === "field_crew" && (
+          <Link href="/my-tasks" className="text-sm text-slate-600 hover:text-slate-900">
+            My tasks
+          </Link>
+        )}
+        <Link href="/account" className="text-sm text-slate-600 hover:text-slate-900">
           Account
-        </a>
+        </Link>
         <Button variant="outline" size="sm" onClick={handleLogout}>
           Log out
         </Button>

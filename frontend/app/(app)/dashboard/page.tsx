@@ -1,46 +1,64 @@
 "use client";
 
+import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { Nav } from "@/components/app-shell/Nav";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { SummaryCards } from "@/components/dashboard/SummaryCards";
 
 export default function DashboardPage() {
-  const { accessToken } = useAuth();
+  const router = useRouter();
+  const { accessToken, role, isHydrating } = useAuth();
 
-  // Foundation ships no real dashboard content — every later sub-project
-  // (CRM+PM, Estimation, Compliance+Billing, Invoicing, Integrations)
-  // adds its own screens here. This page exists solely to prove the
-  // authenticated shell renders and the session survives navigation.
+  // Role landing rules (spec Decision 3): field_crew's home is My Tasks;
+  // a client's home is their project (or the sanitized projects list when
+  // they have several). admin/PM/accountant stay here.
+  React.useEffect(() => {
+    if (isHydrating || !accessToken) return;
+    if (role === "field_crew") {
+      router.replace("/my-tasks");
+      return;
+    }
+    if (role === "client") {
+      (async () => {
+        try {
+          const response = await fetch("/api/projects", {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const data = await response.json();
+          if (response.ok && data.items.length === 1) {
+            router.replace(`/projects/${data.items[0].id}`);
+          } else {
+            router.replace("/projects");
+          }
+        } catch {
+          router.replace("/projects");
+        }
+      })();
+    }
+  }, [isHydrating, accessToken, role, router]);
+
+  const isStaffDashboard = role === "admin" || role === "project_manager" || role === "accountant";
+
   return (
-    <div>
-      {/* company_id will come from a real session/company-context once a
-          later sub-project needs to switch companies; for Foundation the
-          JWT's default_company_id (decoded client-side from the access
-          token's payload — not verified client-side, display only) is
-          the only company a fresh registration ever has. */}
-      <Nav companyId={decodeCompanyId(accessToken)} />
-      <main className="p-6">
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Welcome</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-slate-600">
-              This is a placeholder. Real project, lead, and estimate screens land in later sub-projects.
-            </p>
-          </CardContent>
-        </Card>
-      </main>
-    </div>
+    <main className="p-6 flex flex-col gap-6">
+      <h1 className="text-xl font-semibold">Dashboard</h1>
+      {!isStaffDashboard && <p className="text-sm text-slate-500">Loading your workspace…</p>}
+      {isStaffDashboard && (
+        <>
+          {(role === "admin" || role === "project_manager") && <SummaryCards />}
+          <div className="flex gap-4 text-sm">
+            {(role === "admin" || role === "project_manager") && (
+              <Link href="/leads" className="underline text-slate-700">
+                Go to leads
+              </Link>
+            )}
+            <Link href="/projects" className="underline text-slate-700">
+              Go to projects
+            </Link>
+          </div>
+        </>
+      )}
+    </main>
   );
-}
-
-function decodeCompanyId(accessToken: string | null): string {
-  if (!accessToken) return "";
-  try {
-    const payload = JSON.parse(atob(accessToken.split(".")[1]));
-    return payload.default_company_id ?? "";
-  } catch {
-    return "";
-  }
 }

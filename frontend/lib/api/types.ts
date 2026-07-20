@@ -200,6 +200,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/companies/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Company Members
+         * @description Members of the caller's active tenant, for task-assignee pickers.
+         *     company_users' RLS scopes rows to the active tenant; the explicit
+         *     company_id filter narrows a parent-company session (which can see
+         *     descendant memberships) to the active tenant only — an assignee picker
+         *     should offer this company's people, not the whole subtree's.
+         */
+        get: operations["list_company_members_companies_members_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/companies/{company_id}": {
         parameters: {
             query?: never;
@@ -469,6 +493,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/documents/{document_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document
+         * @description Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
+         *     Same visibility rules as the document list: _get_project_or_404 covers
+         *     tenant/role/project scope, and the document must belong to the path's
+         *     project (a mismatched pair 404s — same id-pair discipline as every
+         *     nested resource in this codebase). storage_path is always relative to
+         *     settings.storage_root (document_storage.py's invariant), and file_name
+         *     was traversal-validated at upload, so joining them is safe here.
+         */
+        get: operations["download_document_projects__project_id__documents__document_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects/{project_id}/daily-logs": {
         parameters: {
             query?: never;
@@ -551,7 +601,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Phases
+         * @description Phases ordered by (sequence, id), each with its tasks nested,
+         *     ordered by (created_at, id). _get_project_or_404 covers existence,
+         *     tenant scope, and field_crew's assigned-projects-only visibility, same
+         *     as the create routes above.
+         */
+        get: operations["list_phases_projects__project_id__phases_get"];
         put?: never;
         /** Create Phase */
         post: operations["create_phase_projects__project_id__phases_post"];
@@ -572,6 +629,29 @@ export interface paths {
         put?: never;
         /** Create Task */
         post: operations["create_task_projects__project_id__tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List My Tasks
+         * @description Cross-project list of the CURRENT USER's assigned tasks. `assignee`
+         *     accepts only the literal "me" — there is no legitimate frontend need to
+         *     list another user's assignments today (422 otherwise, YAGNI). Ordered
+         *     by due date (nulls last) then creation, capped at 200.
+         */
+        get: operations["list_my_tasks_tasks_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2141,6 +2221,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dashboard Summary */
+        get: operations["dashboard_summary_dashboard_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -2541,6 +2638,34 @@ export interface components {
              */
             created_at: string;
         };
+        /**
+         * CompanyMemberListResponse
+         * @description Not paginated: a company's member count is seat-bounded (billing's
+         *     included_seats model), far below any size needing cursors.
+         */
+        CompanyMemberListResponse: {
+            /** Items */
+            items: components["schemas"]["CompanyMemberResponse"][];
+        };
+        /**
+         * CompanyMemberResponse
+         * @description One row of GET /companies/members — the task assignee picker's data
+         *     source. user_id (not `id`) deliberately: this is a membership view, and
+         *     the value callers need is exactly what tasks.assignee_id stores.
+         */
+        CompanyMemberResponse: {
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** Full Name */
+            full_name: string;
+            /** Email */
+            email: string;
+            /** Role */
+            role: string;
+        };
         /** CompanyResponse */
         CompanyResponse: {
             /**
@@ -2868,6 +2993,20 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * DashboardSummaryResponse
+         * @description GET /dashboard/summary (CRM+PM frontend spec, Decision 2 item 2).
+         *     Exact COUNTs, not page-derived approximations — the list endpoints are
+         *     cursor-paginated with no total field.
+         */
+        DashboardSummaryResponse: {
+            /** Open Leads */
+            open_leads: number;
+            /** Active Projects */
+            active_projects: number;
+            /** Tasks Due This Week */
+            tasks_due_this_week: number;
         };
         /**
          * DocumentListResponse
@@ -3766,6 +3905,58 @@ export interface components {
             otpauth_uri: string;
         };
         /**
+         * MyTaskListResponse
+         * @description NOT cursor-paginated: one user's open assignment list is bounded
+         *     small in practice; capped at 200 in the route.
+         */
+        MyTaskListResponse: {
+            /** Items */
+            items: components["schemas"]["MyTaskResponse"][];
+        };
+        /**
+         * MyTaskResponse
+         * @description `GET /tasks?assignee=me` item shape: TaskResponse enriched with
+         *     project context (tasks reference only their phase directly, but the My
+         *     Tasks view renders "task · project · due date" rows).
+         */
+        MyTaskResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Phase Id
+             * Format: uuid
+             */
+            phase_id: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Name */
+            name: string;
+            /** Assignee Id */
+            assignee_id: string | null;
+            /** Due Date */
+            due_date: string | null;
+            /** Status */
+            status: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Project Name */
+            project_name: string;
+        };
+        /**
          * PhaseCreateRequest
          * @description Body for `POST /projects/{id}/phases` (Task 1.14).
          */
@@ -3777,6 +3968,17 @@ export interface components {
              * @default 0
              */
             sequence: number;
+        };
+        /**
+         * PhaseListResponse
+         * @description NOT cursor-paginated, deliberately (unlike every other list envelope
+         *     in this codebase): phases-per-project is bounded small by the domain (a
+         *     construction project has a handful of phases, not thousands), and the
+         *     accordion UI needs them all at once anyway.
+         */
+        PhaseListResponse: {
+            /** Items */
+            items: components["schemas"]["PhaseWithTasksResponse"][];
         };
         /**
          * PhaseResponse
@@ -3805,6 +4007,35 @@ export interface components {
             /** Sequence */
             sequence: number;
         };
+        /**
+         * PhaseWithTasksResponse
+         * @description `GET /projects/{id}/phases` item shape (CRM+PM frontend spec,
+         *     Decision 2 item 3): a phase plus its tasks, nested — the frontend's
+         *     Phases & tasks accordion renders exactly this.
+         */
+        PhaseWithTasksResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Name */
+            name: string;
+            /** Sequence */
+            sequence: number;
+            /** Tasks */
+            tasks: components["schemas"]["TaskResponse"][];
+        };
         /** PortalSessionResponse */
         PortalSessionResponse: {
             /** Url */
@@ -3820,6 +4051,20 @@ export interface components {
             ap_aging: components["schemas"]["AgingEntry"][];
             /** Tax Liability Estimate */
             tax_liability_estimate: string;
+        };
+        /**
+         * ProjectClientDashboardListResponse
+         * @description List envelope for the `client` role's `GET /projects` (CRM+PM
+         *     frontend spec, Decision 2 item 6): same sanitized per-project shape the
+         *     detail route already serves that role, so a client can discover their
+         *     project(s) at all — before this, `client` could GET a project by id but
+         *     had no route that would ever tell them the id.
+         */
+        ProjectClientDashboardListResponse: {
+            /** Items */
+            items: components["schemas"]["ProjectClientDashboardResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /**
          * ProjectClientDashboardResponse
@@ -4369,6 +4614,8 @@ export interface components {
              * @default false
              */
             mfa_enrollment_required: boolean;
+            /** Role */
+            role: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -4627,6 +4874,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_company_members_companies_members_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyMemberListResponse"];
                 };
             };
         };
@@ -4985,7 +5252,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectListResponse"];
+                    "application/json": components["schemas"]["ProjectListResponse"] | components["schemas"]["ProjectClientDashboardListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5202,6 +5469,38 @@ export interface operations {
             };
         };
     };
+    download_document_projects__project_id__documents__document_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_daily_logs_projects__project_id__daily_logs_get: {
         parameters: {
             query?: {
@@ -5258,6 +5557,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DailyLogResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_phases_projects__project_id__phases_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhaseListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5328,6 +5658,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_my_tasks_tasks_get: {
+        parameters: {
+            query: {
+                assignee: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyTaskListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6980,6 +7341,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_summary_dashboard_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardSummaryResponse"];
                 };
             };
         };

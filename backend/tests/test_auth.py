@@ -147,3 +147,25 @@ async def test_register_creates_a_trialing_pro_subscription(client):
             assert subscription.stripe_subscription_id.startswith("sub_fake_")
     finally:
         await engine.dispose()
+
+
+async def test_login_and_refresh_return_role(client):
+    await client.post(
+        "/auth/register",
+        json={
+            "company_name": "Role Co",
+            "admin_full_name": "Role Admin",
+            "admin_email": "role-admin@acme.test",
+            "admin_password": "supersecret123",
+        },
+    )
+    login = await client.post(
+        "/auth/login", json={"email": "role-admin@acme.test", "password": "supersecret123"}
+    )
+    assert login.status_code == 200
+    body = login.json()
+    assert body["role"] == "admin"
+
+    refresh = await client.post("/auth/refresh", json={"refresh_token": body["refresh_token"]})
+    assert refresh.status_code == 200
+    assert refresh.json()["role"] == "admin"

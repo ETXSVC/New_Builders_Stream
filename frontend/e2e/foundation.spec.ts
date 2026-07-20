@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
 
-test("register, land on account (MFA nudge), reach dashboard, log out, log back in", async ({ page }) => {
+test("register, land on dashboard, see MFA nudge on account, log out, log back in", async ({ page }) => {
   const uniqueSuffix = randomUUID().slice(0, 8);
   // ".example" (not ".test") — the live backend's EmailStr validation
   // (email_validator, no `test_environment` override outside the pytest
@@ -22,27 +22,19 @@ test("register, land on account (MFA nudge), reach dashboard, log out, log back 
     await page.getByLabel("Password").fill(password);
     await page.getByRole("button", { name: "Create account" }).click();
 
-    // A freshly-registered admin always has mfa_enrollment_required=true
-    // (backend/app/routers/auth.py — deliberate, Task 7's MFA design), so
-    // registration lands on /account, not /dashboard.
-    await expect(page).toHaveURL(/\/account/, { timeout: 15_000 });
-    await expect(page.getByRole("heading", { name: "Two-factor authentication" })).toBeVisible();
+    // Two-factor auth is optional (the forced /account detour was removed
+    // when mfa_enrollment_required stopped driving a redirect): every
+    // successful registration lands straight on the dashboard.
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   });
 
-  await test.step("dashboard shell is reachable", async () => {
-    // Proves the route compiles/renders and middleware's refresh_token
-    // cookie gate passes — NOT a guarantee that AuthContext's client-side
-    // hydration produced a confirmed session (DashboardPage renders its
-    // "Welcome" card unconditionally regardless of accessToken; see
-    // dashboard/page.tsx). A real hydration failure wouldn't fail this
-    // assertion. Known further gap, documented in the plan's Task 15
-    // closeout section: React Strict Mode (default-on, next.config.ts has
-    // no override) double-invokes AuthContext's mount effect in `next dev`,
-        // which can fire two /api/auth/refresh calls against a single-use
-    // rotating token — the same reuse-detection race already documented
-    // for multi-tab sessions, but reachable here within one tab/dev-only.
-    await page.goto("/dashboard");
-    await expect(page.getByRole("heading", { name: "Welcome" })).toBeVisible();
+  await test.step("account page still nudges MFA enrollment", async () => {
+    // mfa_enrollment_required no longer forces a detour, but the account
+    // page must still surface the enrollment section for an un-enrolled
+    // admin — that's the "optional, not gone" half of the MFA design.
+    await page.goto("/account");
+    await expect(page.getByRole("heading", { name: "Two-factor authentication" })).toBeVisible();
   });
 
   await test.step("log out", async () => {
@@ -55,9 +47,9 @@ test("register, land on account (MFA nudge), reach dashboard, log out, log back 
     await page.getByLabel("Password").fill(password);
     await page.getByRole("button", { name: "Log in" }).click();
 
-    // MFA still isn't enrolled, so re-login lands on /account again — this
-    // is deterministic, not flaky: the same backend rule applies every time.
-    await expect(page).toHaveURL(/\/account/, { timeout: 15_000 });
-    await expect(page.getByRole("heading", { name: "Two-factor authentication" })).toBeVisible();
+    // Same optional-MFA rule on login: straight to the dashboard even
+    // though the user never enrolled.
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
   });
 });

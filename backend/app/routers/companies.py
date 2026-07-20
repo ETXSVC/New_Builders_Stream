@@ -5,11 +5,49 @@ from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, get_current_user, require_role
 from app.core.tier_gating import require_module
-from app.models import Company
-from app.schemas.company import CompanyResponse, CreateChildCompanyRequest
+from app.models import Company, CompanyUser, User
+from app.schemas.company import (
+    CompanyMemberListResponse,
+    CompanyMemberResponse,
+    CompanyResponse,
+    CreateChildCompanyRequest,
+)
 from app.services.audit import write_audit_log
 
 router = APIRouter(prefix="/companies", tags=["companies"])
+
+_MEMBER_LIST_ROLES = ("admin", "project_manager")
+
+
+# Declared ABOVE GET /{company_id}: FastAPI matches routes in declaration
+# order, and the UUID path-param route would otherwise swallow the literal
+# /members segment (422 UUID parse error).
+@router.get("/members", response_model=CompanyMemberListResponse)
+async def list_company_members(
+    current: CurrentUser = Depends(require_role(*_MEMBER_LIST_ROLES)),
+) -> CompanyMemberListResponse:
+    """Members of the caller's active tenant, for task-assignee pickers.
+    company_users' RLS scopes rows to the active tenant; the explicit
+    company_id filter narrows a parent-company session (which can see
+    descendant memberships) to the active tenant only — an assignee picker
+    should offer this company's people, not the whole subtree's."""
+    result = await current.session.execute(
+        select(CompanyUser, User.full_name, User.email)
+        .join(User, CompanyUser.user_id == User.id)
+        .where(CompanyUser.company_id == current.company_id)
+        .order_by(User.full_name, User.email)
+    )
+    return CompanyMemberListResponse(
+        items=[
+            CompanyMemberResponse(
+                user_id=membership.user_id,
+                full_name=full_name,
+                email=email,
+                role=membership.role,
+            )
+            for membership, full_name, email in result.all()
+        ]
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)

@@ -1,9 +1,12 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
+from app.config import settings
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
@@ -11,6 +14,7 @@ from app.models.project import VALID_STATUSES
 from app.schemas.daily_log import DailyLogCreateRequest, DailyLogListResponse, DailyLogResponse
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.schemas.project import (
+    ProjectClientDashboardListResponse,
     ProjectClientDashboardResponse,
     ProjectCreateRequest,
     ProjectListResponse,
@@ -31,22 +35,24 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # extension beyond the literal API spec route table).
 _WRITE_ROLES = ("admin", "project_manager")
 
-# Every role that has *some* read access to Project Management per the
+# Every role that gets the FULL ProjectResponse shape on reads per the
 # matrix: Admin/PM (full), Field Crew (assigned only), Accountant (read,
 # financial-fields-only — Phase 1 has no financial fields on `projects` yet,
-# so this collapses to plain read), Client (sanitized dashboard only, and
-# only via GET /projects/{id} — see _GET_ROLES below, which is a superset of
-# this tuple).
+# so this collapses to plain read). Client is deliberately absent (see
+# _GET_ROLES below, which is a superset of this tuple): every route that
+# still uses _LIST_ROLES directly (documents, daily logs) stays closed to
+# `client`.
 _LIST_ROLES = ("admin", "project_manager", "accountant", "field_crew")
 
-# GET /projects/{id} is the one route every read-capable role can hit — the
-# API spec (Section 4) documents exactly one GET /projects/{id} route and
-# design decision #8 makes it double as the client's sanitized dashboard
-# (response SHAPE differs by role, not access). `client` is deliberately
-# absent from _LIST_ROLES: the API spec only ever documents GET
-# /projects/{id} for clients, never a list route, so GET /projects blocks
-# `client` with a 403 (the more literal reading of "there's no list route
-# for clients at all" — see Task 1.12's spec and this router's tests).
+# The roles for GET /projects and GET /projects/{id} — every read-capable
+# role including `client`. Design decision #8 makes GET /projects/{id}
+# double as the client's sanitized dashboard (response SHAPE differs by
+# role, not access), and the CRM+PM frontend spec (Decision 2 item 6)
+# extends the same role-based-shape split to GET /projects: without a list
+# route, `client` could GET a project by id but had no route that would
+# ever tell them the id. This reverses Task 1.12's earlier "client gets
+# 403 on the list route" reading — see list_projects and this router's
+# tests.
 _GET_ROLES = (*_LIST_ROLES, "client")
 
 # Daily Logs are the one Project Management write field_crew has at all
@@ -183,13 +189,13 @@ async def create_project(
     return ProjectResponse.model_validate(project)
 
 
-@router.get("", response_model=ProjectListResponse)
+@router.get("", response_model=ProjectListResponse | ProjectClientDashboardListResponse)
 async def list_projects(
-    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+    current: CurrentUser = Depends(require_role(*_GET_ROLES)),
     status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
-) -> ProjectListResponse:
+) -> ProjectListResponse | ProjectClientDashboardListResponse:
     if status_filter is not None and status_filter not in VALID_STATUSES:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"status must be one of {VALID_STATUSES}"
@@ -219,6 +225,17 @@ async def list_projects(
         cursor=cursor,
         limit=limit,
     )
+
+    # Role-based response SHAPE, same split get_project already makes:
+    # `client` gets the sanitized dashboard shape per item. The per-row
+    # _client_dashboard_response COUNT queries are acceptable at list scale
+    # (page size is capped at MAX_LIMIT; a client typically has 1-2
+    # projects) — an aggregate rewrite is premature here.
+    if current.role == "client":
+        return ProjectClientDashboardListResponse(
+            items=[await _client_dashboard_response(current, row) for row in rows],
+            next_cursor=next_cursor,
+        )
 
     return ProjectListResponse(
         items=[ProjectResponse.model_validate(row) for row in rows],
@@ -555,6 +572,37 @@ async def list_documents(
         items=[DocumentResponse.model_validate(row) for row in rows],
         next_cursor=next_cursor,
     )
+
+
+@router.get("/{project_id}/documents/{document_id}/download")
+async def download_document(
+    project_id: uuid.UUID,
+    document_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
+) -> FileResponse:
+    """Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
+    Same visibility rules as the document list: _get_project_or_404 covers
+    tenant/role/project scope, and the document must belong to the path's
+    project (a mismatched pair 404s — same id-pair discipline as every
+    nested resource in this codebase). storage_path is always relative to
+    settings.storage_root (document_storage.py's invariant), and file_name
+    was traversal-validated at upload, so joining them is safe here."""
+    project = await _get_project_or_404(current, project_id)
+
+    result = await current.session.execute(
+        select(Document).where(Document.id == document_id, Document.project_id == project.id)
+    )
+    document = result.scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    file_path = Path(settings.storage_root) / document.storage_path
+    if not file_path.is_file():
+        # Row exists but the file is gone from disk — surface as 404 (the
+        # resource is unretrievable) rather than a raw 500.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document file missing from storage")
+
+    return FileResponse(file_path, filename=document.file_name, media_type="application/octet-stream")
 
 
 @router.post(

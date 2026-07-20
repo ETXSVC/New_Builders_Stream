@@ -43,7 +43,7 @@ export function LoginForm() {
         setError(data.detail ?? "Login failed");
         return;
       }
-      setSession(data.access_token, data.mfa_enrollment_required);
+      setSession(data.access_token, data.mfa_enrollment_required, data.role);
       // Two-factor authentication is optional: land on the dashboard like
       // any other successful login. mfa_enrollment_required still drives
       // the "consider enabling 2FA" nudge on the account page, it just
