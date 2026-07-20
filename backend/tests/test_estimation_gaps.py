@@ -19,7 +19,12 @@ helper, matching `test_estimate_pdf_export.py:562`'s exact precedent for
 calling `_generate_estimate_pdf` directly.
 """
 
+import asyncpg
+
 from app.tasks.estimate_pdf import _generate_estimate_pdf
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+
+OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register_and_login(client, company_name, email):
@@ -77,6 +82,59 @@ async def _create_estimate(client, headers, *, project_id, markup_profile_id):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _catalog_item_payload(**overrides):
+    payload = {"category": "Framing", "name": "Lumber", "unit": "bf", "unit_rate": "4.00"}
+    payload.update(overrides)
+    return payload
+
+
+async def _create_catalog_item(client, headers, **overrides):
+    response = await client.post(
+        "/catalogs/items", json=_catalog_item_payload(**overrides), headers=headers
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _add_membership_directly(user_id, company_id, role):
+    """Grants an existing user a real company_users row in a company they
+    neither registered nor were invited into — there is no legitimate API
+    path for this (see test_cost_catalog.py's module docstring for the full
+    chicken-and-egg explanation). Test-setup plumbing, duplicated per-file
+    rather than shared, matching this codebase's established convention
+    (test_cost_catalog.py, test_tenant_isolation_phase3.py both carry their
+    own copy)."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) "
+            "VALUES ($1, $2, $3, now())",
+            company_id,
+            user_id,
+            role,
+        )
+    finally:
+        await conn.close()
+
+
+async def _create_child_with_membership(client, parent, name, role="admin"):
+    """Creates a real child branch via the actual API route, then grants the
+    parent admin membership in it directly, so the SAME admin token can act
+    as either company via the X-Tenant-ID header — identical to
+    test_cost_catalog.py's helper of the same name. Child-branch creation is
+    Enterprise-gated (Task 5.7), so the caller must have already flipped
+    `parent`'s tier via `set_subscription_tier` before calling this."""
+    create = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": name},
+        headers=parent["headers"],
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+    await _add_membership_directly(parent["user_id"], child_id, role)
+    return child_id
 
 
 # -----------------------------------------------------------------------
@@ -139,3 +197,102 @@ async def test_pdf_download_cross_tenant_404(client):
 
     response = await client.get(f"/estimates/{estimate['id']}/pdf", headers=admin_b["headers"])
     assert response.status_code == 404
+
+
+# -----------------------------------------------------------------------
+# PATCH/DELETE /catalogs/items/{id}
+# -----------------------------------------------------------------------
+
+
+async def test_patch_catalog_item_updates_rate(client):
+    admin = await _register_and_login(client, "Acme Construction", "patch-catalog-item-admin@acme.test")
+    item = await _create_catalog_item(client, admin["headers"])
+
+    response = await client.patch(
+        f"/catalogs/items/{item['id']}", json={"unit_rate": "4.50"}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["unit_rate"] == "4.50"
+    assert response.json()["name"] == "Lumber"  # untouched field preserved
+
+
+async def test_patch_catalog_item_cross_tenant_404(client):
+    admin_a = await _register_and_login(
+        client, "Acme Construction", "patch-catalog-item-a-admin@acme.test"
+    )
+    item = await _create_catalog_item(client, admin_a["headers"])
+
+    admin_b = await _register_and_login(client, "Beta Builders", "patch-catalog-item-b-admin@acme.test")
+
+    response = await client.patch(
+        f"/catalogs/items/{item['id']}", json={"unit_rate": "9.00"}, headers=admin_b["headers"]
+    )
+    assert response.status_code == 404
+
+
+async def test_delete_catalog_item_blocked_when_referenced(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-catalog-item-referenced-admin@acme.test"
+    )
+    item = await _create_catalog_item(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    project = await _create_project(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+    lines_response = await client.put(
+        f"/estimates/{estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": item["id"], "quantity": "10"}]},
+        headers=admin["headers"],
+    )
+    assert lines_response.status_code == 200, lines_response.text
+
+    response = await client.delete(f"/catalogs/items/{item['id']}", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_delete_catalog_item_blocked_when_overridden(client):
+    """Parent company creates an item; a child branch overrides it; deleting
+    the parent's original must 409, not silently orphan the override (the
+    model's ondelete="SET NULL" would otherwise let this succeed and turn
+    the override into a standalone item without warning).
+
+    Child-branch context switch follows test_cost_catalog.py's established
+    pattern exactly: `POST /companies/{id}/children` creates the child row
+    but grants the creating admin no membership in it, so
+    `_create_child_with_membership` grants that membership directly via the
+    owner connection, and the same admin token then acts as the child by
+    adding the `X-Tenant-ID` header (real membership, not header-spoofing).
+    Child-branch creation is Enterprise-gated (Task 5.7), hence the
+    `set_subscription_tier` call registration alone wouldn't satisfy.
+    """
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-catalog-item-overridden-admin@acme.test"
+    )
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    item = await _create_catalog_item(client, admin["headers"])
+    child_id = await _create_child_with_membership(client, admin, "Child Co")
+    child_headers = {**admin["headers"], "X-Tenant-ID": child_id}
+
+    override = await client.post(
+        f"/catalogs/items/{item['id']}/override",
+        json=_catalog_item_payload(name="Better Lumber", unit_rate="5.00"),
+        headers=child_headers,
+    )
+    assert override.status_code == 201, override.text
+
+    response = await client.delete(f"/catalogs/items/{item['id']}", headers=admin["headers"])
+    assert response.status_code == 409
+
+
+async def test_delete_catalog_item_succeeds_when_unreferenced(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-catalog-item-unreferenced-admin@acme.test"
+    )
+    item = await _create_catalog_item(client, admin["headers"])
+
+    response = await client.delete(f"/catalogs/items/{item['id']}", headers=admin["headers"])
+    assert response.status_code == 204
+
+    list_response = await client.get("/catalogs/items", headers=admin["headers"])
+    assert item["id"] not in [i["id"] for i in list_response.json()["items"]]

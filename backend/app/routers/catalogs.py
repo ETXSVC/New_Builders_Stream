@@ -21,10 +21,11 @@ from sqlalchemy.orm import InstrumentedAttribute
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
 from app.core.tier_gating import require_module
-from app.models import CostCatalogItem, MarkupProfile
+from app.models import CostCatalogItem, EstimateLineItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
     CostCatalogItemCreateRequest,
     CostCatalogItemListResponse,
+    CostCatalogItemPatchRequest,
     CostCatalogItemResponse,
 )
 from app.schemas.markup_profile import (
@@ -171,6 +172,86 @@ async def create_catalog_item_override(
     # explicit commit — Inherited Invariant #4.
 
     return CostCatalogItemResponse.model_validate(item)
+
+
+async def _get_catalog_item_or_404(current: CurrentUser, item_id: uuid.UUID) -> CostCatalogItem:
+    result = await current.session.execute(
+        select(CostCatalogItem).where(CostCatalogItem.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Catalog item not found")
+    return item
+
+
+@router.patch("/catalogs/items/{item_id}", response_model=CostCatalogItemResponse)
+async def update_catalog_item(
+    item_id: uuid.UUID,
+    payload: CostCatalogItemPatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> CostCatalogItemResponse:
+    """Edits category/name/unit/unit_rate on an existing item. Does not
+    touch `EstimateLineItem.unit_rate_snapshot` on any estimate that already
+    referenced this item at some past rate — snapshots are immutable by
+    design (see `replace_estimate_line_items`'s own docstring in
+    estimates.py); only future line-item adds/recalculates see the new
+    rate."""
+    item = await _get_catalog_item_or_404(current, item_id)
+
+    if payload.category is not None:
+        item.category = payload.category
+    if payload.name is not None:
+        item.name = payload.name
+    if payload.unit is not None:
+        item.unit = payload.unit
+    if payload.unit_rate is not None:
+        item.unit_rate = payload.unit_rate
+
+    await current.session.flush()
+    return CostCatalogItemResponse.model_validate(item)
+
+
+@router.delete("/catalogs/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_catalog_item(
+    item_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """409 if any EstimateLineItem references this item, or any other
+    CostCatalogItem overrides it (parent_catalog_item_id points here) —
+    both are real, in-use references the model's own ondelete behavior
+    (SET NULL for overrides; no FK at all constrains line items, since
+    unit_rate_snapshot already copied the rate) would otherwise let this
+    delete silently proceed through, orphaning history a caller almost
+    certainly didn't intend to lose. Checked before the DELETE is issued —
+    one transaction, one outcome, same discipline every other guarded
+    mutation in this codebase uses.
+    """
+    item = await _get_catalog_item_or_404(current, item_id)
+
+    line_item_result = await current.session.execute(
+        select(EstimateLineItem.id).where(EstimateLineItem.cost_catalog_item_id == item_id).limit(1)
+    )
+    if line_item_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a catalog item referenced by an estimate line item",
+        )
+
+    override_result = await current.session.execute(
+        select(CostCatalogItem.id).where(CostCatalogItem.parent_catalog_item_id == item_id).limit(1)
+    )
+    if override_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a catalog item that has child-company overrides",
+        )
+
+    await current.session.delete(item)
+    await current.session.flush()
 
 
 def _paginate_resolved_items(

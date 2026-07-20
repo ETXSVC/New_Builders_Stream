@@ -24,6 +24,17 @@ class CostCatalogItemCreateRequest(BaseModel):
     unit_rate: Decimal
 
 
+class CostCatalogItemPatchRequest(BaseModel):
+    """Body for `PATCH /catalogs/items/{id}`. All fields optional — a PATCH
+    only touches what's supplied, matching `ProjectPatchRequest`'s own
+    all-optional convention (`app/schemas/project.py`)."""
+
+    category: str | None = Field(None, min_length=1, max_length=100)
+    name: str | None = Field(None, min_length=1, max_length=255)
+    unit: str | None = Field(None, min_length=1, max_length=50)
+    unit_rate: Decimal | None = None
+
+
 class CostCatalogItemResponse(BaseModel):
     """Full model, plus `is_override` — a value trivially derivable from
     this row's own `parent_catalog_item_id` (`is_override =
