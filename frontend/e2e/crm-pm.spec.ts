@@ -19,7 +19,9 @@ test("lead to won to drafted project through documents and daily logs", async ({
   });
 
   await test.step("create a lead and log a communication", async () => {
-    await page.getByRole("link", { name: "Leads" }).click();
+    // exact: true — the dashboard also renders a "Go to leads" card link,
+    // and getByRole's name matching is substring by default.
+    await page.getByRole("link", { name: "Leads", exact: true }).click();
     await page.getByRole("link", { name: "New lead" }).click();
     await page.getByLabel("Contact name").fill("Ada Contact");
     await page.getByLabel("Project name").fill(`Kitchen ${suffix}`);
