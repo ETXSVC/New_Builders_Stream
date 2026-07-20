@@ -32,6 +32,7 @@ from app.schemas.estimate import (
     EstimateCreateRequest,
     EstimateDetailResponse,
     EstimateListResponse,
+    EstimatePatchRequest,
     EstimateRejectRequest,
     EstimateResponse,
 )
@@ -222,6 +223,68 @@ async def create_estimate(
     # commits current.session once, after this handler returns.
 
     return EstimateResponse.model_validate(estimate)
+
+
+@router.patch("/{estimate_id}", response_model=EstimateResponse)
+async def update_estimate(
+    estimate_id: uuid.UUID,
+    payload: EstimatePatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> EstimateResponse:
+    """Draft-only (spec Decision 1, item 5) — 409 once sent/approved/rejected,
+    same "existence/tenant before semantic validation" ordering every other
+    guarded mutation in this router uses. Only `markup_profile_id` is
+    accepted; changing it does NOT retroactively touch already-computed
+    `subtotal`/`total` or any line item's `unit_rate_snapshot` — a caller
+    must re-run `POST /calculate` to see the new markup applied, same
+    "recalculation is a deliberate, explicit step" precedent
+    `calculate_estimate_totals`'s own docstring establishes.
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.status != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate must be in 'draft' status to edit, got '{estimate.status}'",
+        )
+
+    markup_result = await current.session.execute(
+        select(MarkupProfile).where(MarkupProfile.id == payload.markup_profile_id)
+    )
+    if markup_result.scalar_one_or_none() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
+
+    estimate.markup_profile_id = payload.markup_profile_id
+    await current.session.flush()
+    return EstimateResponse.model_validate(estimate)
+
+
+@router.delete("/{estimate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_estimate(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """Draft-only, same guard as update_estimate above. Line items cascade
+    with the parent row at the DB level — migration `0007_estimates_schema.py`
+    declares `estimate_line_items.estimate_id` with `ondelete="CASCADE"`
+    (verified directly in that migration file), so no explicit
+    `delete(EstimateLineItem)` call is needed here before deleting the
+    estimate itself; Postgres removes the child rows as part of the same
+    statement."""
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.status != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate must be in 'draft' status to delete, got '{estimate.status}'",
+        )
+
+    await current.session.delete(estimate)
+    await current.session.flush()
 
 
 @router.get("", response_model=EstimateListResponse)

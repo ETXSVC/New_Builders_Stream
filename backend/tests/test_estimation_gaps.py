@@ -339,3 +339,85 @@ async def test_delete_markup_profile_succeeds_when_unreferenced(client):
 
     response = await client.delete(f"/markup-profiles/{profile['id']}", headers=admin["headers"])
     assert response.status_code == 204
+
+
+# -----------------------------------------------------------------------
+# PATCH/DELETE /estimates/{id}
+# -----------------------------------------------------------------------
+
+
+async def test_patch_estimate_changes_markup_profile_while_draft(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "patch-estimate-admin@acme.test"
+    )
+    markup_a = await _create_markup_profile(client, admin["headers"], name="A")
+    markup_b = await _create_markup_profile(client, admin["headers"], name="B")
+    project = await _create_project(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup_a["id"]
+    )
+
+    response = await client.patch(
+        f"/estimates/{estimate['id']}",
+        json={"markup_profile_id": markup_b["id"]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["markup_profile_id"] == markup_b["id"]
+
+
+async def test_patch_estimate_409_once_sent(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "patch-estimate-sent-admin@acme.test"
+    )
+    markup = await _create_markup_profile(client, admin["headers"])
+    project = await _create_project(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+    estimate_id = estimate["id"]
+    await client.put(f"/estimates/{estimate_id}/lines", json={"items": []}, headers=admin["headers"])
+    await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    await client.post(f"/estimates/{estimate_id}/send-for-signature", headers=admin["headers"])
+
+    response = await client.patch(
+        f"/estimates/{estimate_id}",
+        json={"markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409
+
+
+async def test_delete_estimate_while_draft(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-estimate-admin@acme.test"
+    )
+    markup = await _create_markup_profile(client, admin["headers"])
+    project = await _create_project(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+
+    response = await client.delete(f"/estimates/{estimate['id']}", headers=admin["headers"])
+    assert response.status_code == 204
+
+    get_response = await client.get(f"/estimates/{estimate['id']}", headers=admin["headers"])
+    assert get_response.status_code == 404
+
+
+async def test_delete_estimate_409_once_sent(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "delete-estimate-sent-admin@acme.test"
+    )
+    markup = await _create_markup_profile(client, admin["headers"])
+    project = await _create_project(client, admin["headers"])
+    estimate = await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+    estimate_id = estimate["id"]
+    await client.put(f"/estimates/{estimate_id}/lines", json={"items": []}, headers=admin["headers"])
+    await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    await client.post(f"/estimates/{estimate_id}/send-for-signature", headers=admin["headers"])
+
+    response = await client.delete(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert response.status_code == 409
