@@ -84,3 +84,27 @@ class CostCatalogItemListResponse(BaseModel):
 
     items: list[CostCatalogItemResponse]
     next_cursor: str | None = None
+
+
+class CostCatalogItemBulkCreateRequest(BaseModel):
+    """Body for `POST /catalogs/items/bulk` — CSV import. Max 500 rows per
+    call (spec Decision 9): large enough for a real catalog seed, small
+    enough that one request stays well within normal timeout/payload
+    budgets without needing chunked upload."""
+
+    items: list[CostCatalogItemCreateRequest] = Field(..., max_length=500)
+
+
+class CostCatalogItemBulkResultEntry(BaseModel):
+    """One row's outcome. `detail` is populated on `status="error"` only —
+    the created item's id isn't returned per-row (the caller can re-list to
+    see the full resulting catalog); this response is a validation report,
+    not a bulk-create response envelope."""
+
+    index: int
+    status: str
+    detail: str | None = None
+
+
+class CostCatalogItemBulkResponse(BaseModel):
+    results: list[CostCatalogItemBulkResultEntry]

@@ -554,3 +554,102 @@ async def test_estimate_list_includes_parent_name_for_project_and_lead(client):
     names = {item["parent_name"] for item in response.json()["items"]}
     assert "Kitchen Remodel" in names
     assert lead["project_name"] in names
+
+
+# -----------------------------------------------------------------------
+# POST /catalogs/items/bulk
+# -----------------------------------------------------------------------
+
+# Deviation from the plan doc's own Task 7 Step 1 sample test: the plan's
+# `test_bulk_import_partial_failure_reports_per_row` sends a second row with
+# `"name": ""`, expecting it to reach the router's per-row try/except as an
+# `"error"` result. That's not what actually happens — `items` is typed
+# `list[CostCatalogItemCreateRequest]`, so Pydantic validates every row's own
+# field constraints (`name: str = Field(..., min_length=1, ...)`) at
+# request-PARSING time, before the handler body runs at all. A row failing
+# those constraints produces a 422 for the WHOLE request, not a 200 with a
+# per-row "error" entry — verified below in
+# `test_bulk_import_schema_invalid_row_422s_whole_request`, which exists
+# specifically to pin down and document that actual behavior (the plan's own
+# Task 7 Step 4 note flags this exact discrepancy and requires it be
+# resolved with a real, verified test rather than silently left as a false
+# claim).
+#
+# `test_bulk_import_partial_failure_reports_per_row` below is rewritten to
+# exercise the per-row try/except with a row that IS schema-valid (passes
+# every `CostCatalogItemCreateRequest` field constraint, since `Decimal` has
+# no digit-count limit at the Pydantic layer) but fails only once the INSERT
+# actually reaches Postgres: `unit_rate`'s column type is `Numeric(12, 2)` —
+# at most 10 integer digits — so a value like `999999999999.99` (12 integer
+# digits) raises a DB-level numeric-overflow error at `flush()` time, which
+# is exactly the "reason only detectable at insert time" the plan's Step 4
+# note asks for. This is the one such failure mode this model actually has;
+# there is no uniqueness/FK constraint on `CostCatalogItem` independent of
+# Pydantic's own checks, matching what the plan's note already predicted.
+
+
+async def test_bulk_import_partial_failure_reports_per_row(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "bulk-import-partial-admin@acme.test"
+    )
+    response = await client.post(
+        "/catalogs/items/bulk",
+        json={
+            "items": [
+                {"category": "Framing", "name": "Lumber", "unit": "bf", "unit_rate": "4.00"},
+                {
+                    "category": "Framing",
+                    "name": "Overflow",
+                    "unit": "bf",
+                    "unit_rate": "999999999999.99",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    results = response.json()["results"]
+    assert results[0]["status"] == "created"
+    assert results[1]["status"] == "error"
+
+    list_response = await client.get("/catalogs/items", headers=admin["headers"])
+    assert len(list_response.json()["items"]) == 1
+
+
+async def test_bulk_import_schema_invalid_row_422s_whole_request(client):
+    """Documents the actual (not the plan's originally-assumed) behavior for
+    a row that fails `CostCatalogItemCreateRequest`'s own field constraints:
+    Pydantic rejects the ENTIRE request with a 422 before
+    `bulk_create_catalog_items` ever runs, so nothing is created — not even
+    the first, otherwise-valid row."""
+    admin = await _register_and_login(
+        client, "Acme Construction", "bulk-import-schema-invalid-admin@acme.test"
+    )
+    response = await client.post(
+        "/catalogs/items/bulk",
+        json={
+            "items": [
+                {"category": "Framing", "name": "Lumber", "unit": "bf", "unit_rate": "4.00"},
+                {"category": "Framing", "name": "", "unit": "bf", "unit_rate": "4.00"},
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422
+
+    list_response = await client.get("/catalogs/items", headers=admin["headers"])
+    assert list_response.json()["items"] == []
+
+
+async def test_bulk_import_rejects_over_500_rows(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "bulk-import-over-500-admin@acme.test"
+    )
+    items = [
+        {"category": "C", "name": f"Item {i}", "unit": "ea", "unit_rate": "1.00"}
+        for i in range(501)
+    ]
+    response = await client.post(
+        "/catalogs/items/bulk", json={"items": items}, headers=admin["headers"]
+    )
+    assert response.status_code == 422

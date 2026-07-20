@@ -23,6 +23,9 @@ from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, de
 from app.core.tier_gating import require_module
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
+    CostCatalogItemBulkCreateRequest,
+    CostCatalogItemBulkResponse,
+    CostCatalogItemBulkResultEntry,
     CostCatalogItemCreateRequest,
     CostCatalogItemListResponse,
     CostCatalogItemPatchRequest,
@@ -253,6 +256,76 @@ async def delete_catalog_item(
 
     await current.session.delete(item)
     await current.session.flush()
+
+
+@router.post("/catalogs/items/bulk", response_model=CostCatalogItemBulkResponse)
+async def bulk_create_catalog_items(
+    payload: CostCatalogItemBulkCreateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> CostCatalogItemBulkResponse:
+    """CSV-import batch create. Each row is inserted independently — one
+    bad row (already caught at the Pydantic layer for most malformed
+    input, since `items` is `list[CostCatalogItemCreateRequest]`) does not
+    abort the rest. `Field(..., max_length=500)` on the request schema
+    already rejects an oversized batch with a 422 before this handler body
+    runs at all, so no additional length check is needed here.
+
+    Every successfully created row is flushed individually (not batched
+    into one flush at the end) so a later row's insert failure — e.g. a
+    DB-level constraint this schema doesn't already catch — doesn't roll
+    back an earlier row's success within the same request; each row is its
+    own outcome, matching the per-row report this route promises.
+
+    Deviation from the plan doc's own Task 7 Step 4 sample code: the plan
+    wrote a plain `await current.session.rollback()` inside the per-row
+    `except` block. That does NOT do what its own docstring claims —
+    `rollback()` on an `AsyncSession` rolls back the session's entire
+    ambient transaction, not just the failing row's own pending work.
+    Because `get_current_user` (Inherited Invariant #4) commits
+    `current.session` only ONCE, after this handler returns, every row's
+    `flush()` up to that point shares that same not-yet-committed
+    transaction; calling `session.rollback()` after row N's failure was
+    verified (via `test_bulk_import_partial_failure_reports_per_row`) to
+    silently discard every EARLIER row's already-"created" insert too — the
+    exact bug the docstring's "doesn't roll back an earlier row's success"
+    claim was supposed to prevent, not cause. Each row's insert is wrapped
+    in its own SAVEPOINT via `session.begin_nested()` instead: on success
+    the nested transaction releases (folding the row into the outer,
+    still-uncommitted transaction); on failure only that SAVEPOINT rolls
+    back, leaving every earlier row's flushed insert untouched for the
+    final commit.
+    """
+    results: list[CostCatalogItemBulkResultEntry] = []
+
+    for index, item_payload in enumerate(payload.items):
+        try:
+            async with current.session.begin_nested():
+                item = CostCatalogItem(
+                    company_id=current.company_id,
+                    parent_catalog_item_id=None,
+                    category=item_payload.category,
+                    name=item_payload.name,
+                    unit=item_payload.unit,
+                    unit_rate=item_payload.unit_rate,
+                )
+                current.session.add(item)
+                await current.session.flush()
+            results.append(CostCatalogItemBulkResultEntry(index=index, status="created"))
+        except Exception as exc:  # noqa: BLE001 - deliberately broad: this
+            # route's entire purpose is "report every row's outcome, never
+            # let one row's failure abort the batch or crash the request" —
+            # any exception from a single row's insert must be caught and
+            # turned into that row's own error entry, not propagated. The
+            # `async with begin_nested()` block above has already issued
+            # `ROLLBACK TO SAVEPOINT` on exception exit, so no explicit
+            # rollback call is needed (or correct) here.
+            results.append(
+                CostCatalogItemBulkResultEntry(index=index, status="error", detail=str(exc))
+            )
+
+    return CostCatalogItemBulkResponse(results=results)
 
 
 def _paginate_resolved_items(
