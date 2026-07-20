@@ -75,6 +75,11 @@ class EstimateResponse(BaseModel):
     pdf_generated_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Populated by the router via a join to Project.name or Lead.project_name
+    # — not a mapped relationship on Estimate. Defaults to None so
+    # create_estimate's existing `EstimateResponse.model_validate(estimate)`
+    # call (no join available there) doesn't need to change.
+    parent_name: str | None = None
 
 
 class EstimateListResponse(BaseModel):

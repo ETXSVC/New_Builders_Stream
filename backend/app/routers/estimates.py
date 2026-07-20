@@ -324,10 +324,39 @@ async def list_estimates(
         limit=limit,
     )
 
-    return EstimateListResponse(
-        items=[EstimateResponse.model_validate(row) for row in rows],
-        next_cursor=next_cursor,
-    )
+    # parent_name resolution: two disjoint id sets (project-backed vs
+    # lead-backed estimates in this page), each resolved with one query —
+    # avoids N+1 without needing a join in the base paginate() query (which
+    # would have to LEFT JOIN both projects and leads and coalesce, adding
+    # complexity to the one Select paginate() operates on for a page that
+    # may be entirely one kind or the other).
+    project_ids = {row.project_id for row in rows if row.project_id is not None}
+    lead_ids = {row.lead_id for row in rows if row.lead_id is not None}
+
+    project_names: dict[uuid.UUID, str] = {}
+    if project_ids:
+        project_result = await current.session.execute(
+            select(Project.id, Project.name).where(Project.id.in_(project_ids))
+        )
+        project_names = dict(project_result.all())
+
+    lead_names: dict[uuid.UUID, str] = {}
+    if lead_ids:
+        lead_result = await current.session.execute(
+            select(Lead.id, Lead.project_name).where(Lead.id.in_(lead_ids))
+        )
+        lead_names = dict(lead_result.all())
+
+    items = []
+    for row in rows:
+        response = EstimateResponse.model_validate(row)
+        if row.project_id is not None:
+            response.parent_name = project_names.get(row.project_id)
+        elif row.lead_id is not None:
+            response.parent_name = lead_names.get(row.lead_id)
+        items.append(response)
+
+    return EstimateListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.get("/{estimate_id}", response_model=EstimateDetailResponse)

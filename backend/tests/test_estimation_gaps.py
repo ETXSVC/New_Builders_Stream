@@ -495,3 +495,62 @@ async def test_list_all_change_orders_scoped_to_pending_for_client(client):
     assert response.status_code == 200, response.text
     assert len(response.json()["items"]) == 1
     assert response.json()["items"][0]["project_name"] == project["name"]
+
+
+# -----------------------------------------------------------------------
+# GET /estimates — parent_name enrichment
+# -----------------------------------------------------------------------
+
+
+def _lead_payload(**overrides):
+    payload = {
+        "contact_name": "Ada",
+        "project_name": "Bathroom Remodel",
+        "email": "ada@example.com",
+        "project_type": "Remodel",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _create_lead(client, headers, **overrides):
+    response = await client.post("/leads", json=_lead_payload(**overrides), headers=headers)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def test_estimate_list_includes_parent_name_for_project_and_lead(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "parent-name-admin@acme.test"
+    )
+    markup = await _create_markup_profile(client, admin["headers"])
+
+    project = await _create_project(client, admin["headers"], name="Kitchen Remodel")
+    await _create_estimate(
+        client, admin["headers"], project_id=project["id"], markup_profile_id=markup["id"]
+    )
+
+    lead = await _create_lead(client, admin["headers"])
+    # Advance the lead through the legal transition path (new -> contacted
+    # -> estimating, per app/services/lead_transitions.py /
+    # tests/test_lead_state_machine.py's _PRECONDITION_PATH) to reach a
+    # status in _LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE
+    # (app/routers/estimates.py) so POST /estimates accepts a lead_id bind.
+    for step_status in ("contacted", "estimating"):
+        transition = await client.patch(
+            f"/leads/{lead['id']}", json={"status": step_status}, headers=admin["headers"]
+        )
+        assert transition.status_code == 200, transition.text
+
+    lead_estimate = await client.post(
+        "/estimates",
+        json={"lead_id": lead["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert lead_estimate.status_code == 201, lead_estimate.text
+
+    response = await client.get("/estimates", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    names = {item["parent_name"] for item in response.json()["items"]}
+    assert "Kitchen Remodel" in names
+    assert lead["project_name"] in names
