@@ -21,15 +21,20 @@ from sqlalchemy.orm import InstrumentedAttribute
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
 from app.core.tier_gating import require_module
-from app.models import CostCatalogItem, MarkupProfile
+from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
+    CostCatalogItemBulkCreateRequest,
+    CostCatalogItemBulkResponse,
+    CostCatalogItemBulkResultEntry,
     CostCatalogItemCreateRequest,
     CostCatalogItemListResponse,
+    CostCatalogItemPatchRequest,
     CostCatalogItemResponse,
 )
 from app.schemas.markup_profile import (
     MarkupProfileCreateRequest,
     MarkupProfileListResponse,
+    MarkupProfilePatchRequest,
     MarkupProfileResponse,
 )
 from app.services.catalog_resolution import resolve_visible_catalog_items
@@ -171,6 +176,156 @@ async def create_catalog_item_override(
     # explicit commit — Inherited Invariant #4.
 
     return CostCatalogItemResponse.model_validate(item)
+
+
+async def _get_catalog_item_or_404(current: CurrentUser, item_id: uuid.UUID) -> CostCatalogItem:
+    result = await current.session.execute(
+        select(CostCatalogItem).where(CostCatalogItem.id == item_id)
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Catalog item not found")
+    return item
+
+
+@router.patch("/catalogs/items/{item_id}", response_model=CostCatalogItemResponse)
+async def update_catalog_item(
+    item_id: uuid.UUID,
+    payload: CostCatalogItemPatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> CostCatalogItemResponse:
+    """Edits category/name/unit/unit_rate on an existing item. Does not
+    touch `EstimateLineItem.unit_rate_snapshot` on any estimate that already
+    referenced this item at some past rate — snapshots are immutable by
+    design (see `replace_estimate_line_items`'s own docstring in
+    estimates.py); only future line-item adds/recalculates see the new
+    rate."""
+    item = await _get_catalog_item_or_404(current, item_id)
+
+    if payload.category is not None:
+        item.category = payload.category
+    if payload.name is not None:
+        item.name = payload.name
+    if payload.unit is not None:
+        item.unit = payload.unit
+    if payload.unit_rate is not None:
+        item.unit_rate = payload.unit_rate
+
+    await current.session.flush()
+    return CostCatalogItemResponse.model_validate(item)
+
+
+@router.delete("/catalogs/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_catalog_item(
+    item_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """409 if any EstimateLineItem references this item, or any other
+    CostCatalogItem overrides it (parent_catalog_item_id points here) —
+    both are real, in-use references the model's own ondelete behavior
+    (SET NULL for overrides; no FK at all constrains line items, since
+    unit_rate_snapshot already copied the rate) would otherwise let this
+    delete silently proceed through, orphaning history a caller almost
+    certainly didn't intend to lose. Checked before the DELETE is issued —
+    one transaction, one outcome, same discipline every other guarded
+    mutation in this codebase uses.
+    """
+    item = await _get_catalog_item_or_404(current, item_id)
+
+    line_item_result = await current.session.execute(
+        select(EstimateLineItem.id).where(EstimateLineItem.cost_catalog_item_id == item_id).limit(1)
+    )
+    if line_item_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a catalog item referenced by an estimate line item",
+        )
+
+    override_result = await current.session.execute(
+        select(CostCatalogItem.id).where(CostCatalogItem.parent_catalog_item_id == item_id).limit(1)
+    )
+    if override_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a catalog item that has child-company overrides",
+        )
+
+    await current.session.delete(item)
+    await current.session.flush()
+
+
+@router.post("/catalogs/items/bulk", response_model=CostCatalogItemBulkResponse)
+async def bulk_create_catalog_items(
+    payload: CostCatalogItemBulkCreateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> CostCatalogItemBulkResponse:
+    """CSV-import batch create. Each row is inserted independently — one
+    bad row (already caught at the Pydantic layer for most malformed
+    input, since `items` is `list[CostCatalogItemCreateRequest]`) does not
+    abort the rest. `Field(..., max_length=500)` on the request schema
+    already rejects an oversized batch with a 422 before this handler body
+    runs at all, so no additional length check is needed here.
+
+    Every successfully created row is flushed individually (not batched
+    into one flush at the end) so a later row's insert failure — e.g. a
+    DB-level constraint this schema doesn't already catch — doesn't roll
+    back an earlier row's success within the same request; each row is its
+    own outcome, matching the per-row report this route promises.
+
+    Deviation from the plan doc's own Task 7 Step 4 sample code: the plan
+    wrote a plain `await current.session.rollback()` inside the per-row
+    `except` block. That does NOT do what its own docstring claims —
+    `rollback()` on an `AsyncSession` rolls back the session's entire
+    ambient transaction, not just the failing row's own pending work.
+    Because `get_current_user` (Inherited Invariant #4) commits
+    `current.session` only ONCE, after this handler returns, every row's
+    `flush()` up to that point shares that same not-yet-committed
+    transaction; calling `session.rollback()` after row N's failure was
+    verified (via `test_bulk_import_partial_failure_reports_per_row`) to
+    silently discard every EARLIER row's already-"created" insert too — the
+    exact bug the docstring's "doesn't roll back an earlier row's success"
+    claim was supposed to prevent, not cause. Each row's insert is wrapped
+    in its own SAVEPOINT via `session.begin_nested()` instead: on success
+    the nested transaction releases (folding the row into the outer,
+    still-uncommitted transaction); on failure only that SAVEPOINT rolls
+    back, leaving every earlier row's flushed insert untouched for the
+    final commit.
+    """
+    results: list[CostCatalogItemBulkResultEntry] = []
+
+    for index, item_payload in enumerate(payload.items):
+        try:
+            async with current.session.begin_nested():
+                item = CostCatalogItem(
+                    company_id=current.company_id,
+                    parent_catalog_item_id=None,
+                    category=item_payload.category,
+                    name=item_payload.name,
+                    unit=item_payload.unit,
+                    unit_rate=item_payload.unit_rate,
+                )
+                current.session.add(item)
+                await current.session.flush()
+            results.append(CostCatalogItemBulkResultEntry(index=index, status="created"))
+        except Exception as exc:  # noqa: BLE001 - deliberately broad: this
+            # route's entire purpose is "report every row's outcome, never
+            # let one row's failure abort the batch or crash the request" —
+            # any exception from a single row's insert must be caught and
+            # turned into that row's own error entry, not propagated. The
+            # `async with begin_nested()` block above has already issued
+            # `ROLLBACK TO SAVEPOINT` on exception exit, so no explicit
+            # rollback call is needed (or correct) here.
+            results.append(
+                CostCatalogItemBulkResultEntry(index=index, status="error", detail=str(exc))
+            )
+
+    return CostCatalogItemBulkResponse(results=results)
 
 
 def _paginate_resolved_items(
@@ -334,6 +489,61 @@ async def create_markup_profile(
     # explicit commit — Inherited Invariant #4.
 
     return MarkupProfileResponse.model_validate(profile)
+
+
+async def _get_markup_profile_or_404(current: CurrentUser, profile_id: uuid.UUID) -> MarkupProfile:
+    result = await current.session.execute(
+        select(MarkupProfile).where(MarkupProfile.id == profile_id)
+    )
+    profile = result.scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
+    return profile
+
+
+@router.patch("/markup-profiles/{profile_id}", response_model=MarkupProfileResponse)
+async def update_markup_profile(
+    profile_id: uuid.UUID,
+    payload: MarkupProfilePatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> MarkupProfileResponse:
+    profile = await _get_markup_profile_or_404(current, profile_id)
+
+    if payload.name is not None:
+        profile.name = payload.name
+    if payload.overhead_pct is not None:
+        profile.overhead_pct = payload.overhead_pct
+    if payload.profit_pct is not None:
+        profile.profit_pct = payload.profit_pct
+
+    await current.session.flush()
+    return MarkupProfileResponse.model_validate(profile)
+
+
+@router.delete("/markup-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_markup_profile(
+    profile_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """409 if any Estimate references this profile — same "real, in-use
+    reference blocks the delete" reasoning as delete_catalog_item above."""
+    profile = await _get_markup_profile_or_404(current, profile_id)
+
+    estimate_result = await current.session.execute(
+        select(Estimate.id).where(Estimate.markup_profile_id == profile_id).limit(1)
+    )
+    if estimate_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Cannot delete a markup profile referenced by an estimate",
+        )
+
+    await current.session.delete(profile)
+    await current.session.flush()
 
 
 def _encode_id_cursor(id_: uuid.UUID) -> str:

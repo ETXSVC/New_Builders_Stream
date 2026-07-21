@@ -30,6 +30,15 @@ class EstimateCreateRequest(BaseModel):
     markup_profile_id: uuid.UUID
 
 
+class EstimatePatchRequest(BaseModel):
+    """Body for `PATCH /estimates/{id}` — draft-only. Only `markup_profile_id`
+    is editable (spec Decision 1, item 5): the project/lead binding is
+    immutable after creation, matching `EstimateCreateRequest`'s own
+    "exactly one of project_id/lead_id, decided once at creation" framing."""
+
+    markup_profile_id: uuid.UUID
+
+
 class EstimateResponse(BaseModel):
     """Full model, including the three PDF-tracking fields (`pdf_status`,
     `pdf_storage_path`, `pdf_generated_at`) — design decision #5's
@@ -66,6 +75,11 @@ class EstimateResponse(BaseModel):
     pdf_generated_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Populated by the router via a join to Project.name or Lead.project_name
+    # — not a mapped relationship on Estimate. Defaults to None so
+    # create_estimate's existing `EstimateResponse.model_validate(estimate)`
+    # call (no join available there) doesn't need to change.
+    parent_name: str | None = None
 
 
 class EstimateListResponse(BaseModel):

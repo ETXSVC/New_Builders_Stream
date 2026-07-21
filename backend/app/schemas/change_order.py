@@ -47,6 +47,15 @@ class ChangeOrderResponse(BaseModel):
     status: str
     esignature_id: uuid.UUID | None
     created_at: datetime
+    # Populated by the router via a join (not a mapped relationship on
+    # ChangeOrder) — see list_all_change_orders below. `create_change_order`/
+    # `list_change_orders` (nested-under-project routes, where the caller
+    # already knows the project) still pass this through
+    # model_validate(change_order) with project_name simply absent from the
+    # instance; Pydantic v2's from_attributes leaves an unset field at its
+    # default. Given a default of None here (not a required field) so those
+    # two existing call sites don't need to change.
+    project_name: str | None = None
 
 
 class ChangeOrderListResponse(BaseModel):

@@ -200,6 +200,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/companies/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Branding */
+        get: operations["get_branding_companies_branding_get"];
+        /** Put Branding */
+        put: operations["put_branding_companies_branding_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Branding Logo */
+        post: operations["upload_branding_logo_companies_branding_logo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/companies/members": {
         parameters: {
             query?: never;
@@ -826,6 +861,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/catalogs/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Catalog Item
+         * @description 409 if any EstimateLineItem references this item, or any other
+         *     CostCatalogItem overrides it (parent_catalog_item_id points here) —
+         *     both are real, in-use references the model's own ondelete behavior
+         *     (SET NULL for overrides; no FK at all constrains line items, since
+         *     unit_rate_snapshot already copied the rate) would otherwise let this
+         *     delete silently proceed through, orphaning history a caller almost
+         *     certainly didn't intend to lose. Checked before the DELETE is issued —
+         *     one transaction, one outcome, same discipline every other guarded
+         *     mutation in this codebase uses.
+         */
+        delete: operations["delete_catalog_item_catalogs_items__item_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Catalog Item
+         * @description Edits category/name/unit/unit_rate on an existing item. Does not
+         *     touch `EstimateLineItem.unit_rate_snapshot` on any estimate that already
+         *     referenced this item at some past rate — snapshots are immutable by
+         *     design (see `replace_estimate_line_items`'s own docstring in
+         *     estimates.py); only future line-item adds/recalculates see the new
+         *     rate.
+         */
+        patch: operations["update_catalog_item_catalogs_items__item_id__patch"];
+        trace?: never;
+    };
+    "/catalogs/items/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Create Catalog Items
+         * @description CSV-import batch create. Each row is inserted independently — one
+         *     bad row (already caught at the Pydantic layer for most malformed
+         *     input, since `items` is `list[CostCatalogItemCreateRequest]`) does not
+         *     abort the rest. `Field(..., max_length=500)` on the request schema
+         *     already rejects an oversized batch with a 422 before this handler body
+         *     runs at all, so no additional length check is needed here.
+         *
+         *     Every successfully created row is flushed individually (not batched
+         *     into one flush at the end) so a later row's insert failure — e.g. a
+         *     DB-level constraint this schema doesn't already catch — doesn't roll
+         *     back an earlier row's success within the same request; each row is its
+         *     own outcome, matching the per-row report this route promises.
+         *
+         *     Deviation from the plan doc's own Task 7 Step 4 sample code: the plan
+         *     wrote a plain `await current.session.rollback()` inside the per-row
+         *     `except` block. That does NOT do what its own docstring claims —
+         *     `rollback()` on an `AsyncSession` rolls back the session's entire
+         *     ambient transaction, not just the failing row's own pending work.
+         *     Because `get_current_user` (Inherited Invariant #4) commits
+         *     `current.session` only ONCE, after this handler returns, every row's
+         *     `flush()` up to that point shares that same not-yet-committed
+         *     transaction; calling `session.rollback()` after row N's failure was
+         *     verified (via `test_bulk_import_partial_failure_reports_per_row`) to
+         *     silently discard every EARLIER row's already-"created" insert too — the
+         *     exact bug the docstring's "doesn't roll back an earlier row's success"
+         *     claim was supposed to prevent, not cause. Each row's insert is wrapped
+         *     in its own SAVEPOINT via `session.begin_nested()` instead: on success
+         *     the nested transaction releases (folding the row into the outer,
+         *     still-uncommitted transaction); on failure only that SAVEPOINT rolls
+         *     back, leaving every earlier row's flushed insert untouched for the
+         *     final commit.
+         */
+        post: operations["bulk_create_catalog_items_catalogs_items_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/markup-profiles": {
         parameters: {
             query?: never;
@@ -856,6 +978,28 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/markup-profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Markup Profile
+         * @description 409 if any Estimate references this profile — same "real, in-use
+         *     reference blocks the delete" reasoning as delete_catalog_item above.
+         */
+        delete: operations["delete_markup_profile_markup_profiles__profile_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Markup Profile */
+        patch: operations["update_markup_profile_markup_profiles__profile_id__patch"];
         trace?: never;
     };
     "/estimates": {
@@ -917,10 +1061,31 @@ export interface paths {
         get: operations["get_estimate_estimates__estimate_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Estimate
+         * @description Draft-only, same guard as update_estimate above. Line items cascade
+         *     with the parent row at the DB level — migration `0007_estimates_schema.py`
+         *     declares `estimate_line_items.estimate_id` with `ondelete="CASCADE"`
+         *     (verified directly in that migration file), so no explicit
+         *     `delete(EstimateLineItem)` call is needed here before deleting the
+         *     estimate itself; Postgres removes the child rows as part of the same
+         *     statement.
+         */
+        delete: operations["delete_estimate_estimates__estimate_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update Estimate
+         * @description Draft-only (spec Decision 1, item 5) — 409 once sent/approved/rejected,
+         *     same "existence/tenant before semantic validation" ordering every other
+         *     guarded mutation in this router uses. Only `markup_profile_id` is
+         *     accepted; changing it does NOT retroactively touch already-computed
+         *     `subtotal`/`total` or any line item's `unit_rate_snapshot` — a caller
+         *     must re-run `POST /calculate` to see the new markup applied, same
+         *     "recalculation is a deliberate, explicit step" precedent
+         *     `calculate_estimate_totals`'s own docstring establishes.
+         */
+        patch: operations["update_estimate_estimates__estimate_id__patch"];
         trace?: never;
     };
     "/estimates/{estimate_id}/lines": {
@@ -1095,6 +1260,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/estimates/{estimate_id}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Estimate Pdf
+         * @description Streams the exported PDF from `pdf_storage_path`. Same read roles as
+         *     `get_estimate` (admin/PM/accountant/client) — a client needs this to
+         *     actually see what they're about to sign, same reasoning `_READ_ROLES`
+         *     already documents at the top of this module.
+         *
+         *     409, not 404, when `pdf_status != "ready"`: the Estimate itself exists
+         *     and is visible, it just has no artifact to serve yet (or export failed) —
+         *     a real, reachable state, not "doesn't exist."
+         */
+        get: operations["download_estimate_pdf_estimates__estimate_id__pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/estimates/{estimate_id}/send-for-signature": {
         parameters: {
             query?: never;
@@ -1250,6 +1442,64 @@ export interface paths {
          *     has come up before.
          */
         get: operations["get_esignature_esignatures__esignature_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/change-orders/{change_order_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Change Order
+         * @description No client status scoping here (unlike list_change_orders/
+         *     list_all_change_orders below) — same "direct-by-id access isn't scoped,
+         *     only list-and-act-on-it flows are" precedent `_get_estimate_or_404`'s
+         *     docstring establishes for Estimates.
+         */
+        get: operations["get_change_order_change_orders__change_order_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/change-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List All Change Orders
+         * @description Company-wide (not nested under a project_id) — the discovery
+         *     mechanism a client needs to find every pending Change Order awaiting
+         *     their action across ALL their projects, without N per-project list
+         *     calls (spec Decision 1, item 8). `client` is scoped to `status="pending"`,
+         *     same as list_change_orders' own per-project scoping.
+         *
+         *     Joined to `projects` for `project_name` — a bare ChangeOrder row alone
+         *     isn't enough context for a cross-project list row (unlike the
+         *     per-project list, where the caller already knows which project they're
+         *     looking at).
+         *
+         *     This route hand-rolls cursor pagination (join queries can't pass a plain
+         *     `Select[tuple[Row]]` through `paginate()` the way a single-model query
+         *     can) rather than reusing `paginate()` directly — mirroring `catalogs.py`'s
+         *     own precedent of a bespoke pagination helper where the generic one
+         *     doesn't fit.
+         */
+        get: operations["list_all_change_orders_change_orders_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2434,6 +2684,14 @@ export interface components {
              */
             signature_artifact: string;
         };
+        /** Body_upload_branding_logo_companies_branding_logo_post */
+        Body_upload_branding_logo_companies_branding_logo_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
+        };
         /** Body_upload_compliance_document_subcontractors__subcontractor_id__compliance_documents_post */
         Body_upload_compliance_document_subcontractors__subcontractor_id__compliance_documents_post: {
             /** Doc Type */
@@ -2576,6 +2834,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Project Name */
+            project_name?: string | null;
         };
         /** ChangePasswordRequest */
         ChangePasswordRequest: {
@@ -2637,6 +2897,25 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** CompanyBrandingPutRequest */
+        CompanyBrandingPutRequest: {
+            /** Accent Color */
+            accent_color: string;
+            /**
+             * Footer Text
+             * @default
+             */
+            footer_text: string;
+        };
+        /** CompanyBrandingResponse */
+        CompanyBrandingResponse: {
+            /** Logo Storage Path */
+            logo_storage_path: string | null;
+            /** Accent Color */
+            accent_color: string;
+            /** Footer Text */
+            footer_text: string;
         };
         /**
          * CompanyMemberListResponse
@@ -2821,6 +3100,37 @@ export interface components {
             next_cursor: string | null;
         };
         /**
+         * CostCatalogItemBulkCreateRequest
+         * @description Body for `POST /catalogs/items/bulk` — CSV import. Max 500 rows per
+         *     call (spec Decision 9): large enough for a real catalog seed, small
+         *     enough that one request stays well within normal timeout/payload
+         *     budgets without needing chunked upload.
+         */
+        CostCatalogItemBulkCreateRequest: {
+            /** Items */
+            items: components["schemas"]["CostCatalogItemCreateRequest"][];
+        };
+        /** CostCatalogItemBulkResponse */
+        CostCatalogItemBulkResponse: {
+            /** Results */
+            results: components["schemas"]["CostCatalogItemBulkResultEntry"][];
+        };
+        /**
+         * CostCatalogItemBulkResultEntry
+         * @description One row's outcome. `detail` is populated on `status="error"` only —
+         *     the created item's id isn't returned per-row (the caller can re-list to
+         *     see the full resulting catalog); this response is a validation report,
+         *     not a bulk-create response envelope.
+         */
+        CostCatalogItemBulkResultEntry: {
+            /** Index */
+            index: number;
+            /** Status */
+            status: string;
+            /** Detail */
+            detail?: string | null;
+        };
+        /**
          * CostCatalogItemCreateRequest
          * @description Plain "brand-new catalog item" create — deliberately has NO
          *     `parent_catalog_item_id` field. Creating an *override* (a branch's local
@@ -2859,6 +3169,22 @@ export interface components {
             items: components["schemas"]["CostCatalogItemResponse"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /**
+         * CostCatalogItemPatchRequest
+         * @description Body for `PATCH /catalogs/items/{id}`. All fields optional — a PATCH
+         *     only touches what's supplied, matching `ProjectPatchRequest`'s own
+         *     all-optional convention (`app/schemas/project.py`).
+         */
+        CostCatalogItemPatchRequest: {
+            /** Category */
+            category?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Unit */
+            unit?: string | null;
+            /** Unit Rate */
+            unit_rate?: number | string | null;
         };
         /**
          * CostCatalogItemResponse
@@ -3168,6 +3494,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Parent Name */
+            parent_name?: string | null;
             /** Line Items */
             line_items: components["schemas"]["EstimateLineItemResponse"][];
             /** Category Breakdown */
@@ -3277,6 +3605,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Parent Name */
+            parent_name?: string | null;
             /** Line Items */
             line_items: components["schemas"]["EstimateLineItemResponse"][];
         };
@@ -3372,6 +3702,20 @@ export interface components {
             next_cursor?: string | null;
         };
         /**
+         * EstimatePatchRequest
+         * @description Body for `PATCH /estimates/{id}` — draft-only. Only `markup_profile_id`
+         *     is editable (spec Decision 1, item 5): the project/lead binding is
+         *     immutable after creation, matching `EstimateCreateRequest`'s own
+         *     "exactly one of project_id/lead_id, decided once at creation" framing.
+         */
+        EstimatePatchRequest: {
+            /**
+             * Markup Profile Id
+             * Format: uuid
+             */
+            markup_profile_id: string;
+        };
+        /**
          * EstimateRejectRequest
          * @description Body for `POST /estimates/{id}/reject` (Task 2.19) — US-4.5's "As a
          *     Client, I can ... reject it with a reason" made concrete: `reason` is
@@ -3455,6 +3799,8 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Parent Name */
+            parent_name?: string | null;
         };
         /** ExpenseCreateRequest */
         ExpenseCreateRequest: {
@@ -3859,6 +4205,19 @@ export interface components {
             items: components["schemas"]["MarkupProfileResponse"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /**
+         * MarkupProfilePatchRequest
+         * @description Body for `PATCH /markup-profiles/{id}`. All fields optional, same
+         *     partial-update convention as `CostCatalogItemPatchRequest`.
+         */
+        MarkupProfilePatchRequest: {
+            /** Name */
+            name?: string | null;
+            /** Overhead Pct */
+            overhead_pct?: number | string | null;
+            /** Profit Pct */
+            profit_pct?: number | string | null;
         };
         /**
          * MarkupProfileResponse
@@ -4878,6 +5237,92 @@ export interface operations {
             };
         };
     };
+    get_branding_companies_branding_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyBrandingResponse"];
+                };
+            };
+        };
+    };
+    put_branding_companies_branding_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompanyBrandingPutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyBrandingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_branding_logo_companies_branding_logo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_branding_logo_companies_branding_logo_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyBrandingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_company_members_companies_members_get: {
         parameters: {
             query?: never;
@@ -5839,6 +6284,103 @@ export interface operations {
             };
         };
     };
+    delete_catalog_item_catalogs_items__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_catalog_item_catalogs_items__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_create_catalog_items_catalogs_items_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemBulkCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemBulkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_markup_profiles_markup_profiles_get: {
         parameters: {
             query?: {
@@ -5886,6 +6428,70 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkupProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_markup_profile_markup_profiles__profile_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_markup_profile_markup_profiles__profile_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkupProfilePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6001,6 +6607,70 @@ export interface operations {
             };
         };
     };
+    delete_estimate_estimates__estimate_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_estimate_estimates__estimate_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimatePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     replace_estimate_line_items_estimates__estimate_id__lines_put: {
         parameters: {
             query?: never;
@@ -6085,6 +6755,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_estimate_pdf_estimates__estimate_id__pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -6217,6 +6918,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EsignatureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_change_order_change_orders__change_order_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                change_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_all_change_orders_change_orders_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderListResponse"];
                 };
             };
             /** @description Validation Error */

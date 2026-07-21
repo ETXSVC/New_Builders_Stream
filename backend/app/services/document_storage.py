@@ -274,6 +274,43 @@ def write_esignature_artifact_file(*, company_id: uuid.UUID, esignature_id: uuid
     return relative_path
 
 
+MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024
+_ALLOWED_LOGO_CONTENT_TYPES = {"image/png": ".png", "image/jpeg": ".jpg"}
+
+
+class UnsupportedLogoError(ValueError):
+    """Raised for an oversized or wrong-content-type logo upload. Router
+    call sites catch this and map it to 413/415."""
+
+
+def write_company_logo_file(
+    *, company_id: uuid.UUID, content_type: str, content: bytes
+) -> str:
+    """Writes a company's branding logo to
+    `{settings.storage_root}/{company_id}/branding/logo{ext}` and returns the
+    RELATIVE storage_path. Always overwrites (a company has exactly one
+    current logo, same "no version history" reasoning
+    `write_estimate_pdf_file` gives for estimate PDFs) — plain `"wb"` mode,
+    not exclusive-create.
+
+    Validates size and content type BEFORE writing anything to disk —
+    same "reject outright" instinct this module applies everywhere else.
+    """
+    if len(content) > MAX_LOGO_SIZE_BYTES:
+        raise UnsupportedLogoError(f"logo must not exceed {MAX_LOGO_SIZE_BYTES} bytes")
+    if content_type not in _ALLOWED_LOGO_CONTENT_TYPES:
+        raise UnsupportedLogoError("logo must be image/png or image/jpeg")
+
+    ext = _ALLOWED_LOGO_CONTENT_TYPES[content_type]
+    relative_path = f"{company_id}/branding/logo{ext}"
+    absolute_path = Path(settings.storage_root) / str(company_id) / "branding" / f"logo{ext}"
+
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_path.write_bytes(content)
+
+    return relative_path
+
+
 # A handful of characters is enough for any real extension (".jpeg",
 # ".docx", ".xlsx"); `Path.suffix` only ever returns the text after the
 # LAST "." in the final path component, so even a multi-part name like

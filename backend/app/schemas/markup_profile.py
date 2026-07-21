@@ -14,6 +14,15 @@ class MarkupProfileCreateRequest(BaseModel):
     profit_pct: Decimal = Decimal("0")
 
 
+class MarkupProfilePatchRequest(BaseModel):
+    """Body for `PATCH /markup-profiles/{id}`. All fields optional, same
+    partial-update convention as `CostCatalogItemPatchRequest`."""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    overhead_pct: Decimal | None = None
+    profit_pct: Decimal | None = None
+
+
 class MarkupProfileResponse(BaseModel):
     """Full model. No `created_at`/`updated_at` fields — `markup_profiles`
     has neither column (docs/04-database-schema.md Section 5), matching

@@ -12,10 +12,13 @@ legal thing to do against the current DB state" (router).
 
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import delete, select
 
+from app.config import settings
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.money import CENTS
@@ -29,6 +32,7 @@ from app.schemas.estimate import (
     EstimateCreateRequest,
     EstimateDetailResponse,
     EstimateListResponse,
+    EstimatePatchRequest,
     EstimateRejectRequest,
     EstimateResponse,
 )
@@ -221,6 +225,68 @@ async def create_estimate(
     return EstimateResponse.model_validate(estimate)
 
 
+@router.patch("/{estimate_id}", response_model=EstimateResponse)
+async def update_estimate(
+    estimate_id: uuid.UUID,
+    payload: EstimatePatchRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> EstimateResponse:
+    """Draft-only (spec Decision 1, item 5) — 409 once sent/approved/rejected,
+    same "existence/tenant before semantic validation" ordering every other
+    guarded mutation in this router uses. Only `markup_profile_id` is
+    accepted; changing it does NOT retroactively touch already-computed
+    `subtotal`/`total` or any line item's `unit_rate_snapshot` — a caller
+    must re-run `POST /calculate` to see the new markup applied, same
+    "recalculation is a deliberate, explicit step" precedent
+    `calculate_estimate_totals`'s own docstring establishes.
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.status != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate must be in 'draft' status to edit, got '{estimate.status}'",
+        )
+
+    markup_result = await current.session.execute(
+        select(MarkupProfile).where(MarkupProfile.id == payload.markup_profile_id)
+    )
+    if markup_result.scalar_one_or_none() is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
+
+    estimate.markup_profile_id = payload.markup_profile_id
+    await current.session.flush()
+    return EstimateResponse.model_validate(estimate)
+
+
+@router.delete("/{estimate_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_estimate(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("estimation")),
+) -> None:
+    """Draft-only, same guard as update_estimate above. Line items cascade
+    with the parent row at the DB level — migration `0007_estimates_schema.py`
+    declares `estimate_line_items.estimate_id` with `ondelete="CASCADE"`
+    (verified directly in that migration file), so no explicit
+    `delete(EstimateLineItem)` call is needed here before deleting the
+    estimate itself; Postgres removes the child rows as part of the same
+    statement."""
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.status != "draft":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate must be in 'draft' status to delete, got '{estimate.status}'",
+        )
+
+    await current.session.delete(estimate)
+    await current.session.flush()
+
+
 @router.get("", response_model=EstimateListResponse)
 async def list_estimates(
     current: CurrentUser = Depends(require_role(*_READ_ROLES)),
@@ -258,10 +324,39 @@ async def list_estimates(
         limit=limit,
     )
 
-    return EstimateListResponse(
-        items=[EstimateResponse.model_validate(row) for row in rows],
-        next_cursor=next_cursor,
-    )
+    # parent_name resolution: two disjoint id sets (project-backed vs
+    # lead-backed estimates in this page), each resolved with one query —
+    # avoids N+1 without needing a join in the base paginate() query (which
+    # would have to LEFT JOIN both projects and leads and coalesce, adding
+    # complexity to the one Select paginate() operates on for a page that
+    # may be entirely one kind or the other).
+    project_ids = {row.project_id for row in rows if row.project_id is not None}
+    lead_ids = {row.lead_id for row in rows if row.lead_id is not None}
+
+    project_names: dict[uuid.UUID, str] = {}
+    if project_ids:
+        project_result = await current.session.execute(
+            select(Project.id, Project.name).where(Project.id.in_(project_ids))
+        )
+        project_names = dict(project_result.all())
+
+    lead_names: dict[uuid.UUID, str] = {}
+    if lead_ids:
+        lead_result = await current.session.execute(
+            select(Lead.id, Lead.project_name).where(Lead.id.in_(lead_ids))
+        )
+        lead_names = dict(lead_result.all())
+
+    items = []
+    for row in rows:
+        response = EstimateResponse.model_validate(row)
+        if row.project_id is not None:
+            response.parent_name = project_names.get(row.project_id)
+        elif row.lead_id is not None:
+            response.parent_name = lead_names.get(row.lead_id)
+        items.append(response)
+
+    return EstimateListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.get("/{estimate_id}", response_model=EstimateDetailResponse)
@@ -531,6 +626,38 @@ async def export_estimate_pdf(
     generate_estimate_pdf.send(str(estimate.id), str(current.user.id))
 
     return EstimateResponse.model_validate(estimate)
+
+
+@router.get("/{estimate_id}/pdf")
+async def download_estimate_pdf(
+    estimate_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_READ_ROLES)),
+) -> Response:
+    """Streams the exported PDF from `pdf_storage_path`. Same read roles as
+    `get_estimate` (admin/PM/accountant/client) — a client needs this to
+    actually see what they're about to sign, same reasoning `_READ_ROLES`
+    already documents at the top of this module.
+
+    409, not 404, when `pdf_status != "ready"`: the Estimate itself exists
+    and is visible, it just has no artifact to serve yet (or export failed) —
+    a real, reachable state, not "doesn't exist."
+    """
+    estimate = await _get_estimate_or_404(current, estimate_id)
+
+    if estimate.pdf_status != "ready" or estimate.pdf_storage_path is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Estimate PDF is not ready (pdf_status={estimate.pdf_status!r})",
+        )
+
+    absolute_path = Path(settings.storage_root) / estimate.pdf_storage_path
+    pdf_bytes = absolute_path.read_bytes()
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="estimate-{estimate.id}.pdf"'},
+    )
 
 
 @router.post("/{estimate_id}/send-for-signature", response_model=EstimateResponse)
