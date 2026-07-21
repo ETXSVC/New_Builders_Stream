@@ -7,6 +7,7 @@ from app.core.pagination import InvalidCursorError
 from app.routers import (
     auth,
     bills,
+    bom_lines,
     branding,
     catalogs,
     change_orders,
@@ -52,6 +53,7 @@ app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(catalogs.router)
 app.include_router(vendors.router)
+app.include_router(bom_lines.router)
 app.include_router(estimates.router)
 app.include_router(esignatures.router)
 app.include_router(change_orders.router)
