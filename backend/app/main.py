@@ -7,6 +7,7 @@ from app.core.pagination import InvalidCursorError
 from app.routers import (
     auth,
     bills,
+    branding,
     catalogs,
     change_orders,
     companies,
@@ -31,6 +32,18 @@ from app.routers import (
 app = FastAPI(title="Builders Stream API", version="0.1.0")
 app.add_middleware(TenantMiddleware)
 app.include_router(auth.router)
+# branding.router is registered BEFORE companies.router deliberately:
+# companies.router declares `GET/PUT /companies/{company_id}` (a generic,
+# single-path-segment pattern), which would otherwise shadow this router's
+# literal `/companies/branding` and `/companies/branding/logo` paths —
+# Starlette tries included routes in registration order and stops at the
+# first structural match, regardless of a path parameter's declared Python
+# type, so `{company_id}` matching the literal string "branding" would win
+# and 422 (failed UUID parse) before branding.router's own routes ever got a
+# chance. Confirmed by the same "declare the specific literal before the
+# generic parameter" precedent companies.py itself already uses internally
+# for its own `/companies/members` vs `/companies/{company_id}` ordering.
+app.include_router(branding.router)
 app.include_router(companies.router)
 app.include_router(invitations.router)
 app.include_router(leads.router)

@@ -19,6 +19,8 @@ helper, matching `test_estimate_pdf_export.py:562`'s exact precedent for
 calling `_generate_estimate_pdf` directly.
 """
 
+import io
+
 import asyncpg
 
 from app.tasks.estimate_pdf import _generate_estimate_pdf
@@ -651,5 +653,146 @@ async def test_bulk_import_rejects_over_500_rows(client):
     ]
     response = await client.post(
         "/catalogs/items/bulk", json={"items": items}, headers=admin["headers"]
+    )
+    assert response.status_code == 422
+
+
+# -----------------------------------------------------------------------
+# GET/PUT /companies/branding, POST /companies/branding/logo
+# -----------------------------------------------------------------------
+
+# Deviation from the plan doc's own Task 8 Step 1 sample tests: same
+# `create_company_and_admin`/`authed_client`/`async_client` mismatch noted in
+# this file's module docstring — rewritten below against `_register_and_login`
+# and the plain `client` fixture, `headers=admin["headers"]` per request.
+#
+# `test_put_branding_forbidden_for_pm` in particular: the plan's own sample
+# left a placeholder `assert response.status_code in (200, 403)` pending
+# confirmation of "this codebase's actual PM-creation helper". That helper is
+# the invitation accept flow — `test_estimate_pdf_export.py`'s
+# `test_export_estimate_pdf_as_project_manager` establishes the exact
+# precedent (`POST /invitations` with `role: "project_manager"`, `POST
+# /invitations/{id}/accept`, then `POST /auth/login` for that new user's own
+# token) — reused here instead, with the placeholder assertion replaced by a
+# precise `== 403`.
+
+
+async def _register_pm_in_company(client, admin, email):
+    """Registers a second, real project_manager-role user in `admin`'s own
+    company via the invitation accept flow (not `_add_membership_directly`'s
+    owner-connection bypass — a role-gated 403 test should exercise a
+    genuinely distinct, normally-provisioned session, matching
+    `test_estimate_pdf_export.py:494`'s established precedent for this exact
+    scenario). Returns that PM's own `headers`."""
+    invite = await client.post(
+        "/invitations",
+        json={"email": email, "role": "project_manager"},
+        headers=admin["headers"],
+    )
+    assert invite.status_code == 201, invite.text
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "PM User", "password": "anothersecret123"},
+    )
+    assert accept.status_code == 200, accept.text
+    login = await client.post(
+        "/auth/login", json={"email": email, "password": "anothersecret123"}
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+async def test_get_branding_defaults_when_no_row_exists(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-defaults-admin@acme.test"
+    )
+    response = await client.get("/companies/branding", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["logo_storage_path"] is None
+    assert response.json()["accent_color"] == "#1e293b"
+    assert response.json()["footer_text"] == ""
+
+
+async def test_put_branding_creates_and_updates(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-put-admin@acme.test"
+    )
+    response = await client.put(
+        "/companies/branding",
+        json={"accent_color": "#ff0000", "footer_text": "Licensed & Insured"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["accent_color"] == "#ff0000"
+
+    response = await client.put(
+        "/companies/branding",
+        json={"accent_color": "#00ff00", "footer_text": "Updated"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["accent_color"] == "#00ff00"
+
+    get_response = await client.get("/companies/branding", headers=admin["headers"])
+    assert get_response.json()["accent_color"] == "#00ff00"
+
+
+async def test_put_branding_forbidden_for_pm(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-forbidden-pm-admin@acme.test"
+    )
+    pm_headers = await _register_pm_in_company(
+        client, admin, "branding-forbidden-pm@acme.test"
+    )
+
+    response = await client.put(
+        "/companies/branding",
+        json={"accent_color": "#ff0000", "footer_text": ""},
+        headers=pm_headers,
+    )
+    assert response.status_code == 403
+
+
+async def test_upload_branding_logo(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-upload-admin@acme.test"
+    )
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    response = await client.post(
+        "/companies/branding/logo",
+        files={"file": ("logo.png", io.BytesIO(png_bytes), "image/png")},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["logo_storage_path"] is not None
+
+    get_response = await client.get("/companies/branding", headers=admin["headers"])
+    assert get_response.json()["logo_storage_path"] == response.json()["logo_storage_path"]
+
+
+async def test_upload_branding_logo_rejects_oversized_file(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-oversized-admin@acme.test"
+    )
+    oversized = b"\x00" * (2 * 1024 * 1024 + 1)
+    response = await client.post(
+        "/companies/branding/logo",
+        files={"file": ("logo.png", io.BytesIO(oversized), "image/png")},
+        headers=admin["headers"],
+    )
+    # Router maps UnsupportedLogoError (oversized or wrong content type) to a
+    # single status per the plan's Step 9 note — confirmed 422 below (see
+    # app/routers/branding.py's upload_branding_logo).
+    assert response.status_code == 422
+
+
+async def test_upload_branding_logo_rejects_wrong_content_type(client):
+    admin = await _register_and_login(
+        client, "Acme Construction", "branding-wrong-type-admin@acme.test"
+    )
+    response = await client.post(
+        "/companies/branding/logo",
+        files={"file": ("doc.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")},
+        headers=admin["headers"],
     )
     assert response.status_code == 422

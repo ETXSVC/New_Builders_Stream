@@ -28,6 +28,7 @@ from app.models.expense import Expense
 from app.models.integration_connection import IntegrationConnection
 from app.models.integration_sync_record import IntegrationSyncRecord
 from app.models.refresh_token import RefreshToken
+from app.models.company_branding import CompanyBranding
 
 __all__ = [
     "Base",
@@ -62,4 +63,5 @@ __all__ = [
     "IntegrationConnection",
     "IntegrationSyncRecord",
     "RefreshToken",
+    "CompanyBranding",
 ]
