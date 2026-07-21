@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,8 @@ import { PhasesTasksTab } from "@/components/projects/PhasesTasksTab";
 import { DocumentsTab } from "@/components/projects/DocumentsTab";
 import { DailyLogsTab } from "@/components/projects/DailyLogsTab";
 import { ClientProjectDashboard, ClientProjectShape } from "@/components/projects/ClientProjectDashboard";
-import { formatDate } from "@/lib/format";
+import { ChangeOrdersTab } from "@/components/change-orders/ChangeOrdersTab";
+import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface StaffProject {
@@ -24,7 +26,7 @@ interface StaffProject {
   projected_start_date: string | null;
 }
 
-const TABS = ["Overview", "Phases & tasks", "Documents", "Daily logs"] as const;
+const TABS = ["Overview", "Phases & tasks", "Documents", "Daily logs", "Change orders", "Estimates"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function ProjectDetailPage() {
@@ -114,6 +116,8 @@ export default function ProjectDetailPage() {
       {tab === "Phases & tasks" && <PhasesTasksTab projectId={project.id} />}
       {tab === "Documents" && <DocumentsTab projectId={project.id} />}
       {tab === "Daily logs" && <DailyLogsTab projectId={project.id} />}
+      {tab === "Change orders" && <ChangeOrdersTab projectId={project.id} />}
+      {tab === "Estimates" && <ProjectEstimatesTab projectId={project.id} />}
     </main>
   );
 }
@@ -187,5 +191,48 @@ function OverviewTab({ project, onSaved }: { project: StaffProject; onSaved: () 
         Save changes
       </Button>
     </form>
+  );
+}
+
+function ProjectEstimatesTab({ projectId }: { projectId: string }) {
+  const { accessToken } = useAuth();
+  const [estimates, setEstimates] = React.useState<{ id: string; status: string; total: string | null }[]>([]);
+
+  const load = React.useCallback(async () => {
+    if (!accessToken) return;
+    const response = await fetch(`/api/estimates`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const data = await response.json();
+    if (response.ok) {
+      // Client-side filter: no ?project_id= query param exists on
+      // GET /estimates (out of this plan's scope to add one) — acceptable
+      // for a project with a normal number of estimates; if a company
+      // accumulates enough estimates that this filtering matters
+      // performance-wise, add server-side project_id filtering as a
+      // follow-up, not required for this task.
+      setEstimates(data.items.filter((e: { project_id?: string }) => e.project_id === projectId));
+    }
+  }, [accessToken, projectId]);
+
+  React.useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Link href={`/estimates/new?project_id=${projectId}`}>
+        <Button size="sm">New estimate</Button>
+      </Link>
+      <ul className="flex flex-col divide-y divide-slate-200 border border-slate-200 rounded-lg">
+        {estimates.map((e) => (
+          <li key={e.id}>
+            <Link href={`/estimates/${e.id}`} className="flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-50">
+              <StatusBadge status={e.status} />
+              <span>{formatCurrency(e.total)}</span>
+            </Link>
+          </li>
+        ))}
+        {estimates.length === 0 && <li className="px-4 py-3 text-sm text-slate-500">No estimates yet.</li>}
+      </ul>
+    </div>
   );
 }

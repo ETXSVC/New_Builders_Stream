@@ -168,6 +168,54 @@ export default function LeadDetailPage() {
       )}
 
       <CommunicationLog leadId={lead.id} />
+
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">Estimates</h2>
+          <Link href={`/estimates/new?lead_id=${lead.id}`} className="text-sm text-blue-600 hover:underline">
+            New estimate
+          </Link>
+        </div>
+        <LeadEstimatesList leadId={lead.id} />
+      </section>
     </main>
+  );
+}
+
+function LeadEstimatesList({ leadId }: { leadId: string }) {
+  const { accessToken } = useAuth();
+  const [estimates, setEstimates] = React.useState<{ id: string; status: string; total: string | null }[]>([]);
+
+  const load = React.useCallback(async () => {
+    if (!accessToken) return;
+    const response = await fetch(`/api/estimates`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const data = await response.json();
+    if (response.ok) {
+      // Client-side filter: no ?lead_id= query param exists on
+      // GET /estimates (out of this plan's scope to add one) — acceptable
+      // for a lead with a normal number of estimates; if a company
+      // accumulates enough estimates that this filtering matters
+      // performance-wise, add server-side lead_id filtering as a
+      // follow-up, not required for this task.
+      setEstimates(data.items.filter((e: { lead_id?: string }) => e.lead_id === leadId));
+    }
+  }, [accessToken, leadId]);
+
+  React.useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
+
+  return (
+    <ul className="flex flex-col divide-y divide-slate-200 border border-slate-200 rounded-lg">
+      {estimates.map((e) => (
+        <li key={e.id}>
+          <Link href={`/estimates/${e.id}`} className="flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-50">
+            <StatusBadge status={e.status} />
+            <span>{formatCurrency(e.total)}</span>
+          </Link>
+        </li>
+      ))}
+      {estimates.length === 0 && <li className="px-4 py-3 text-sm text-slate-500">No estimates yet.</li>}
+    </ul>
   );
 }
