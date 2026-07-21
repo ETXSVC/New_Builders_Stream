@@ -203,18 +203,22 @@ function ProjectEstimatesTab({ projectId }: { projectId: string }) {
     // Client-side filter: no ?project_id= query param exists on
     // GET /estimates (out of this plan's scope to add one). All pages
     // are fetched to exhaustion so the filter sees the full result set.
-    const all: { id: string; status: string; total: string | null; project_id?: string }[] = [];
-    let cursor: string | null = null;
-    do {
-      const params = new URLSearchParams();
-      if (cursor) params.set("cursor", cursor);
-      const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      if (!response.ok) return;
-      const data = await response.json();
-      all.push(...data.items);
-      cursor = data.next_cursor ?? null;
-    } while (cursor);
-    setEstimates(all.filter((e) => e.project_id === projectId));
+    try {
+      const all: { id: string; status: string; total: string | null; project_id?: string }[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (!response.ok) return;
+        const data = await response.json();
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setEstimates(all.filter((e) => e.project_id === projectId));
+    } catch {
+      // Non-blocking — the list just stays empty if this fails.
+    }
   }, [accessToken, projectId]);
 
   React.useEffect(() => {

@@ -21,30 +21,38 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
     const [allEstimates, allChangeOrders] = await Promise.all([
       (async () => {
         const all: { id: string; total: string | null; project_id?: string }[] = [];
-        let cursor: string | null = null;
-        do {
-          const params = new URLSearchParams({ status: "sent" });
-          if (cursor) params.set("cursor", cursor);
-          const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-          if (!response.ok) return all;
-          const data = await response.json();
-          all.push(...data.items);
-          cursor = data.next_cursor ?? null;
-        } while (cursor);
+        try {
+          let cursor: string | null = null;
+          do {
+            const params = new URLSearchParams({ status: "sent" });
+            if (cursor) params.set("cursor", cursor);
+            const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+            if (!response.ok) return all;
+            const data = await response.json();
+            all.push(...data.items);
+            cursor = data.next_cursor ?? null;
+          } while (cursor);
+        } catch {
+          // Non-blocking — return whatever was accumulated before the failure.
+        }
         return all;
       })(),
       (async () => {
         const all: { id: string; description: string; cost_delta: string; project_id?: string }[] = [];
-        let cursor: string | null = null;
-        do {
-          const params = new URLSearchParams({ status: "pending" });
-          if (cursor) params.set("cursor", cursor);
-          const response = await fetch(`/api/change-orders?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-          if (!response.ok) return all;
-          const data = await response.json();
-          all.push(...data.items);
-          cursor = data.next_cursor ?? null;
-        } while (cursor);
+        try {
+          let cursor: string | null = null;
+          do {
+            const params = new URLSearchParams({ status: "pending" });
+            if (cursor) params.set("cursor", cursor);
+            const response = await fetch(`/api/change-orders?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+            if (!response.ok) return all;
+            const data = await response.json();
+            all.push(...data.items);
+            cursor = data.next_cursor ?? null;
+          } while (cursor);
+        } catch {
+          // Non-blocking — return whatever was accumulated before the failure.
+        }
         return all;
       })(),
     ]);
