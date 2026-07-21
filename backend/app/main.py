@@ -26,6 +26,7 @@ from app.routers import (
     subcontractors,
     subscriptions,
     tasks,
+    vendors,
     webhooks,
 )
 
@@ -50,6 +51,7 @@ app.include_router(leads.router)
 app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(catalogs.router)
+app.include_router(vendors.router)
 app.include_router(estimates.router)
 app.include_router(esignatures.router)
 app.include_router(change_orders.router)
