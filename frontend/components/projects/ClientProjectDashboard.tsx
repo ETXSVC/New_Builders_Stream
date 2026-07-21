@@ -1,6 +1,77 @@
+"use client";
+
+import * as React from "react";
+import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { formatDate } from "@/lib/format";
+import { formatCurrency, formatDate } from "@/lib/format";
+import { useAuth } from "@/contexts/AuthContext";
+import { SigningPanel } from "@/components/esign/SigningPanel";
+
+function AwaitingSignatureCard({ projectId }: { projectId: string }) {
+  const { accessToken } = useAuth();
+  const [sentEstimates, setSentEstimates] = React.useState<{ id: string; total: string | null }[]>([]);
+  const [pendingChangeOrders, setPendingChangeOrders] = React.useState<
+    { id: string; description: string; cost_delta: string }[]
+  >([]);
+  const [expandedCoId, setExpandedCoId] = React.useState<string | null>(null);
+
+  const load = React.useCallback(async () => {
+    if (!accessToken) return;
+    const [estimatesResponse, changeOrdersResponse] = await Promise.all([
+      fetch(`/api/estimates?status=sent`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+      fetch(`/api/change-orders?status=pending`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+    ]);
+    if (estimatesResponse.ok) {
+      const data = await estimatesResponse.json();
+      setSentEstimates(
+        data.items.filter((e: { project_id?: string }) => e.project_id === projectId)
+      );
+    }
+    if (changeOrdersResponse.ok) {
+      const data = await changeOrdersResponse.json();
+      setPendingChangeOrders(
+        data.items.filter((co: { project_id?: string }) => co.project_id === projectId)
+      );
+    }
+  }, [accessToken, projectId]);
+
+  React.useEffect(() => {
+    void Promise.resolve().then(() => load());
+  }, [load]);
+
+  if (sentEstimates.length === 0 && pendingChangeOrders.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-3 border border-amber-200 bg-amber-50 rounded-md p-4">
+      <p className="text-sm font-medium">Awaiting your signature</p>
+      {sentEstimates.map((e) => (
+        <Link key={e.id} href={`/estimates/${e.id}`} className="text-sm text-blue-600 hover:underline">
+          Estimate — {formatCurrency(e.total)}
+        </Link>
+      ))}
+      {pendingChangeOrders.map((co) => (
+        <div key={co.id} className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setExpandedCoId(expandedCoId === co.id ? null : co.id)}
+            className="text-sm text-left text-blue-600 hover:underline"
+          >
+            Change order — {co.description} ({formatCurrency(co.cost_delta)})
+          </button>
+          {expandedCoId === co.id && accessToken && (
+            <SigningPanel
+              approveUrl={`/api/change-orders/${co.id}/approve`}
+              rejectUrl={`/api/change-orders/${co.id}/reject`}
+              accessToken={accessToken}
+              onDone={load}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export interface ClientProjectShape {
   id: string;
@@ -15,21 +86,24 @@ export interface ClientProjectShape {
 
 export function ClientProjectDashboard({ project }: { project: ClientProjectShape }) {
   return (
-    <Card className="max-w-md">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>{project.name}</CardTitle>
-          <StatusBadge status={project.status} />
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2 text-sm text-slate-600">
-        <p>{project.site_address || "Site address pending"}</p>
-        <p>Projected start: {formatDate(project.projected_start_date)}</p>
-        <p>
-          {project.phase_count} {project.phase_count === 1 ? "phase" : "phases"} ·{" "}
-          {project.completed_task_count} of {project.task_count} tasks complete
-        </p>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-4 max-w-md">
+      <AwaitingSignatureCard projectId={project.id} />
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>{project.name}</CardTitle>
+            <StatusBadge status={project.status} />
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 text-sm text-slate-600">
+          <p>{project.site_address || "Site address pending"}</p>
+          <p>Projected start: {formatDate(project.projected_start_date)}</p>
+          <p>
+            {project.phase_count} {project.phase_count === 1 ? "phase" : "phases"} ·{" "}
+            {project.completed_task_count} of {project.task_count} tasks complete
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
