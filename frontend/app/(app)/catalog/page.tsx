@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { CatalogItemsTab } from "@/components/catalog/CatalogItemsTab";
 import { MarkupProfilesTab } from "@/components/catalog/MarkupProfilesTab";
+import { BrandingTab } from "@/components/catalog/BrandingTab";
 
 const TABS = ["Cost items", "Markup profiles", "PDF template"] as const;
 type Tab = (typeof TABS)[number];
@@ -35,14 +36,7 @@ export default function CatalogPage() {
       </div>
       {tab === "Cost items" && <CatalogItemsTab />}
       {tab === "Markup profiles" && <MarkupProfilesTab />}
-      {tab === "PDF template" && role === "admin" && <PdfTemplatePlaceholder />}
+      {tab === "PDF template" && role === "admin" && <BrandingTab />}
     </main>
   );
-}
-
-// Replaced by BrandingTab in Task 20 — left as an inline placeholder here
-// so this task's own tsc/lint/build checks pass in isolation before that
-// task wires in the real component.
-function PdfTemplatePlaceholder() {
-  return <p className="text-sm text-slate-500">Loading…</p>;
 }

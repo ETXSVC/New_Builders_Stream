@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency } from "@/lib/format";
+import { CsvImport } from "./CsvImport";
 
 interface CatalogItem {
   id: string;
@@ -136,6 +137,12 @@ export function CatalogItemsTab() {
           </div>
           <Button type="submit" disabled={submitting}>Add item</Button>
         </form>
+      )}
+      {canWrite && (
+        <CsvImport
+          currentItems={items.map((i) => ({ category: i.category, name: i.name, unit: i.unit, unit_rate: i.unit_rate }))}
+          onImported={loadAll}
+        />
       )}
       {error && (
         <p role="alert" aria-live="assertive" className="text-sm text-red-600">
