@@ -245,6 +245,23 @@ export default function EstimateDetailPage() {
               setBreakdown(categoryBreakdown);
             }}
           />
+          {breakdown.length > 0 && (
+            <div className="text-sm text-slate-600">
+              {breakdown.map((b) => (
+                <div key={b.category} className="flex justify-between">
+                  <span>{b.category}</span>
+                  <span>{formatCurrency(b.subtotal)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* PDF export (Decision 5) is a draft-state header action per
+              Decision 3 — available as soon as the estimate has a
+              calculated total, same "Save & calculate before sending" gate
+              already used for the Send for signature button above. */}
+          {estimate.total !== null && (
+            <PdfPanel estimateId={estimate.id} pdfStatus={estimate.pdf_status} canExport={canEdit} />
+          )}
         </>
       )}
 
