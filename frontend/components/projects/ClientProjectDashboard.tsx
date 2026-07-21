@@ -18,22 +18,38 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
 
   const load = React.useCallback(async () => {
     if (!accessToken) return;
-    const [estimatesResponse, changeOrdersResponse] = await Promise.all([
-      fetch(`/api/estimates?status=sent`, { headers: { Authorization: `Bearer ${accessToken}` } }),
-      fetch(`/api/change-orders?status=pending`, { headers: { Authorization: `Bearer ${accessToken}` } }),
+    const [allEstimates, allChangeOrders] = await Promise.all([
+      (async () => {
+        const all: { id: string; total: string | null; project_id?: string }[] = [];
+        let cursor: string | null = null;
+        do {
+          const params = new URLSearchParams({ status: "sent" });
+          if (cursor) params.set("cursor", cursor);
+          const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          if (!response.ok) return all;
+          const data = await response.json();
+          all.push(...data.items);
+          cursor = data.next_cursor ?? null;
+        } while (cursor);
+        return all;
+      })(),
+      (async () => {
+        const all: { id: string; description: string; cost_delta: string; project_id?: string }[] = [];
+        let cursor: string | null = null;
+        do {
+          const params = new URLSearchParams({ status: "pending" });
+          if (cursor) params.set("cursor", cursor);
+          const response = await fetch(`/api/change-orders?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          if (!response.ok) return all;
+          const data = await response.json();
+          all.push(...data.items);
+          cursor = data.next_cursor ?? null;
+        } while (cursor);
+        return all;
+      })(),
     ]);
-    if (estimatesResponse.ok) {
-      const data = await estimatesResponse.json();
-      setSentEstimates(
-        data.items.filter((e: { project_id?: string }) => e.project_id === projectId)
-      );
-    }
-    if (changeOrdersResponse.ok) {
-      const data = await changeOrdersResponse.json();
-      setPendingChangeOrders(
-        data.items.filter((co: { project_id?: string }) => co.project_id === projectId)
-      );
-    }
+    setSentEstimates(allEstimates.filter((e) => e.project_id === projectId));
+    setPendingChangeOrders(allChangeOrders.filter((co) => co.project_id === projectId));
   }, [accessToken, projectId]);
 
   React.useEffect(() => {

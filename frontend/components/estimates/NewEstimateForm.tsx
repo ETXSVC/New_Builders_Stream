@@ -29,11 +29,20 @@ export function NewEstimateForm({
   const loadProfiles = React.useCallback(async () => {
     if (!accessToken) return;
     try {
-      const response = await fetch("/api/markup-profiles", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const data = await response.json();
-      if (response.ok) setProfiles(data.items);
+      const all: MarkupProfileOption[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/markup-profiles?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setProfiles(all);
     } catch {
       // Non-blocking — the Select just stays empty if this fails.
     }

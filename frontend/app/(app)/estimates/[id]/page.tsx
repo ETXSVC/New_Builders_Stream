@@ -86,10 +86,24 @@ export default function EstimateDetailPage() {
 
   const loadProfiles = React.useCallback(async () => {
     if (!accessToken) return;
-    const response = await fetch("/api/markup-profiles", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (response.ok) setProfiles((await response.json()).items);
+    try {
+      const all: MarkupProfileOption[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams();
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(`/api/markup-profiles?${params}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+      setProfiles(all);
+    } catch {
+      // Non-blocking — the Select just stays empty if this fails.
+    }
   }, [accessToken]);
 
   React.useEffect(() => {
@@ -151,7 +165,7 @@ export default function EstimateDetailPage() {
         setError(created.detail ?? "Failed to duplicate estimate");
         return;
       }
-      await fetch(`/api/estimates/${created.id}/lines`, {
+      const linesResponse = await fetch(`/api/estimates/${created.id}/lines`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
@@ -161,6 +175,11 @@ export default function EstimateDetailPage() {
           })),
         }),
       });
+      const linesData = await linesResponse.json();
+      if (!linesResponse.ok) {
+        setError(linesData.detail ?? "Failed to copy line items to the new estimate");
+        return;
+      }
       router.push(`/estimates/${created.id}`);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
