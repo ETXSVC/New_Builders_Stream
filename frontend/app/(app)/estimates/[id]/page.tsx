@@ -298,7 +298,7 @@ export default function EstimateDetailPage() {
             />
           )}
           {estimate.status === "sent" && role !== "client" && (
-            <p className="text-sm text-slate-500">Waiting for the client's signature.</p>
+            <p className="text-sm text-slate-500">Waiting for the client&apos;s signature.</p>
           )}
 
           {estimate.status === "approved" && esignature && (

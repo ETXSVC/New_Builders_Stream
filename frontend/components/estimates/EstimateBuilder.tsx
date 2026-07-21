@@ -5,7 +5,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { CatalogPanel } from "./CatalogPanel";
 import { LineRows, DraftLine } from "./LineRows";
-import { formatCurrency } from "@/lib/format";
 
 interface ExistingLineItem {
   cost_catalog_item_id: string;

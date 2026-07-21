@@ -94,7 +94,7 @@ export function BrandingTab() {
 
   return (
     <form onSubmit={handleSave} className="flex flex-col gap-4 max-w-md">
-      <p className="text-sm text-slate-500">Applies to future PDF exports — already-generated PDFs don't change.</p>
+      <p className="text-sm text-slate-500">Applies to future PDF exports — already-generated PDFs don&apos;t change.</p>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="branding-logo">Logo (PNG or JPEG, up to 2 MB)</Label>
         {branding.logo_storage_path && <p className="text-xs text-slate-500">Current logo is set.</p>}

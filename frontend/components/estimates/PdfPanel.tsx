@@ -12,7 +12,7 @@ export function PdfPanel({ estimateId, pdfStatus, canExport }: { estimateId: str
   const [requesting, setRequesting] = React.useState(false);
 
   React.useEffect(() => {
-    setStatus(pdfStatus);
+    void Promise.resolve().then(() => setStatus(pdfStatus));
   }, [pdfStatus]);
 
   React.useEffect(() => {
