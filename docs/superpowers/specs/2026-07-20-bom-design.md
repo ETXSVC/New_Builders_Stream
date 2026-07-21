@@ -30,8 +30,9 @@ Three new tables, all under the existing `"estimation"` tier module and the stan
 - Status is never stored as its own column — it's computed (see Decision 3).
 
 **`BomLineReceipt`**
-- `id`, `bom_line_id`, `quantity` (numeric), `received_at`, `recorded_by_user_id`.
+- `id`, `bom_line_id`, `company_id`, `quantity` (numeric), `received_at`, `recorded_by_user_id`.
 - An append-only ledger of delivery events, not a single mutable "amount received so far" field. This mirrors the existing `InvoicePayment`/`BillPayment` pattern in this codebase (a running total is always the sum of discrete recorded events, preserving a real audit trail of when materials actually arrived and who logged it) rather than introducing a new "just overwrite the number" pattern this app doesn't otherwise use.
+- `company_id` is carried directly on this table, not resolved through `bom_line_id`'s join — every RLS-protected table in this codebase carries its own `company_id` even when it also has a parent FK (`InvoicePayment` has both `invoice_id` and `company_id`), since the tenant-isolation policy filters on that column directly.
 
 ## Decision 3: Status derivation
 
