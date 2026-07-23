@@ -100,11 +100,23 @@ async def create_phase(
     # reuse for communication logs). field_crew can never reach this route
     # at all (_WRITE_ROLES is admin/project_manager only), so the
     # field_crew-scoping half of that helper is inert here.
-    await _get_project_or_404(current, project_id)
+    project = await _get_project_or_404(current, project_id)
 
+    # `company_id=project.company_id`, not `current.company_id`: a parent
+    # company's session can legitimately act on a descendant branch's
+    # Project without switching `X-Tenant-ID` to that branch first (RLS's
+    # `get_all_descendant_ids()` grant already makes the descendant's rows
+    # visible/writable). Using `current.company_id` here would silently
+    # stamp this Phase with the PARENT's id instead of the Project's own —
+    # a session later scoped directly to the descendant branch would then
+    # find its own Project's Phase invisible under RLS. Same bug class
+    # already fixed in change_orders.py/expenses.py/subcontractor_assignments.py
+    # and projects.py's upload_document/create_daily_log, per the
+    # post-Phase-2 audit of this exact pattern — this route was missed by
+    # that audit.
     phase = Phase(
         project_id=project_id,
-        company_id=current.company_id,
+        company_id=project.company_id,
         name=payload.name,
         sequence=payload.sequence,
     )
@@ -132,7 +144,7 @@ async def create_task(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> TaskResponse:
-    await _get_project_or_404(current, project_id)
+    project = await _get_project_or_404(current, project_id)
 
     # phase_id must belong to the SAME project as the path's project_id —
     # an application-layer check, same pattern as Phase 0's
@@ -167,9 +179,13 @@ async def create_task(
             "phase_id must belong to the project in the URL",
         )
 
+    # `company_id=project.company_id`, not `current.company_id` — same
+    # parent/descendant-branch reasoning as create_phase above, and the
+    # same bug class already fixed in this codebase's other nested-resource-
+    # creation routes.
     task = Task(
         phase_id=payload.phase_id,
-        company_id=current.company_id,
+        company_id=project.company_id,
         name=payload.name,
         due_date=payload.due_date,
         assignee_id=payload.assignee_id,

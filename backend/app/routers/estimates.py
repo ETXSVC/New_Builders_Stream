@@ -164,6 +164,23 @@ async def create_estimate(
             "Exactly one of project_id or lead_id must be supplied",
         )
 
+    # `resolved_company_id` — the referenced Project's/Lead's own
+    # `company_id`, NOT `current.company_id` — is what actually stamps the
+    # new Estimate below. A parent company's session can legitimately
+    # create an Estimate against a descendant branch's Project/Lead
+    # without switching `X-Tenant-ID` to that branch first (RLS's
+    # `get_all_descendant_ids()` grant already makes the descendant's rows
+    # visible/writable). Using `current.company_id` would silently stamp
+    # this Estimate with the PARENT's id instead of its own Project's/
+    # Lead's, producing a row whose `company_id` disagrees with the
+    # resource it's actually built against — a session later scoped
+    # directly to the descendant branch would then find its own Project's/
+    # Lead's Estimate invisible under RLS. Same bug class already fixed in
+    # change_orders.py/expenses.py/subcontractor_assignments.py and
+    # projects.py's upload_document/create_daily_log, per the post-Phase-2
+    # audit of this exact pattern — this route was missed by that audit.
+    resolved_company_id = current.company_id
+
     if payload.project_id is not None:
         # No explicit company_id filter — same pattern as every other
         # single-row-by-id lookup in this codebase: the tenant_isolation
@@ -171,8 +188,10 @@ async def create_estimate(
         result = await current.session.execute(
             select(Project).where(Project.id == payload.project_id)
         )
-        if result.scalar_one_or_none() is None:
+        project = result.scalar_one_or_none()
+        if project is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+        resolved_company_id = project.company_id
 
     if payload.lead_id is not None:
         result = await current.session.execute(select(Lead).where(Lead.id == payload.lead_id))
@@ -191,6 +210,7 @@ async def create_estimate(
                 f"Lead must be in one of {_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE} status "
                 f"to create an Estimate against it, got '{lead.status}'",
             )
+        resolved_company_id = lead.company_id
 
     markup_result = await current.session.execute(
         select(MarkupProfile).where(MarkupProfile.id == payload.markup_profile_id)
@@ -199,7 +219,7 @@ async def create_estimate(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
 
     estimate = Estimate(
-        company_id=current.company_id,
+        company_id=resolved_company_id,
         project_id=payload.project_id,
         lead_id=payload.lead_id,
         markup_profile_id=payload.markup_profile_id,
@@ -213,7 +233,7 @@ async def create_estimate(
 
     await write_audit_log(
         current.session,
-        company_id=current.company_id,
+        company_id=resolved_company_id,
         actor_id=current.user.id,
         action="estimate.created",
         entity_type="estimate",

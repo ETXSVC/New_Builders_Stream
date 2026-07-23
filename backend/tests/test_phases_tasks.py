@@ -7,7 +7,7 @@ test_leads.py, test_projects.py) rather than sharing them via conftest.py.
 """
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -83,6 +83,37 @@ async def _create_phase(client, admin, project_id, name="Foundation", sequence=0
     )
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+async def _add_membership_directly(user_id, company_id, role):
+    """Test-setup plumbing, identical rationale to
+    test_subcontractor_assignments.py's own helper of the same name."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) "
+            "VALUES ($1, $2, $3, now())",
+            company_id,
+            user_id,
+            role,
+        )
+    finally:
+        await conn.close()
+
+
+async def _create_child_with_membership(client, parent, name, role="admin"):
+    """Identical to test_subcontractor_assignments.py's helper of the same
+    name — duplicated rather than imported across test modules, matching
+    this codebase's existing convention."""
+    create = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": name},
+        headers=parent["headers"],
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+    await _add_membership_directly(parent["user_id"], child_id, role)
+    return child_id
 
 
 async def _create_task(client, admin, project_id, phase_id, name="Pour footings", assignee_id=None):
@@ -509,3 +540,92 @@ async def test_list_phases_returns_phases_with_nested_tasks_in_sequence_order(cl
     assert [p["name"] for p in items] == ["First", "Second"]
     assert [t["name"] for t in items[0]["tasks"]] == ["In First"]
     assert items[1]["tasks"] == []
+
+
+# =============================================================================
+# company_id sourcing: parent-company session (unswitched headers) creating a
+# Phase/Task against a child-branch Project. Same empirical shape as
+# test_tenant_isolation_phase2.py's own
+# test_creating_change_order_under_child_branch_project_uses_project_company_id
+# and test_subcontractor_assignments.py's own
+# test_creating_assignment_under_child_branch_project_and_subcontractor_uses_child_company_id.
+# =============================================================================
+
+
+async def test_creating_phase_under_child_branch_project_uses_child_company_id(client):
+    """The new Phase's company_id must come from project.company_id (the
+    CHILD), never current.company_id (the PARENT acting session). The
+    Project is created under the CHILD branch (via X-Tenant-ID-switched
+    headers, backed by a genuine company_users row); the Phase is then
+    created using the PARENT's own DEFAULT headers — deliberately NOT
+    X-Tenant-ID-switched — so RLS's get_all_descendant_ids() grant alone is
+    what makes the child's Project visible/writable to this session, which
+    is the only way current.company_id (parent) and project.company_id
+    (child) genuinely diverge without an explicit header switch."""
+    parent = await _register_and_login(client, "Parent Co", "phase-parent-co@acme.test")
+    await set_subscription_tier(parent["company_id"], "enterprise")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    child_actor = {"headers": child_headers}
+
+    project_id = await _create_project(client, child_actor)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        f"/projects/{project_id}/phases",
+        json={"name": "Foundation", "sequence": 0},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Phase created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    listed = await client.get(f"/projects/{project_id}/phases", headers=child_headers)
+    assert listed.status_code == 200, listed.text
+    assert [p["id"] for p in listed.json()["items"]] == [body["id"]]
+
+
+async def test_creating_task_under_child_branch_project_uses_child_company_id(client):
+    """Same bug class as test_creating_phase_under_child_branch_project_uses_child_company_id
+    above, for the sibling create_task route: the new Task's company_id
+    must come from project.company_id (the CHILD), never
+    current.company_id (the PARENT acting session)."""
+    parent = await _register_and_login(client, "Parent Co", "task-parent-co@acme.test")
+    await set_subscription_tier(parent["company_id"], "enterprise")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    child_actor = {"headers": child_headers}
+
+    project_id = await _create_project(client, child_actor)
+    phase_id = await _create_phase(client, child_actor, project_id)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        f"/projects/{project_id}/tasks",
+        json={"name": "Pour footings", "phase_id": phase_id},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Task created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    listed = await client.get(f"/projects/{project_id}/phases", headers=child_headers)
+    assert listed.status_code == 200, listed.text
+    tasks = listed.json()["items"][0]["tasks"]
+    assert [t["id"] for t in tasks] == [body["id"]]
