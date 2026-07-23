@@ -1002,6 +1002,120 @@ export interface paths {
         patch: operations["update_markup_profile_markup_profiles__profile_id__patch"];
         trace?: never;
     };
+    "/vendors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Vendors */
+        get: operations["list_vendors_vendors_get"];
+        put?: never;
+        /** Create Vendor */
+        post: operations["create_vendor_vendors_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/vendors/{vendor_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Vendor */
+        patch: operations["update_vendor_vendors__vendor_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Project Bom Lines */
+        get: operations["list_project_bom_lines_projects__project_id__materials_get"];
+        put?: never;
+        /** Create Manual Bom Line */
+        post: operations["create_manual_bom_line_projects__project_id__materials_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Bom Lines */
+        get: operations["list_bom_lines_materials_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/materials/{bom_line_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Bom Line */
+        patch: operations["update_bom_line_materials__bom_line_id__patch"];
+        trace?: never;
+    };
+    "/materials/{bom_line_id}/receipts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Bom Line Receipt
+         * @description No row-lock, unlike record_invoice_payment's use of
+         *     `.with_for_update()`: that lock exists because concurrent payments
+         *     each independently decide whether to flip Invoice.status to "paid" —
+         *     a genuine read-then-conditionally-write race on a STORED field. A
+         *     BomLine has no stored status to race on; status is always recomputed
+         *     fresh from a live SUM on every read, so two concurrent receipts just
+         *     both get recorded and the next read sums both correctly regardless of
+         *     interleaving.
+         */
+        post: operations["create_bom_line_receipt_materials__bom_line_id__receipts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/estimates": {
         parameters: {
             query?: never;
@@ -2716,6 +2830,137 @@ export interface components {
              * Format: binary
              */
             file: string;
+        };
+        /** BomLineListResponse */
+        BomLineListResponse: {
+            /** Items */
+            items: components["schemas"]["BomLineResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * BomLineManualCreateRequest
+         * @description A PM-typed line not sourced from any estimate — no cost_catalog_item_id
+         *     accepted here (design spec Decision 1: manual lines carry their own
+         *     description/unit directly, `source="manual"` set by the route, never by
+         *     the caller).
+         */
+        BomLineManualCreateRequest: {
+            /** Description */
+            description: string;
+            /** Unit */
+            unit: string;
+            /** Quantity */
+            quantity: number | string;
+        };
+        /**
+         * BomLinePatchRequest
+         * @description Two independent actions in one request shape (design spec Decision
+         *     3): `ordered=True` marks the line ordered (idempotent — a second
+         *     request with `ordered=True` on an already-ordered line does not reset
+         *     `ordered_at`); `vendor_id` attaches/reassigns a vendor, independently
+         *     of `ordered`. There is no `ordered=False` un-marking path — not
+         *     required by the spec, and `ordered_at`'s semantics on an un-mark
+         *     aren't specified, so it's deliberately not built.
+         */
+        BomLinePatchRequest: {
+            /** Ordered */
+            ordered?: boolean | null;
+            /** Vendor Id */
+            vendor_id?: string | null;
+        };
+        /** BomLineReceiptCreateRequest */
+        BomLineReceiptCreateRequest: {
+            /** Quantity */
+            quantity: number | string;
+        };
+        /** BomLineReceiptResponse */
+        BomLineReceiptResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Bom Line Id
+             * Format: uuid
+             */
+            bom_line_id: string;
+            /** Quantity */
+            quantity: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /**
+             * Recorded By User Id
+             * Format: uuid
+             */
+            recorded_by_user_id: string;
+        };
+        /**
+         * BomLineResponse
+         * @description No `model_config`/`from_attributes` — `quantity_received` and
+         *     `status` aren't columns on the BomLine ORM instance (quantity_received
+         *     is a SUM over a different table; status is derived from it), so this
+         *     schema can never be built via `.model_validate(some_bom_line)` alone.
+         *     Same reasoning `ProjectClientDashboardResponse` documents for its own
+         *     router-computed fields (`app/schemas/project.py`) — always construct
+         *     this explicitly, passing every field including the two computed ones.
+         */
+        BomLineResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Cost Catalog Item Id */
+            cost_catalog_item_id: string | null;
+            /** Vendor Id */
+            vendor_id: string | null;
+            /** Description */
+            description: string;
+            /** Unit */
+            unit: string;
+            /** Quantity */
+            quantity: string;
+            /** Ordered */
+            ordered: boolean;
+            /** Ordered At */
+            ordered_at: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "estimate" | "manual";
+            /** Quantity Received */
+            quantity_received: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "needed" | "ordered" | "partially_received" | "received";
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * CategorySubtotal
@@ -4985,6 +5230,70 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** VendorCreateRequest */
+        VendorCreateRequest: {
+            /** Name */
+            name: string;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Notes */
+            notes?: string | null;
+        };
+        /** VendorListResponse */
+        VendorListResponse: {
+            /** Items */
+            items: components["schemas"]["VendorResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /**
+         * VendorPatchRequest
+         * @description All fields optional; `None` means "leave unchanged," same PATCH
+         *     convention as CostCatalogItemPatchRequest/MarkupProfilePatchRequest.
+         */
+        VendorPatchRequest: {
+            /** Name */
+            name?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Notes */
+            notes?: string | null;
+        };
+        /** VendorResponse */
+        VendorResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Name */
+            name: string;
+            /** Contact Email */
+            contact_email: string | null;
+            /** Contact Phone */
+            contact_phone: string | null;
+            /** Notes */
+            notes: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -6497,6 +6806,277 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarkupProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_vendors_vendors_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_vendor_vendors_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_vendor_vendors__vendor_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                vendor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VendorPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VendorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_bom_lines_projects__project_id__materials_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomLineListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_manual_bom_line_projects__project_id__materials_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BomLineManualCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomLineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bom_lines_materials_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomLineListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_bom_line_materials__bom_line_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bom_line_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BomLinePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomLineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bom_line_receipt_materials__bom_line_id__receipts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bom_line_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BomLineReceiptCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BomLineReceiptResponse"];
                 };
             };
             /** @description Validation Error */
