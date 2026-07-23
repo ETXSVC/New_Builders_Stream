@@ -5,9 +5,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import { CatalogItemsTab } from "@/components/catalog/CatalogItemsTab";
 import { MarkupProfilesTab } from "@/components/catalog/MarkupProfilesTab";
+import { VendorsTab } from "@/components/catalog/VendorsTab";
 import { BrandingTab } from "@/components/catalog/BrandingTab";
 
-const TABS = ["Cost items", "Markup profiles", "PDF template"] as const;
+const TABS = ["Cost items", "Markup profiles", "Vendors", "PDF template"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function CatalogPage() {
@@ -36,6 +37,7 @@ export default function CatalogPage() {
       </div>
       {tab === "Cost items" && <CatalogItemsTab />}
       {tab === "Markup profiles" && <MarkupProfilesTab />}
+      {tab === "Vendors" && <VendorsTab />}
       {tab === "PDF template" && role === "admin" && <BrandingTab />}
     </main>
   );
