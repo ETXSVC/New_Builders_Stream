@@ -429,11 +429,17 @@ async def replace_estimate_line_items(
     commits once after the handler returns), so as long as nothing below
     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
     guarantees the eventual commit never happens at all and the estimate's
-    line items are left completely untouched. Two independent checks, both
-    performed before any DELETE/INSERT is issued:
+    line items are left completely untouched. Three independent checks,
+    all performed before any DELETE/INSERT is issued:
       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
          snapshotted Estimate's line items are immutable).
-      2. Every input line's `cost_catalog_item_id` must resolve via
+      2. `estimate.status == "sent"` -> 409: an estimate awaiting the
+         client's signature must not be editable out from under them
+         between send-for-signature and their approve/reject (closes a
+         gap this guard previously missed — `is_snapshotted` alone only
+         starts being `True` at approval, not at send). `"rejected"`
+         deliberately stays editable, per reject_estimate's own docstring.
+      3. Every input line's `cost_catalog_item_id` must resolve via
          `resolve_visible_catalog_items` -> 422 on the FIRST one that
          doesn't. Resolved (not raw-table-queried) so the rate captured
          below respects inheritance/override resolution — a PM building an
@@ -479,6 +485,23 @@ async def replace_estimate_line_items(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Estimate is snapshotted and its line items can no longer be modified",
+        )
+
+    # `status == "sent"` is blocked separately from `is_snapshotted` above:
+    # an estimate stops being editable the moment it's sent for the
+    # client's signature, not only once approved/snapshotted. Without this,
+    # line items could still be replaced (and calculate_estimate_totals
+    # re-run) between send-for-signature and the client's approve/reject —
+    # letting the client e-sign a total they never actually reviewed.
+    # `status == "rejected"` deliberately remains editable here — see
+    # reject_estimate's own docstring above ("this route... does not
+    # otherwise lock the estimate"), a documented, separate decision this
+    # fix does not change.
+    if estimate.status == "sent":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is awaiting client signature and its line items cannot be modified "
+            "until it is approved or rejected",
         )
 
     resolved_items = await resolve_visible_catalog_items(current.session, current.company_id)
@@ -551,10 +574,18 @@ async def calculate_estimate_totals(
     rationale, to `replace_estimate_line_items` above (design decision #4):
     an approved/snapshotted Estimate's totals are as immutable as its line
     items, and recomputing them would silently contradict the very
-    snapshot that was taken. Checked, and raised, BEFORE
-    `calculate_estimate` is ever called — a 409 here guarantees
-    `estimate.subtotal`/`total` are left completely untouched, same "one
-    transaction, one outcome" discipline as Task 2.11's own guard.
+    snapshot that was taken.
+
+    **409 if `estimate.status == "sent"`** — same additional guard as
+    `replace_estimate_line_items` above, same rationale: a total
+    recalculated while an estimate is awaiting the client's signature would
+    let them e-sign a total they never actually reviewed. `"rejected"`
+    deliberately stays recalculable, per reject_estimate's own docstring.
+
+    Both checks are raised BEFORE `calculate_estimate` is ever called — a
+    409 here guarantees `estimate.subtotal`/`total` are left completely
+    untouched, same "one transaction, one outcome" discipline as Task
+    2.11's own guard.
 
     Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
     same header + line_items shape `GET /estimates/{id}` returns, plus this
@@ -569,6 +600,18 @@ async def calculate_estimate_totals(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Estimate is snapshotted and its totals can no longer be recalculated",
+        )
+
+    # Same "sent" guard, same rationale, as replace_estimate_line_items
+    # above: a total recalculated between send-for-signature and the
+    # client's approve/reject would let the client e-sign a total they
+    # never actually reviewed. `status == "rejected"` deliberately remains
+    # recalculable here — see reject_estimate's own docstring.
+    if estimate.status == "sent":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is awaiting client signature and its totals cannot be recalculated "
+            "until it is approved or rejected",
         )
 
     calculation = await calculate_estimate(current.session, estimate)

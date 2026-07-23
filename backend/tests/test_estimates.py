@@ -1574,3 +1574,76 @@ async def test_creating_estimate_against_child_branch_lead_uses_child_company_id
 
     get_response = await client.get(f"/estimates/{body['id']}", headers=child_headers)
     assert get_response.status_code == 200, get_response.text
+
+
+# =============================================================================
+# 'sent' estimates must not be editable — a client must always e-sign the
+# exact total they were shown, not one silently changed after send-for-
+# signature but before their own approve/reject action.
+# =============================================================================
+
+
+async def test_replace_line_items_blocked_while_estimate_is_sent(client):
+    """Editing line items must be rejected the moment an estimate is
+    'sent', not only once it's later approved/snapshotted — otherwise an
+    admin/PM could change what the client is about to sign after they were
+    sent the estimate, without the client's own view ever being
+    invalidated or re-sent."""
+    admin = await _register_and_login(client, "Acme Construction", "sent-lines-admin@acme.test")
+    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.put(
+        f"/estimates/{sent_estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "999.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+
+    detail = await client.get(f"/estimates/{sent_estimate['id']}", headers=admin["headers"])
+    assert detail.json()["total"] == sent_estimate["total"], (
+        "total must be unchanged — the blocked PUT must not have altered "
+        "line items despite the 409"
+    )
+
+
+async def test_calculate_totals_blocked_while_estimate_is_sent(client):
+    """Same rule as test_replace_line_items_blocked_while_estimate_is_sent
+    above, for the sibling recalculation route."""
+    admin = await _register_and_login(client, "Acme Construction", "sent-calc-admin@acme.test")
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.post(
+        f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
+    )
+    assert response.status_code == 409, response.text
+
+
+async def test_replace_line_items_and_calculate_remain_legal_on_rejected_estimate(client):
+    """Deliberately NOT blocked: reject_estimate's own docstring documents
+    that a rejected estimate stays editable ("this route... does not
+    otherwise lock the estimate") — proving the new 'sent' guard above
+    didn't accidentally widen to cover 'rejected' too."""
+    admin = await _register_and_login(client, "Acme Construction", "rejected-edit-admin@acme.test")
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "rejected-edit-client@acme.test"
+    )
+    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+
+    reject_response = await client.post(
+        f"/estimates/{sent_estimate['id']}/reject",
+        json={"reason": "Too expensive"},
+        headers=client_role["headers"],
+    )
+    assert reject_response.status_code == 200, reject_response.text
+
+    put_response = await client.put(
+        f"/estimates/{sent_estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "5.00"}]},
+        headers=admin["headers"],
+    )
+    assert put_response.status_code == 200, put_response.text
+
+    calc_response = await client.post(
+        f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
+    )
+    assert calc_response.status_code == 200, calc_response.text
