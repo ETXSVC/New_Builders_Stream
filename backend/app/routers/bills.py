@@ -224,8 +224,26 @@ async def record_bill_payment(
     )
     bill = locked.scalar_one()
 
-    if bill.status == "void":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Cannot record a payment against a void bill")
+    # "paid" is blocked alongside void: without it, a second payment
+    # against an already-fully-paid bill was silently accepted (only void
+    # was rejected), stacking unlimited further "payments" on a settled
+    # bill — same gap fixed in invoices.py's record_invoice_payment.
+    if bill.status in ("void", "paid"):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot record a payment against a {bill.status} bill")
+
+    # Reads the already-committed payment total BEFORE this payment is
+    # inserted, under the row lock acquired above — same remaining-balance
+    # guard as invoices.py's own record_invoice_payment, and for the same
+    # reason: without it, a payment could exceed the bill's remaining
+    # balance, producing a negative outstanding_balance (bill.amount -
+    # paid) for every reader after.
+    already_paid = await _paid_amount(current, bill.id)
+    remaining = bill.amount - already_paid
+    if body.amount > remaining:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Payment amount {body.amount} exceeds the bill's remaining balance {remaining}",
+        )
 
     payment = BillPayment(
         id=uuid.uuid4(),

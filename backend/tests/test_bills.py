@@ -195,6 +195,83 @@ async def test_cumulative_bill_payment_reaching_full_amount_auto_marks_paid(clie
     assert body["outstanding_balance"] == "0.00"
 
 
+async def test_bill_overpayment_exceeding_remaining_balance_returns_409(client):
+    """A single payment larger than the bill's remaining balance must be
+    rejected outright, not silently accepted into a negative
+    outstanding_balance — same rule as test_invoices.py's own
+    test_overpayment_exceeding_remaining_balance_returns_409."""
+    admin = await _register_and_login(client, "Bill Pay Co 3", "bill-pay-3@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Y", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    response = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "150.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert response.status_code == 409, response.text
+
+    detail = await client.get(f"/bills/{bill_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "unpaid"
+    assert body["outstanding_balance"] == "100.00"
+    assert body["payments"] == []
+
+
+async def test_cumulative_bill_overpayment_exceeding_remaining_balance_returns_409(client):
+    """Same rule as the single-payment case above, but against a partially
+    paid bill: a second payment larger than what's LEFT (not the original
+    total) must be rejected."""
+    admin = await _register_and_login(client, "Bill Pay Co 3b", "bill-pay-3b@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Y2", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    first = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "60.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "50.00", "paid_date": "2026-08-02"}, headers=admin["headers"]
+    )
+    assert second.status_code == 409, second.text
+
+    detail = await client.get(f"/bills/{bill_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "unpaid"
+    assert body["outstanding_balance"] == "40.00"
+    assert len(body["payments"]) == 1
+
+
+async def test_payment_against_an_already_paid_bill_returns_409(client):
+    """Once a bill is fully paid, a further payment must be rejected — not
+    silently accepted, stacking unlimited additional "payments" on a
+    settled bill (previously only `void` was blocked, not `paid`)."""
+    admin = await _register_and_login(client, "Bill Pay Co 3c", "bill-pay-3c@example.test")
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Y3", "amount": "100.00"}, headers=admin["headers"]
+    )
+    bill_id = create.json()["id"]
+
+    paid_in_full = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "100.00", "paid_date": "2026-08-01"}, headers=admin["headers"]
+    )
+    assert paid_in_full.status_code == 201, paid_in_full.text
+
+    further = await client.post(
+        f"/bills/{bill_id}/payments", json={"amount": "10.00", "paid_date": "2026-08-02"}, headers=admin["headers"]
+    )
+    assert further.status_code == 409, further.text
+
+    detail = await client.get(f"/bills/{bill_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "paid"
+    assert body["outstanding_balance"] == "0.00"
+    assert len(body["payments"]) == 1
+
+
 async def test_payment_against_void_bill_returns_409(client):
     admin = await _register_and_login(client, "Bill Pay Co 2", "bill-pay-2@example.test")
     create = await client.post(

@@ -185,9 +185,29 @@ async def record_invoice_payment(
     )
     invoice = locked.scalar_one()
 
-    if invoice.status in ("draft", "void"):
+    # "paid" is blocked alongside draft/void: without it, a second payment
+    # against an already-fully-paid invoice was silently accepted (only
+    # draft/void were rejected), stacking unlimited further "payments" on a
+    # settled invoice.
+    if invoice.status in ("draft", "void", "paid"):
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"Cannot record a payment against a {invoice.status} invoice"
+        )
+
+    # Reads the already-committed payment total BEFORE this payment is
+    # inserted, under the row lock acquired above — the same lock that
+    # makes concurrent payments serialize (see the comment above) also
+    # makes this remaining-balance read safe against a second request
+    # racing in. Rejecting an over-the-remaining-balance payment here,
+    # before the row is inserted, keeps a bad request from ever landing —
+    # not silently accepted and then producing a negative
+    # outstanding_balance (invoice.amount - paid) for every reader after.
+    already_paid = await _paid_amount(current, invoice.id)
+    remaining = invoice.amount - already_paid
+    if body.amount > remaining:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Payment amount {body.amount} exceeds the invoice's remaining balance {remaining}",
         )
 
     payment = InvoicePayment(
