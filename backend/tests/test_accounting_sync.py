@@ -172,8 +172,8 @@ async def test_successful_push_sets_status_success(monkeypatch):
         async with session_factory() as session:
             result = await session.execute(
                 text(
-                    "SELECT status, attempt_count, last_error FROM integration_sync_records "
-                    "WHERE connection_id = :cid AND entity_id = :eid"
+                    "SELECT status, attempt_count, last_error, external_record_id "
+                    "FROM integration_sync_records WHERE connection_id = :cid AND entity_id = :eid"
                 ),
                 {"cid": seeded["connection_id"], "eid": seeded["invoice_id"]},
             )
@@ -181,6 +181,9 @@ async def test_successful_push_sets_status_success(monkeypatch):
         assert row.status == "success"
         assert row.attempt_count == 1
         assert row.last_error is None
+        assert row.external_record_id is not None, (
+            "a successful push must persist the provider's own external_record_id"
+        )
         assert fake_client.pushed_invoices == [
             {"invoice_number": "INV-TEST-0001", "amount": "500.00", "status": "draft"}
         ]
@@ -254,5 +257,54 @@ async def test_a_second_invocation_increments_attempt_count(monkeypatch):
             )
             row = result.fetchone()
         assert row.attempt_count == 2
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_retried_invocation_after_successful_push_does_not_double_post(monkeypatch):
+    """Regression test for the double-post race this module's own docstring
+    now documents: a Dramatiq retry re-running this actor after the FIRST
+    invocation's push already succeeded (simulated here by simply calling
+    _sync_financial_record twice against the same fake_client — a stand-in
+    for "the second call is a retry of the same logical sync, not a new
+    one") must not push the SAME invoice to the provider a second time.
+    The idempotency_key=entity_id passed to push_invoice is what makes the
+    second call a no-op at the fake provider level, exactly mirroring how
+    a real provider's own idempotency-key handling would recognize the
+    repeat and return the same external_record_id without reprocessing."""
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_connection_and_invoice(session_factory)
+
+        from app.services import accounting_client
+
+        fake_client = accounting_client.FakeAccountingProviderClient(provider="quickbooks")
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: fake_client)
+
+        for _ in range(2):
+            await _sync_financial_record(
+                connection_id=str(seeded["connection_id"]),
+                entity_type="invoice",
+                entity_id=str(seeded["invoice_id"]),
+                session_factory=session_factory,
+            )
+
+        assert len(fake_client.pushed_invoices) == 1, (
+            "a retried sync of the SAME invoice must not push it to the provider twice"
+        )
+
+        async with session_factory() as session:
+            result = await session.execute(
+                text(
+                    "SELECT status, attempt_count, external_record_id FROM integration_sync_records "
+                    "WHERE connection_id = :cid AND entity_id = :eid"
+                ),
+                {"cid": seeded["connection_id"], "eid": seeded["invoice_id"]},
+            )
+            row = result.fetchone()
+        assert row.status == "success"
+        assert row.attempt_count == 2, "the sync actor's own bookkeeping still records both attempts"
+        assert row.external_record_id is not None
     finally:
         await owner_engine.dispose()
