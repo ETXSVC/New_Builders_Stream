@@ -34,8 +34,18 @@ class TaskUpdateRequest(BaseModel):
     anything; `field_crew` can only update `status` on tasks assigned to
     them) is the router's job, not this schema's — same division of
     responsibility as every other RBAC check in this codebase.
+
+    `name`/`due_date` added alongside Task/Phase full-CRUD completion:
+    `TaskCreateRequest`'s own fields, made optional here for PATCH. Still
+    subject to the same field_crew-restricted-to-`status`-only rule below —
+    adding fields to this schema doesn't widen field_crew's own allowed set,
+    since the router's `disallowed_fields = set(update_fields) - {"status"}`
+    check is schema-agnostic (it rejects anything that isn't `"status"`,
+    whatever this schema happens to expose).
     """
 
+    name: str | None = Field(None, min_length=1, max_length=255)
+    due_date: date | None = None
     status: str | None = None
     assignee_id: uuid.UUID | None = None
 

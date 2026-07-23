@@ -10,6 +10,7 @@ from app.schemas.phase import (
     PhaseCreateRequest,
     PhaseListResponse,
     PhaseResponse,
+    PhaseUpdateRequest,
     PhaseWithTasksResponse,
 )
 from app.schemas.task import (
@@ -198,6 +199,77 @@ async def create_task(
     return TaskResponse.model_validate(task)
 
 
+async def _get_phase_or_404(current: CurrentUser, project_id: uuid.UUID, phase_id: uuid.UUID) -> Phase:
+    """Existence/tenant/project-scope check for `PATCH`/`DELETE
+    /projects/{project_id}/phases/{phase_id}`. `phase_id` is a PATH
+    parameter here (unlike `create_task`'s `payload.phase_id`, a body
+    field validated with a 422 for "doesn't belong to this project") —
+    addressed-by-path resources in this codebase 404 on "doesn't exist,
+    isn't yours, or isn't reachable via this exact path", same convention
+    `_get_task_or_404`/`_get_project_or_404` already establish. Filtering
+    on `Phase.project_id == project_id` in the same query (rather than a
+    separate `.project_id != project_id` check after fetching by id alone)
+    means a phase belonging to a DIFFERENT project and a genuinely
+    nonexistent phase id are indistinguishable from this route's
+    perspective — deliberately, matching create_task's own reasoning for
+    its structurally identical query shape."""
+    result = await current.session.execute(
+        select(Phase).where(Phase.id == phase_id, Phase.project_id == project_id)
+    )
+    phase = result.scalar_one_or_none()
+    if phase is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Phase not found")
+    return phase
+
+
+@router.patch("/projects/{project_id}/phases/{phase_id}", response_model=PhaseResponse)
+async def update_phase(
+    project_id: uuid.UUID,
+    phase_id: uuid.UUID,
+    payload: PhaseUpdateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> PhaseResponse:
+    """Rename/reorder a Phase — `admin`/`project_manager` only, matching
+    `create_phase`'s own role gate (field_crew can never reach this route).
+    `_get_project_or_404` first, same "existence/tenant before touching the
+    nested resource" ordering every other project-nested route in this
+    file/router uses."""
+    await _get_project_or_404(current, project_id)
+    phase = await _get_phase_or_404(current, project_id, phase_id)
+
+    update_fields = payload.model_dump(exclude_unset=True)
+    for field_name, value in update_fields.items():
+        setattr(phase, field_name, value)
+
+    await current.session.flush()
+    # No explicit commit — get_current_user (Inherited Invariant #4) commits
+    # current.session once, after this handler returns.
+
+    return PhaseResponse.model_validate(phase)
+
+
+@router.delete("/projects/{project_id}/phases/{phase_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_phase(
+    project_id: uuid.UUID,
+    phase_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> None:
+    """`admin`/`project_manager` only, same gate as `update_phase` above.
+    This Phase's Tasks cascade with it at the DB level — migration
+    `0004_project_management_schema.py` declares `tasks.phase_id` with
+    `ondelete="CASCADE"`, so no explicit `delete(Task)` call is needed here
+    before deleting the Phase itself; Postgres removes the child rows as
+    part of the same statement (same pattern `delete_estimate`'s own
+    docstring establishes for `estimate_line_items`, `app/routers/estimates.py`)."""
+    await _get_project_or_404(current, project_id)
+    phase = await _get_phase_or_404(current, project_id, phase_id)
+
+    await current.session.delete(phase)
+    await current.session.flush()
+
+
 @router.get("/projects/{project_id}/phases", response_model=PhaseListResponse)
 async def list_phases(
     project_id: uuid.UUID,
@@ -291,7 +363,8 @@ async def patch_task(
     AND a field-level restriction, combined, not just a role gate.
 
     - admin/project_manager: unrestricted — can set any field this schema
-      exposes (status, assignee_id) on any task in their tenant.
+      exposes (name, due_date, status, assignee_id) on any task in their
+      tenant.
     - field_crew: can set `status` ONLY, and ONLY on a task assigned to
       them (`assignee_id == current.user.id`).
 
@@ -343,3 +416,24 @@ async def patch_task(
     # current.session once, after this handler returns.
 
     return TaskResponse.model_validate(task)
+
+
+@router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(
+    task_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> None:
+    """`admin`/`project_manager` only — narrower than `patch_task`'s
+    admin/PM/field_crew set. field_crew's only grant on this row
+    (docs/07-security-compliance.md Section 2's RBAC matrix) is updating
+    `status` on a task assigned to them; deleting isn't part of that
+    grant, so `_WRITE_ROLES` (not `patch_task`'s three-role tuple) gates
+    this route. Reuses `_get_task_or_404` purely for the existence/tenant
+    404 — its field_crew-scoping branch is inert here, same "helper reused
+    for a role that can never reach this route" pattern `create_phase`'s
+    own docstring notes for `_get_project_or_404`."""
+    task = await _get_task_or_404(current, task_id)
+
+    await current.session.delete(task)
+    await current.session.flush()

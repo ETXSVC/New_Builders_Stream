@@ -36,6 +36,8 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
   const [members, setMembers] = React.useState<Member[]>([]);
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [newPhaseName, setNewPhaseName] = React.useState("");
+  const [renamingPhaseId, setRenamingPhaseId] = React.useState<string | null>(null);
+  const [renameValue, setRenameValue] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   // Per-task in-flight guard: disables a row's status Select while its
   // PATCH is pending so rapid changes can't interleave.
@@ -127,6 +129,70 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
     }
   }
 
+  async function renamePhase(phaseId: string, name: string) {
+    if (!accessToken) return;
+    setError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/phases/${phaseId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ name }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.detail ?? "Failed to rename phase");
+        return;
+      }
+      setRenamingPhaseId(null);
+      await load();
+    } catch {
+      setError("Unable to reach the server. Check your connection and try again.");
+    }
+  }
+
+  async function deletePhase(phaseId: string) {
+    if (!accessToken) return;
+    if (!window.confirm("Delete this phase and all of its tasks? This cannot be undone.")) return;
+    setError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/phases/${phaseId}`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? "Failed to delete phase");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Unable to reach the server. Check your connection and try again.");
+    }
+  }
+
+  async function deleteTask(taskId: string) {
+    if (!accessToken || pendingTasks[taskId]) return;
+    if (!window.confirm("Delete this task? This cannot be undone.")) return;
+    setError(null);
+    setPendingTasks((prev) => ({ ...prev, [taskId]: true }));
+    try {
+      const response = await fetch(`/api/tasks/${taskId}`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setError(data.detail ?? "Failed to delete task");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Unable to reach the server. Check your connection and try again.");
+    } finally {
+      setPendingTasks((prev) => ({ ...prev, [taskId]: false }));
+    }
+  }
+
   const memberName = (userId: string | null) =>
     userId ? members.find((m) => m.user_id === userId)?.full_name ?? "Assigned" : "Unassigned";
 
@@ -157,19 +223,72 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
       {phases.map((phase) => {
         const isOpen = expanded[phase.id] ?? true;
         const done = phase.tasks.filter((t) => t.status === "done").length;
+        const isRenaming = renamingPhaseId === phase.id;
         return (
           <div key={phase.id} className="border border-slate-200 rounded-lg overflow-hidden">
-            <button
-              type="button"
-              className="w-full flex items-center justify-between bg-slate-50 px-4 py-3 text-sm font-medium"
-              aria-expanded={isOpen}
-              onClick={() => setExpanded((prev) => ({ ...prev, [phase.id]: !isOpen }))}
-            >
-              <span>{phase.name}</span>
-              <span className="text-xs text-slate-500">
-                {phase.tasks.length} tasks · {done} done
-              </span>
-            </button>
+            <div className="w-full flex items-center gap-3 bg-slate-50 px-4 py-3 text-sm font-medium">
+              {isRenaming ? (
+                <form
+                  className="flex flex-1 items-center gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void renamePhase(phase.id, renameValue);
+                  }}
+                >
+                  <Input
+                    aria-label={`Rename ${phase.name}`}
+                    className="h-8 flex-1"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    autoFocus
+                    required
+                  />
+                  <Button type="submit" size="sm">
+                    Save
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setRenamingPhaseId(null)}>
+                    Cancel
+                  </Button>
+                </form>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="flex-1 flex items-center justify-between text-left"
+                    aria-expanded={isOpen}
+                    onClick={() => setExpanded((prev) => ({ ...prev, [phase.id]: !isOpen }))}
+                  >
+                    <span>{phase.name}</span>
+                    <span className="text-xs text-slate-500 mr-3">
+                      {phase.tasks.length} tasks · {done} done
+                    </span>
+                  </button>
+                  {canEdit && (
+                    <div className="flex gap-1 shrink-0">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setRenamingPhaseId(phase.id);
+                          setRenameValue(phase.name);
+                        }}
+                      >
+                        Rename
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => deletePhase(phase.id)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
             {isOpen && (
               <div className="px-4 pb-3">
                 {phase.tasks.map((task) => (
@@ -193,6 +312,17 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
                       </Select>
                     ) : (
                       <StatusBadge status={task.status} />
+                    )}
+                    {canEdit && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={!!pendingTasks[task.id]}
+                        onClick={() => deleteTask(task.id)}
+                      >
+                        Delete
+                      </Button>
                     )}
                   </div>
                 ))}

@@ -15,6 +15,15 @@ class PhaseCreateRequest(BaseModel):
     sequence: int = Field(0, ge=0)
 
 
+class PhaseUpdateRequest(BaseModel):
+    """Body for `PATCH /projects/{id}/phases/{phase_id}`. PATCH semantics:
+    both fields optional, only-set fields are applied — same
+    `exclude_unset`-driven shape `TaskUpdateRequest` already establishes."""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    sequence: int | None = Field(None, ge=0)
+
+
 class PhaseResponse(BaseModel):
     """Full model. `phases` has no created_at/updated_at columns
     (docs/04-database-schema.md Section 4) — not an omission, the schema

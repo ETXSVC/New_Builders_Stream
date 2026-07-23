@@ -670,6 +670,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/projects/{project_id}/phases/{phase_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Phase
+         * @description `admin`/`project_manager` only, same gate as `update_phase` above.
+         *     This Phase's Tasks cascade with it at the DB level — migration
+         *     `0004_project_management_schema.py` declares `tasks.phase_id` with
+         *     `ondelete="CASCADE"`, so no explicit `delete(Task)` call is needed here
+         *     before deleting the Phase itself; Postgres removes the child rows as
+         *     part of the same statement (same pattern `delete_estimate`'s own
+         *     docstring establishes for `estimate_line_items`, `app/routers/estimates.py`).
+         */
+        delete: operations["delete_phase_projects__project_id__phases__phase_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Phase
+         * @description Rename/reorder a Phase — `admin`/`project_manager` only, matching
+         *     `create_phase`'s own role gate (field_crew can never reach this route).
+         *     `_get_project_or_404` first, same "existence/tenant before touching the
+         *     nested resource" ordering every other project-nested route in this
+         *     file/router uses.
+         */
+        patch: operations["update_phase_projects__project_id__phases__phase_id__patch"];
+        trace?: never;
+    };
     "/tasks": {
         parameters: {
             query?: never;
@@ -703,7 +737,19 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Task
+         * @description `admin`/`project_manager` only — narrower than `patch_task`'s
+         *     admin/PM/field_crew set. field_crew's only grant on this row
+         *     (docs/07-security-compliance.md Section 2's RBAC matrix) is updating
+         *     `status` on a task assigned to them; deleting isn't part of that
+         *     grant, so `_WRITE_ROLES` (not `patch_task`'s three-role tuple) gates
+         *     this route. Reuses `_get_task_or_404` purely for the existence/tenant
+         *     404 — its field_crew-scoping branch is inert here, same "helper reused
+         *     for a role that can never reach this route" pattern `create_phase`'s
+         *     own docstring notes for `_get_project_or_404`.
+         */
+        delete: operations["delete_task_tasks__task_id__delete"];
         options?: never;
         head?: never;
         /**
@@ -712,7 +758,8 @@ export interface paths {
          *     AND a field-level restriction, combined, not just a role gate.
          *
          *     - admin/project_manager: unrestricted — can set any field this schema
-         *       exposes (status, assignee_id) on any task in their tenant.
+         *       exposes (name, due_date, status, assignee_id) on any task in their
+         *       tenant.
          *     - field_crew: can set `status` ONLY, and ONLY on a task assigned to
          *       them (`assignee_id == current.user.id`).
          *
@@ -1115,11 +1162,17 @@ export interface paths {
          *     commits once after the handler returns), so as long as nothing below
          *     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
          *     guarantees the eventual commit never happens at all and the estimate's
-         *     line items are left completely untouched. Two independent checks, both
-         *     performed before any DELETE/INSERT is issued:
+         *     line items are left completely untouched. Three independent checks,
+         *     all performed before any DELETE/INSERT is issued:
          *       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
          *          snapshotted Estimate's line items are immutable).
-         *       2. Every input line's `cost_catalog_item_id` must resolve via
+         *       2. `estimate.status == "sent"` -> 409: an estimate awaiting the
+         *          client's signature must not be editable out from under them
+         *          between send-for-signature and their approve/reject (closes a
+         *          gap this guard previously missed — `is_snapshotted` alone only
+         *          starts being `True` at approval, not at send). `"rejected"`
+         *          deliberately stays editable, per reject_estimate's own docstring.
+         *       3. Every input line's `cost_catalog_item_id` must resolve via
          *          `resolve_visible_catalog_items` -> 422 on the FIRST one that
          *          doesn't. Resolved (not raw-table-queried) so the rate captured
          *          below respects inheritance/override resolution — a PM building an
@@ -1192,10 +1245,18 @@ export interface paths {
          *     rationale, to `replace_estimate_line_items` above (design decision #4):
          *     an approved/snapshotted Estimate's totals are as immutable as its line
          *     items, and recomputing them would silently contradict the very
-         *     snapshot that was taken. Checked, and raised, BEFORE
-         *     `calculate_estimate` is ever called — a 409 here guarantees
-         *     `estimate.subtotal`/`total` are left completely untouched, same "one
-         *     transaction, one outcome" discipline as Task 2.11's own guard.
+         *     snapshot that was taken.
+         *
+         *     **409 if `estimate.status == "sent"`** — same additional guard as
+         *     `replace_estimate_line_items` above, same rationale: a total
+         *     recalculated while an estimate is awaiting the client's signature would
+         *     let them e-sign a total they never actually reviewed. `"rejected"`
+         *     deliberately stays recalculable, per reject_estimate's own docstring.
+         *
+         *     Both checks are raised BEFORE `calculate_estimate` is ever called — a
+         *     409 here guarantees `estimate.subtotal`/`total` are left completely
+         *     untouched, same "one transaction, one outcome" discipline as Task
+         *     2.11's own guard.
          *
          *     Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
          *     same header + line_items shape `GET /estimates/{id}` returns, plus this
@@ -4367,6 +4428,18 @@ export interface components {
             sequence: number;
         };
         /**
+         * PhaseUpdateRequest
+         * @description Body for `PATCH /projects/{id}/phases/{phase_id}`. PATCH semantics:
+         *     both fields optional, only-set fields are applied — same
+         *     `exclude_unset`-driven shape `TaskUpdateRequest` already establishes.
+         */
+        PhaseUpdateRequest: {
+            /** Name */
+            name?: string | null;
+            /** Sequence */
+            sequence?: number | null;
+        };
+        /**
          * PhaseWithTasksResponse
          * @description `GET /projects/{id}/phases` item shape (CRM+PM frontend spec,
          *     Decision 2 item 3): a phase plus its tasks, nested — the frontend's
@@ -4856,6 +4929,8 @@ export interface components {
             last_error: string | null;
             /** Last Attempted At */
             last_attempted_at: string | null;
+            /** External Record Id */
+            external_record_id: string | null;
         };
         /** SyncStatusResponse */
         SyncStatusResponse: {
@@ -4945,8 +5020,20 @@ export interface components {
          *     anything; `field_crew` can only update `status` on tasks assigned to
          *     them) is the router's job, not this schema's — same division of
          *     responsibility as every other RBAC check in this codebase.
+         *
+         *     `name`/`due_date` added alongside Task/Phase full-CRUD completion:
+         *     `TaskCreateRequest`'s own fields, made optional here for PATCH. Still
+         *     subject to the same field_crew-restricted-to-`status`-only rule below —
+         *     adding fields to this schema doesn't widen field_crew's own allowed set,
+         *     since the router's `disallowed_fields = set(update_fields) - {"status"}`
+         *     check is schema-agnostic (it rejects anything that isn't `"status"`,
+         *     whatever this schema happens to expose).
          */
         TaskUpdateRequest: {
+            /** Name */
+            name?: string | null;
+            /** Due Date */
+            due_date?: string | null;
             /** Status */
             status?: string | null;
             /** Assignee Id */
@@ -6116,6 +6203,72 @@ export interface operations {
             };
         };
     };
+    delete_phase_projects__project_id__phases__phase_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                phase_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_phase_projects__project_id__phases__phase_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                phase_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhaseUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhaseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_my_tasks_tasks_get: {
         parameters: {
             query: {
@@ -6135,6 +6288,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["MyTaskListResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_task_tasks__task_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
