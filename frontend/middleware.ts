@@ -28,5 +28,6 @@ export const config = {
     "/my-tasks/:path*",
     "/estimates/:path*",
     "/catalog/:path*",
+    "/materials/:path*",
   ],
 };
