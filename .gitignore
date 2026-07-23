@@ -30,3 +30,7 @@ node_modules/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Playwright test run artifacts (traces, screenshots, videos)
+frontend/test-results/
+frontend/playwright-report/
