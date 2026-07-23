@@ -44,6 +44,10 @@ export const STATUS_LABELS: Record<string, string> = {
   open: "Open",
   in_progress: "In progress",
   done: "Done",
+  needed: "Needed",
+  ordered: "Ordered",
+  partially_received: "Partially received",
+  received: "Received",
 };
 
 export function labelFor(status: string): string {
