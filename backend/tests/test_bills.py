@@ -1,5 +1,9 @@
 """Task 3.41 (design spec Section 4): POST/GET /bills, GET /bills/{id}."""
-from tests.conftest import set_subscription_tier
+import asyncpg
+
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+
+OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register_and_login(client, company_name, email):
@@ -19,8 +23,40 @@ async def _register_and_login(client, company_name, email):
     await set_subscription_tier(register.json()["company_id"], "enterprise")
     return {
         "company_id": register.json()["company_id"],
+        "user_id": register.json()["user_id"],
         "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
     }
+
+
+async def _add_membership_directly(user_id, company_id, role):
+    """Test-setup plumbing, identical rationale to
+    test_subcontractor_assignments.py's own helper of the same name."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) "
+            "VALUES ($1, $2, $3, now())",
+            company_id,
+            user_id,
+            role,
+        )
+    finally:
+        await conn.close()
+
+
+async def _create_child_with_membership(client, parent, name, role="admin"):
+    """Identical to test_subcontractor_assignments.py's helper of the same
+    name — duplicated rather than imported across test modules, matching
+    this codebase's existing convention."""
+    create = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": name},
+        headers=parent["headers"],
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+    await _add_membership_directly(parent["user_id"], child_id, role)
+    return child_id
 
 
 async def _create_project(client, headers):
@@ -70,6 +106,120 @@ async def test_create_bill_with_neither_subcontractor_nor_vendor_name_returns_42
 
     response = await client.post("/bills", json={"amount": "50.00"}, headers=admin["headers"])
     assert response.status_code == 422
+
+
+async def test_create_bill_rejects_zero_or_negative_amount(client):
+    admin = await _register_and_login(client, "Bill Co Neg", "bill-neg@example.test")
+
+    zero = await client.post(
+        "/bills", json={"vendor_name": "Vendor Zero", "amount": "0.00"}, headers=admin["headers"]
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        "/bills", json={"vendor_name": "Vendor Neg", "amount": "-10.00"}, headers=admin["headers"]
+    )
+    assert negative.status_code == 422
+
+
+async def test_create_bill_quantizes_amount_to_two_decimal_places(client):
+    """Without quantizing before persisting, the create response (built
+    from the in-memory ORM object) would show the raw unrounded value
+    while Postgres's NUMERIC(12,2) column silently rounds it on INSERT —
+    a later GET would then disagree with what create originally
+    returned."""
+    admin = await _register_and_login(client, "Bill Co Quant", "bill-quant@example.test")
+
+    create = await client.post(
+        "/bills", json={"vendor_name": "Vendor Quant", "amount": "100.005"}, headers=admin["headers"]
+    )
+    assert create.status_code == 201, create.text
+    bill_id = create.json()["id"]
+    assert create.json()["amount"] == "100.01"
+
+    detail = await client.get(f"/bills/{bill_id}", headers=admin["headers"])
+    assert detail.json()["amount"] == "100.01"
+
+
+# =============================================================================
+# company_id sourcing: parent-company session (unswitched headers) creating a
+# Bill against a child-branch Project/Subcontractor. Same empirical shape as
+# test_subcontractor_assignments.py's own
+# test_creating_assignment_under_child_branch_project_and_subcontractor_uses_child_company_id.
+# =============================================================================
+
+
+async def test_creating_bill_against_child_branch_project_uses_child_company_id(client):
+    """The new Bill's company_id must come from the referenced Project's
+    own company_id (the CHILD), never current.company_id (the PARENT
+    acting session). The Project is created under the CHILD branch (via
+    X-Tenant-ID-switched headers, backed by a genuine company_users row);
+    the Bill is then created using the PARENT's own DEFAULT headers —
+    deliberately NOT X-Tenant-ID-switched — so RLS's
+    get_all_descendant_ids() grant alone is what makes the child's
+    Project visible/writable to this session, which is the only way
+    current.company_id (parent) and project.company_id (child) genuinely
+    diverge without an explicit header switch."""
+    parent = await _register_and_login(client, "Parent Co", "bill-parent-co@example.test")
+    child_id = await _create_child_with_membership(client, parent, "Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        "/bills",
+        json={"project_id": project["id"], "vendor_name": "City Power & Light", "amount": "150.00"},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Bill created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    get_response = await client.get(f"/bills/{body['id']}", headers=child_headers)
+    assert get_response.status_code == 200, get_response.text
+
+
+async def test_creating_bill_against_child_branch_subcontractor_with_no_project_uses_child_company_id(
+    client,
+):
+    """Same bug class as the Project-based test above, for the sibling
+    "company overhead bill" path: no Project, only a Subcontractor. The
+    new Bill's company_id must come from the referenced Subcontractor's
+    own company_id (the CHILD), never current.company_id (the PARENT
+    acting session)."""
+    parent = await _register_and_login(client, "Parent Co", "bill-sub-parent@example.test")
+    child_id = await _create_child_with_membership(client, parent, "Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    subcontractor = await _create_subcontractor(client, child_headers)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        "/bills",
+        json={"subcontractor_id": subcontractor["id"], "amount": "300.00"},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Bill created against a child-branch Subcontractor (no Project) "
+        "must belong to the SUBCONTRACTOR's own company (the child), not "
+        f"the acting session's company (the parent) — got "
+        f"{body['company_id']!r}, expected child_id={child_id!r}"
+    )
+
+    get_response = await client.get(f"/bills/{body['id']}", headers=child_headers)
+    assert get_response.status_code == 200, get_response.text
 
 
 async def test_project_manager_cannot_create_bill(client):

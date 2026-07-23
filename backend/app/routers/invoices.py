@@ -7,13 +7,14 @@ scoped to non-draft only — same `if current.role == "client":
 query = query.where(...)` shape list_estimates already uses).
 """
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Invoice, InvoicePayment
@@ -84,13 +85,21 @@ async def create_invoice(
     project = await _get_project_or_404(current, project_id)
 
     invoice_number = await next_invoice_number(current.session, project.company_id)
+    # Quantized to 2 decimal places (ROUND_HALF_UP, matching Postgres's own
+    # NUMERIC rounding — app/core/money.py's own module comment) BEFORE
+    # constructing the row: without this, a client-supplied amount with
+    # more than 2 decimal places gets silently rounded by Postgres's
+    # NUMERIC(12,2) column on INSERT, but this handler's own response
+    # (built from the in-memory ORM object, never re-queried after flush)
+    # would still show the unrounded value.
+    quantized_amount = body.amount.quantize(CENTS, rounding=ROUND_HALF_UP)
     invoice = Invoice(
         id=uuid.uuid4(),
         project_id=project.id,
         company_id=project.company_id,
         estimate_id=None,
         invoice_number=invoice_number,
-        amount=body.amount,
+        amount=quantized_amount,
         status="draft",
         due_date=body.due_date,
     )

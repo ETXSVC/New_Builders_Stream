@@ -2,12 +2,16 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExpenseCreateRequest(BaseModel):
     description: str
-    amount: Decimal
+    # gt=0: a zero/negative expense represents no real cost incurred and
+    # is never a legitimate state — same floor this codebase's other
+    # money-recording create schemas (InvoiceCreateRequest,
+    # BillCreateRequest) enforce.
+    amount: Decimal = Field(gt=0)
     incurred_on: date
 
 

@@ -4,12 +4,14 @@ link, RBAC matches the same Admin/Accountant-only "Accounting/Billing" row
 Bills use (docs/07-security-compliance.md Section 2).
 """
 import uuid
+from decimal import ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Expense
@@ -35,12 +37,21 @@ async def create_expense(
 ) -> ExpenseResponse:
     project = await _get_project_or_404(current, project_id)
 
+    # Quantized to 2 decimal places (ROUND_HALF_UP, matching Postgres's own
+    # NUMERIC rounding — app/core/money.py's own module comment) BEFORE
+    # constructing the row: without this, a client-supplied amount with
+    # more than 2 decimal places gets silently rounded by Postgres's
+    # NUMERIC(12,2) column on INSERT, but this handler's own response
+    # (built from the in-memory ORM object, never re-queried after flush)
+    # would still show the unrounded value.
+    quantized_amount = body.amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+
     expense = Expense(
         id=uuid.uuid4(),
         project_id=project.id,
         company_id=project.company_id,
         description=body.description,
-        amount=body.amount,
+        amount=quantized_amount,
         incurred_on=body.incurred_on,
     )
     current.session.add(expense)

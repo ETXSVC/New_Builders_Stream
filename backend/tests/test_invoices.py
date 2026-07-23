@@ -72,6 +72,41 @@ async def test_create_invoice_assigns_sequential_number_and_draft_status(client)
     assert body["outstanding_balance"] == "1000.00"
 
 
+async def test_create_invoice_rejects_zero_or_negative_amount(client):
+    admin = await _register_and_login(client, "Invoice Co Neg", "invoice-neg@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    zero = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "0.00"}, headers=admin["headers"]
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "-10.00"}, headers=admin["headers"]
+    )
+    assert negative.status_code == 422
+
+
+async def test_create_invoice_quantizes_amount_to_two_decimal_places(client):
+    """Without quantizing before persisting, the create response (built
+    from the in-memory ORM object) would show the raw unrounded value
+    while Postgres's NUMERIC(12,2) column silently rounds it on INSERT —
+    a later GET would then disagree with what create originally
+    returned."""
+    admin = await _register_and_login(client, "Invoice Co Quant", "invoice-quant@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.005"}, headers=admin["headers"]
+    )
+    assert create.status_code == 201, create.text
+    invoice_id = create.json()["id"]
+    assert create.json()["amount"] == "100.01"
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    assert detail.json()["amount"] == "100.01"
+
+
 async def test_second_invoice_for_same_company_gets_the_next_number(client):
     admin = await _register_and_login(client, "Invoice Co 2", "invoice-seq@example.test")
     project = await _create_project(client, admin["headers"])
