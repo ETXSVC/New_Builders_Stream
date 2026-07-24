@@ -142,7 +142,14 @@ async def update_lead(
     # handler reuses current.session and never commits inline, so raising
     # here — before any setattr — guarantees nothing from this request is
     # staged for the eventual single commit that get_current_user performs).
-    if status_changing and not is_legal_transition(previous_status, requested_status):
+    # The redundant-looking `requested_status is not None` re-checks here
+    # and below are for the type checker: `status_changing` already implies
+    # it, but mypy can't carry that narrowing through the boolean alias.
+    if (
+        status_changing
+        and requested_status is not None
+        and not is_legal_transition(previous_status, requested_status)
+    ):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"Illegal lead status transition: {previous_status} -> {requested_status}",
@@ -151,7 +158,7 @@ async def update_lead(
     update_fields = payload.model_dump(exclude_unset=True, exclude={"status"})
     for field_name, value in update_fields.items():
         setattr(lead, field_name, value)
-    if status_changing:
+    if status_changing and requested_status is not None:
         lead.status = requested_status
 
     # updated_at bumps automatically via UpdatedAtMixin's onupdate=utcnow the

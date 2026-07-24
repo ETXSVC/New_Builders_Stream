@@ -80,5 +80,5 @@ def require_module(module: str):
     # Stamped for test_tier_gating.py's completeness introspection test —
     # lets it assert not just that SOME gate is present on a route, but that
     # it is the CORRECT module's gate.
-    dependency.tier_module = module
+    dependency.tier_module = module  # type: ignore[attr-defined]
     return dependency

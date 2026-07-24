@@ -72,6 +72,8 @@ from __future__ import annotations
 
 import uuid
 
+from typing import cast
+
 import dramatiq
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -86,19 +88,26 @@ from app.tasks import broker  # noqa: F401 - import-time side effect
 _owner_engine = create_async_engine(settings.migrations_database_url, pool_pre_ping=True)
 _OwnerSessionLocal = async_sessionmaker(_owner_engine, expire_on_commit=False, class_=AsyncSession)
 
-_ENTITY_MODELS: dict[str, type] = {"invoice": Invoice, "expense": Expense, "bill": Bill}
+_ENTITY_MODELS: dict[str, type[Invoice] | type[Expense] | type[Bill]] = {
+    "invoice": Invoice,
+    "expense": Expense,
+    "bill": Bill,
+}
 
 
 def _serialize(entity_type: str, record: Invoice | Expense | Bill) -> dict:
-    if entity_type == "invoice":
+    # isinstance, not entity_type string matching — the two are 1:1 via
+    # _ENTITY_MODELS, and isinstance is the form mypy can narrow the union
+    # through. entity_type stays a parameter for the mismatch guard below.
+    if isinstance(record, Invoice):
         return {
             "invoice_number": record.invoice_number,
             "amount": str(record.amount),
             "status": record.status,
         }
-    if entity_type == "expense":
+    if isinstance(record, Expense):
         return {"description": record.description, "amount": str(record.amount)}
-    if entity_type == "bill":
+    if isinstance(record, Bill):
         return {"vendor_name": record.vendor_name, "amount": str(record.amount), "status": record.status}
     raise ValueError(f"Unknown entity_type: {entity_type!r}")
 
@@ -170,9 +179,14 @@ async def _sync_financial_record(
 
         try:
             model = _ENTITY_MODELS[entity_type]
-            record = (
-                await session.execute(select(model).where(model.id == uuid.UUID(entity_id)))
-            ).scalar_one()
+            # cast: select() over the union-typed model class comes back
+            # Base-typed; _ENTITY_MODELS guarantees it's one of the three.
+            record = cast(
+                "Invoice | Expense | Bill",
+                (
+                    await session.execute(select(model).where(model.id == uuid.UUID(entity_id)))
+                ).scalar_one(),
+            )
 
             access_token = decrypt_token(connection.access_token_encrypted)
             client = accounting_client.get_accounting_client(connection.provider)

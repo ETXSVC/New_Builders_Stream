@@ -45,7 +45,7 @@ Backend test suite (`main`): 880+ passing tests, including dedicated tenant-isol
 - **Auth provider:** plain PyJWT + Argon2id rather than the doc's OIDC/Keycloak example — a documented, deliberate substitution ([CLAUDE.md](CLAUDE.md)).
 - **PDF rendering:** xhtml2pdf, substituted for the doc's WeasyPrint (no simple Windows dev-environment install path) — same Jinja2 → HTML → PDF architecture, reduced CSS support, documented in `backend/pyproject.toml`.
 - **Backend package layout:** organized by technical layer (`models/`, `routers/`, `services/`) rather than the doc's domain-bounded packages; the no-cross-module-table-queries rule is enforced by review, not tooling.
-- **mypy:** not yet adopted (ruff is the lint gate); a one-time annotation pass across the codebase is queued follow-up work.
+- **mypy:** gates `backend/app` in CI alongside ruff; the test suite itself stays outside the type gate (exercised by pytest instead).
 
 ## Architecture (Summary)
 
@@ -80,6 +80,5 @@ Tracked in [01-prd.md](docs/01-prd.md#8-open-questions):
 
 Queued follow-up work, in rough priority order:
 
-1. **Real provider clients** — SDK-backed Stripe, QuickBooks, FreshBooks, and SMTP implementations behind the existing Protocol interfaces (needs real developer accounts/credentials).
-2. **mypy adoption** — one-time annotation pass, then a CI gate alongside ruff.
-3. **Phase 5 exploration** — offline/PWA for field crews, AI blueprint takeoff, multi-currency (unscheduled, per roadmap).
+1. **Real provider clients** — SDK-backed Stripe, QuickBooks, and FreshBooks implementations behind the existing Protocol interfaces (needs real developer accounts/credentials; SMTP already works with real settings).
+2. **Phase 5 exploration** — offline/PWA for field crews, AI blueprint takeoff, multi-currency (unscheduled, per roadmap).

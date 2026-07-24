@@ -66,7 +66,10 @@ class CostCatalogItemResponse(BaseModel):
     unit_rate: Decimal
     updated_at: datetime
 
-    @computed_field
+    # mypy can't model decorators stacked on @property (a documented
+    # pydantic/mypy limitation); the pattern itself is pydantic's own
+    # recommended computed-field form.
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_override(self) -> bool:
         return self.parent_catalog_item_id is not None

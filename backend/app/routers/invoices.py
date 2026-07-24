@@ -337,7 +337,7 @@ async def list_invoices(
         .where(InvoicePayment.invoice_id.in_(invoice_ids))
         .group_by(InvoicePayment.invoice_id)
     )
-    paid_by_invoice_id: dict[uuid.UUID, Decimal] = dict(paid_result.all())
+    paid_by_invoice_id: dict[uuid.UUID, Decimal] = dict(paid_result.tuples().all())
 
     items = [
         InvoiceResponse(

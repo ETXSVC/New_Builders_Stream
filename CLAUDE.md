@@ -65,10 +65,14 @@ npm run test:e2e         # playwright test
 npm run generate:api-types  # regenerate lib/api/types.ts from the committed backend/openapi.json snapshot — never hand-edit that file
 ```
 
-CI: `.github/workflows/backend-ci.yml` runs `pytest -v` against real
-Postgres 16 + Redis 7 service containers (not mocks/SQLite) — the
-tenant-isolation and RLS regression tests require a real Postgres. This
-suite gates every merge to `main`.
+CI: `.github/workflows/backend-ci.yml` runs `ruff check .`, `mypy` (scoped
+to `app/` via pyproject's `[tool.mypy]` — tests stay outside the type
+gate), an OpenAPI schema-diff against the committed `backend/openapi.json`
+snapshot, and `pytest -v` against real Postgres 16 + Redis 7 service
+containers (not mocks/SQLite) — the tenant-isolation and RLS regression
+tests require a real Postgres. `frontend-ci.yml` (eslint + typechecked
+build) and `e2e-ci.yml` (full stack + Playwright) run alongside. All gate
+every merge to `main`.
 
 ## Architecture
 

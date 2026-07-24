@@ -48,6 +48,12 @@ class SmtpEmailClient:
 
     @staticmethod
     def _send_sync(message: EmailMessage) -> None:
+        # get_email_client() only hands this client out when smtp_host is
+        # set — this guard makes that invariant explicit (and narrows the
+        # str | None for the type checker) rather than letting a violated
+        # invariant surface as a confusing smtplib connection error.
+        if settings.smtp_host is None:
+            raise RuntimeError("SmtpEmailClient selected without SMTP_HOST configured")
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
             if settings.smtp_starttls:
                 smtp.starttls()
