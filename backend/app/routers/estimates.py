@@ -535,7 +535,13 @@ async def replace_estimate_line_items(
         line_total = (quantity * unit_rate_snapshot).quantize(CENTS, rounding=ROUND_HALF_UP)
         line_item = EstimateLineItem(
             estimate_id=estimate.id,
-            company_id=current.company_id,
+            # estimate.company_id, not current.company_id — same
+            # parent-acting-on-descendant bug class fixed across the nested
+            # -create routes: a parent-branch session may legitimately edit
+            # a child branch's estimate (RLS's get_all_descendant_ids
+            # grant), and stamping the PARENT here would make the child's
+            # own session see its estimate with zero line items.
+            company_id=estimate.company_id,
             cost_catalog_item_id=cost_catalog_item_id,
             quantity=quantity,
             unit_rate_snapshot=unit_rate_snapshot,
@@ -828,7 +834,13 @@ async def approve_estimate(
 
     esignature = await capture_esignature(
         current.session,
-        company_id=current.company_id,
+        # estimate.company_id, matching this route's own publish() call
+        # below and change_orders.py's equivalent: stamping the acting
+        # company would leave the signed estimate pointing at an
+        # esignature row invisible under RLS to the branch that owns the
+        # document — breaking the ESIGN evidence chain exactly where it
+        # matters most.
+        company_id=estimate.company_id,
         signer_name=signer_name,
         signer_email=signer_email,
         ip_address=ip_address,

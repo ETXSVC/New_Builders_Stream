@@ -20,6 +20,15 @@ RETENTION_DAYS=30
 echo "[backup] dumping database ${PGDATABASE} ..."
 pg_dump --format=custom --file="${BACKUP_ROOT}/db-${STAMP}.dump"
 
+# A pg_dump that "succeeds" against the wrong/empty database still exits 0
+# — assert a plausible floor so a silently broken backup fails the cron job
+# tonight instead of surfacing at the next quarterly drill.
+DUMP_BYTES="$(stat -c %s "${BACKUP_ROOT}/db-${STAMP}.dump")"
+if [ "${DUMP_BYTES}" -lt 10240 ]; then
+  echo "[backup] FAIL: dump is only ${DUMP_BYTES} bytes — refusing to treat as a valid backup" >&2
+  exit 1
+fi
+
 echo "[backup] archiving document storage ..."
 tar czf "${BACKUP_ROOT}/documents-${STAMP}.tar.gz" -C /data/documents .
 

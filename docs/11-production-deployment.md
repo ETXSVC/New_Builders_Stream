@@ -47,6 +47,7 @@ is loud, not silent.
 | `INTEGRATION_TOKEN_ENCRYPTION_KEY` | `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `STRIPE_WEBHOOK_SECRET` | `openssl rand -hex 32` |
 | `FRONTEND_BASE_URL` | `https://<SITE_ADDRESS>` |
+| `TEST_DATABASE_URL` | any valid URL — a required Settings field, unused in production; reuse the `MIGRATIONS_DATABASE_URL` value |
 | `REDIS_URL` | `redis://redis:6379/0` |
 | `TZ` | your zone, e.g. `America/Chicago` |
 | `BACKUP_DIR` | host path for backups, e.g. `/opt/builders-stream-backups` |
@@ -105,9 +106,10 @@ real-world verification of the production stack:
 7. **Fail-open**: `docker compose -f docker-compose.prod.yml stop redis` →
    registration still works; backend logs show the rate-limiter WARNING →
    `start redis`.
-8. **Forged webhook**: from the box,
-   `docker compose -f docker-compose.prod.yml exec frontend sh -c "wget -qO- --post-data='{}' --header='X-Stripe-Signature: bad' http://backend:8000/webhooks/stripe"`
-   → rejected (and note the route isn't reachable from the internet at all).
+8. **Forged webhook**: from the box (node:22-slim ships no curl/wget, so
+   use node's own fetch):
+   `docker compose -f docker-compose.prod.yml exec frontend node -e "fetch('http://backend:8000/webhooks/stripe',{method:'POST',headers:{'X-Stripe-Signature':'bad','Content-Type':'application/json'},body:'{}'}).then(r=>console.log(r.status))"`
+   → a 4xx (and note the route isn't reachable from the internet at all).
 9. **Reboot**: `sudo reboot` → stack comes back on its own (restart
    policies); queued jobs survived (Redis AOF).
 10. **Backup + drill**: run the backup once by hand
@@ -125,6 +127,16 @@ docker compose -f docker-compose.prod.yml up -d --build   # migrate gates backen
 Then smoke-test items 2–4. **Rollback**: `git checkout <previous-tag>` +
 `up -d --build`; if a migration was applied, restore the latest pre-upgrade
 dump (`deploy/backup/restore.sh`).
+
+**If `migrate` fails mid-upgrade**: compose reports "dependency failed to
+start" and does NOT start the new backend — but the OLD backend and worker
+keep running against a possibly half-migrated schema (Alembic revisions are
+individually transactional, so revisions before the failing one are
+committed). Do this, in order: `docker compose -f docker-compose.prod.yml
+stop backend worker` (stop serving against an unknown schema), read
+`docker compose -f docker-compose.prod.yml logs migrate` to identify the
+failing revision, then either fix forward (`up -d --build`) or restore the
+pre-upgrade dump.
 
 ## 6. Backups
 
@@ -151,6 +163,17 @@ dump (`deploy/backup/restore.sh`).
   rides on these database backups — the 30-day *file* rotation is fine
   because every dump contains the full, append-only audit_log table; do
   not add table-level pruning to audit_log.
+
+## 6b. Network topology (single-box)
+
+`docker-compose.prod.yml` defines two networks: **`edge`** (caddy +
+frontend) and **`internal`** (frontend, backend, worker, scheduler,
+migrate, postgres, redis, db-backup). Only caddy publishes ports. The
+frontend straddles both — that is exactly what keeps Postgres, Redis, and
+the backend unreachable from the host network and the internet
+(docs/06 §6). Adding a `ports:` mapping to any internal service silently
+undoes it, and would additionally make the backend's
+`--forwarded-allow-ips=*` unsafe (see backend/Dockerfile's comment).
 
 ## 7. Incident basics
 
@@ -194,6 +217,17 @@ already env-driven. The wiring rules:
    same machine can still reach each other by service name).
 2. **DNS**: `app.<domain>` → machine B, `api.<domain>` → machine A. Both
    machines need 80/443 open for Let's Encrypt.
+2b. **Where the split `.env` lives**: `-f deploy/split/<stack>.compose.yml`
+   makes `deploy/split/` the compose project directory, so both `${VAR}`
+   interpolation and each service's `env_file: .env` resolve to
+   **`deploy/split/.env`** — not the repo-root `.env`. Put each machine's
+   env file there (and note `BACKUP_DIR`'s `./backups` default is likewise
+   relative to `deploy/split/`; set it to an absolute path).
+2c. **Document directory ownership**: the split stacks bind-mount
+   `DOCUMENTS_DIR` from the host, and the backend image runs as uid 1000 —
+   Docker does not chown bind mounts, so create it correctly first or every
+   upload and PDF write fails with EACCES:
+   `sudo mkdir -p /opt/builders-documents && sudo chown -R 1000:1000 /opt/builders-documents`
 3. **Backend machine `.env`** (same table as §2, plus): `API_ADDRESS=api.<domain>`,
    `FRONTEND_SERVER_IP=<machine B's public IP>`,
    `DOCUMENTS_DIR=/opt/builders-documents` (a host path now, not a named

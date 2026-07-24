@@ -210,11 +210,16 @@ async def create_communication_log(
 ) -> CommunicationLogResponse:
     # Must stay first — see _get_lead_or_404's docstring for why moving this
     # below the CommunicationLog insert would be an information-disclosure bug.
-    await _get_lead_or_404(current, lead_id)
+    lead = await _get_lead_or_404(current, lead_id)
 
     log = CommunicationLog(
         lead_id=lead_id,
-        company_id=current.company_id,
+        # lead.company_id, not current.company_id — a parent-branch
+        # session may legitimately log communication on a descendant's
+        # lead; stamping the parent would hide the entry from the branch
+        # that owns the lead. (Same fix applied across the nested-create
+        # routes; the lead was already fetched above.)
+        company_id=lead.company_id,
         author_id=current.user.id,
         channel=payload.channel,
         body=payload.body,

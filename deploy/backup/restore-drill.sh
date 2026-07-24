@@ -28,6 +28,12 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+# The dump's GRANT/RLS statements reference app_user, but pg_dump -Fc
+# carries no cluster-level roles — without this the restore errors on every
+# grant and the drill fails on a perfectly good backup.
+echo "[drill] creating referenced roles ..."
+docker exec "${CONTAINER}" psql -U drill -d drill -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN CREATE ROLE app_user; END IF; END \$\$;"
+
 echo "[drill] restoring ..."
 docker exec "${CONTAINER}" pg_restore --no-owner --username=drill --dbname=drill /drill/db.dump
 

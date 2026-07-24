@@ -27,7 +27,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (765+ tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (900+ tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test
@@ -67,7 +67,15 @@ npm run test:e2e         # playwright test
 npm run generate:api-types  # regenerate lib/api/types.ts from the committed backend/openapi.json snapshot — never hand-edit that file
 ```
 
-CI: `.github/workflows/backend-ci.yml` runs `ruff check .`, `mypy` (scoped
+Health endpoints are deliberately split: `/health` is static liveness (is
+the process serving at all — what a restart policy should act on) and
+`/ready` probes Postgres + Redis with per-dependency status (what a load
+balancer or compose healthcheck should gate on). Conflating them would
+make a database outage restart-loop the backend for no benefit.
+
+CI: `.github/workflows/backend-ci.yml` runs a `deploy-config` job
+(validates every compose file + parses the backup scripts) plus a `test`
+job running `ruff check .`, `mypy` (scoped
 to `app/` via pyproject's `[tool.mypy]` — tests stay outside the type
 gate), an OpenAPI schema-diff against the committed `backend/openapi.json`
 snapshot, and `pytest -v` against real Postgres 16 + Redis 7 service
@@ -153,7 +161,8 @@ tests instead call `register_event_handlers()` themselves per-test, since
 the autouse `_clean_event_registry` fixture clears the registry before/after
 every test. Current/planned events: `LEAD_WON` → drafts a Project,
 `ESTIMATE_APPROVED` → drafts a deposit invoice, `INVOICE_CREATED` /
-`EXPENSE_CREATED` / `BILL_CREATED` → enqueue accounting-integration syncs.
+`EXPENSE_CREATED` / `BILL_CREATED` → enqueue accounting-integration syncs,
+`PROJECT_COMPLETED` → drafts a final invoice for the uninvoiced remainder.
 
 ### Layering within a module
 
