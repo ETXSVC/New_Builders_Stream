@@ -156,7 +156,20 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
     await page.getByLabel("Description").fill("Add railing");
     await page.getByLabel("Cost delta").fill("250");
     await page.getByRole("button", { name: "Add change order" }).click();
-    await expect(page.getByText("Add railing")).toBeVisible({ timeout: 15_000 });
+    // Anchored to the rendered LIST ITEM, not bare getByText: React keeps a
+    // controlled <textarea>'s defaultValue — which IS its text content — in
+    // sync on every render, so getByText("Add railing") matches the form's
+    // own textarea the instant it's typed, long before the create request
+    // returns. That let this step race ahead and click "Move to completed"
+    // while the change-order POST was still in flight; under CI load the
+    // status PATCH could win, see zero pending change orders, and complete
+    // the project — the exact flake e2e-ci's first run caught. The list
+    // item only renders after the post-create refetch returns the
+    // committed row, so waiting on it fully orders the click after the
+    // change order exists.
+    await expect(
+      page.getByRole("listitem").filter({ hasText: "Add railing" })
+    ).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole("button", { name: "Move to completed" }).click();
     await expect(page.getByText(/pending approval/i)).toBeVisible({ timeout: 15_000 });
