@@ -31,5 +31,6 @@ export const config = {
     "/billing/:path*",
     "/compliance/:path*",
     "/subcontractors/:path*",
+    "/integrations/:path*",
   ],
 };
