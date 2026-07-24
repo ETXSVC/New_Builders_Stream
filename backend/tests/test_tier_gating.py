@@ -459,6 +459,55 @@ async def test_pro_company_estimate_approval_drafts_no_deposit_invoice(client):
     assert audit_rows == []
 
 
+async def test_pro_company_project_completion_drafts_no_final_invoice(client):
+    """Same Spec Decision 4 as the estimate-approval test above, applied to
+    the PROJECT_COMPLETED handler: a pro company completing a project gets
+    the completion (project management isn't gated) but NO auto-drafted
+    final invoice (accounting is enterprise) and NO invoice.auto_generated
+    audit row. Same helper-import approach as that test."""
+    from app.core.event_handlers import register_event_handlers
+    from tests.test_estimate_approved_handler import (
+        _create_and_approve_estimate,
+        _create_catalog_item,
+        _create_markup_profile,
+        _create_project,
+        _invite_and_login_as,
+    )
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Tier Co E3", "tier-e3@example.test")
+    # Deliberately NOT bumped to enterprise: pro is the case under test.
+    client_role = await _invite_and_login_as(client, admin, "client", "tier-e3-client@example.test")
+    project = await _create_project(client, admin["headers"])
+    markup_profile_id = await _create_markup_profile(client, admin["headers"])
+    catalog_item_id = await _create_catalog_item(client, admin["headers"])
+
+    await _create_and_approve_estimate(
+        client, admin["headers"], client_role["headers"],
+        project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
+    )
+
+    for step in ("pre_construction", "active", "completed"):
+        response = await client.patch(
+            f"/projects/{project['id']}/status", json={"status": step}, headers=admin["headers"]
+        )
+        assert response.status_code == 200, response.text
+
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        invoices = await conn.fetch(
+            "SELECT id FROM invoices WHERE project_id = $1", uuid.UUID(project["id"])
+        )
+        audit_rows = await conn.fetch(
+            "SELECT id FROM audit_log WHERE company_id = $1 AND action = 'invoice.auto_generated'",
+            uuid.UUID(admin["company_id"]),
+        )
+    finally:
+        await conn.close()
+    assert invoices == [], "a pro-tier completion must not auto-draft an (enterprise-module) invoice"
+    assert audit_rows == []
+
+
 async def test_below_tier_company_with_a_leftover_connection_enqueues_no_sync(client, monkeypatch, db_session):
     from app.core.event_handlers import register_event_handlers
     from app.core.events import publish

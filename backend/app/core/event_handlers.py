@@ -31,6 +31,7 @@ from app.core.events import is_registered, register
 from app.services.estimate_approved_handler import handle_estimate_approved
 from app.services.financial_record_sync_handler import handle_financial_record_created
 from app.services.lead_won_handler import handle_lead_won
+from app.services.project_completed_handler import handle_project_completed
 
 
 def register_event_handlers() -> None:
@@ -56,6 +57,9 @@ def register_event_handlers() -> None:
 
     if not is_registered("ESTIMATE_APPROVED", handle_estimate_approved):
         register("ESTIMATE_APPROVED", handle_estimate_approved)
+
+    if not is_registered("PROJECT_COMPLETED", handle_project_completed):
+        register("PROJECT_COMPLETED", handle_project_completed)
 
     if not is_registered("INVOICE_CREATED", handle_financial_record_created):
         register("INVOICE_CREATED", handle_financial_record_created)
