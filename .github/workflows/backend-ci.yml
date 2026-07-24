@@ -33,6 +33,23 @@ jobs:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: ci
         run: docker compose -f docker-compose.yml config -q
+      - name: Validate split-topology compose files
+        env:
+          API_ADDRESS: api.ci.example.com
+          SITE_ADDRESS: app.ci.example.com
+          FRONTEND_SERVER_IP: 203.0.113.10
+          NEXT_PUBLIC_API_URL: https://api.ci.example.com
+          DOCUMENTS_DIR: /tmp/ci-documents
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        # The external network + stub .env files must exist for `config`.
+        run: |
+          docker network create builders-net || true
+          touch deploy/split/.env
+          docker compose -f deploy/split/backend.compose.yml config -q
+          docker compose -f deploy/split/middleware.compose.yml config -q
+          docker compose -f deploy/split/frontend.compose.yml config -q
       - name: Backup scripts parse
         run: |
           bash -n deploy/backup/backup.sh

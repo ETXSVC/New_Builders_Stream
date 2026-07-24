@@ -1,0 +1,138 @@
+# SPLIT TOPOLOGY — backend stack (machine A).
+# Runs: API Caddy (TLS at api.<domain>), Postgres, Redis, migrations,
+# FastAPI backend, nightly backup. The worker/scheduler (middleware) tier
+# and the frontend live in their own stacks (middleware.compose.yml /
+# frontend.compose.yml) and machines.
+#
+#   docker network create builders-net   # once per machine (external net so
+#                                        # co-located stacks can join it)
+#   docker compose -f deploy/split/backend.compose.yml up -d --build
+#
+# Cross-machine wiring rules (docs/11-production-deployment.md §"Split
+# deployment" for the full guide):
+# - The frontend machine reaches this API at https://${API_ADDRESS} through
+#   api-caddy below. Access is allowlisted to ${FRONTEND_SERVER_IP} — the
+#   frontend server is the ONLY legitimate caller, so the backend keeps its
+#   "no public surface" property even when split.
+# - Postgres/Redis stay unpublished. A middleware stack on THIS machine
+#   joins builders-net and resolves them by service name; running
+#   middleware on a DIFFERENT machine requires a private network/VPN
+#   between machines (never publish 5432/6379 to the internet).
+# - DOCUMENTS_DIR is a host bind (not a named volume) so a co-located
+#   middleware stack can share it; a worker on a different machine cannot
+#   serve the PDF-export flow until document storage moves to S3 (the
+#   documented seam in app/services/document_storage.py).
+
+name: builders-backend
+
+services:
+  api-caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_ADDRESS: ${API_ADDRESS:?e.g. api.example.com}
+      FRONTEND_SERVER_IP: ${FRONTEND_SERVER_IP:?public IP of the frontend machine}
+    volumes:
+      - ../Caddyfile.api:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [builders-net]
+    depends_on:
+      - backend
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [builders-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks: [builders-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ../../backend
+      target: production
+    restart: "no"
+    env_file: .env
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    command: alembic upgrade head
+    networks: [builders-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ../../backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+    volumes:
+      - ${DOCUMENTS_DIR:?host path for document storage, e.g. /opt/builders-documents}:/data/documents
+    networks: [builders-net]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  db-backup:
+    image: postgres:16
+    profiles: ["backup"]
+    restart: "no"
+    env_file: .env
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    volumes:
+      - ../backup/backup.sh:/backup.sh:ro
+      - ${DOCUMENTS_DIR}:/data/documents:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    networks: [builders-net]
+    entrypoint: ["bash", "/backup.sh"]
+
+networks:
+  builders-net:
+    external: true
+
+volumes:
+  pgdata:
+  redis_data:
+  caddy_data:
+  caddy_config:

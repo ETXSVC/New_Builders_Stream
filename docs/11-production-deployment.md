@@ -4,6 +4,9 @@ Self-hosted Docker Compose deployment (the topology `docs/03` and `docs/06`
 specify: one VM, Caddy terminating TLS, everything else on an internal
 Docker network). The stack file is `docker-compose.prod.yml`; the dev
 `docker-compose.yml` is unchanged and remains the local-development stack.
+To run the tiers on separate machines instead (backend API / middleware
+worker tier / frontend, each independently deployable), see §8 — the
+split stacks under `deploy/split/`.
 
 Topology: **browser → Caddy (80/443, the only published ports) → Next.js
 frontend (BFF) → FastAPI backend → Postgres/Redis**. The backend, worker,
@@ -170,7 +173,73 @@ dump (`deploy/backup/restore.sh`).
   restore from backup if data was corrupted) → notify affected tenants if
   data was exposed → post-mortem in `docs/`.
 
-## 8. Deferred follow-ups (not blocking production)
+## 8. Split deployment (backend / middleware / frontend on separate machines)
+
+`docker-compose.prod.yml` is the single-box default. When you want the
+tiers on separate machines — backend API on one, frontend on another, the
+async middleware tier deployable on its own lifecycle — use the three
+standalone stacks under `deploy/split/`:
+
+| Stack | File | Runs | Machine |
+|---|---|---|---|
+| Backend | `deploy/split/backend.compose.yml` | api-Caddy (TLS at `api.<domain>`), Postgres, Redis, migrate, FastAPI, db-backup | A |
+| Middleware | `deploy/split/middleware.compose.yml` | Dramatiq worker + APScheduler scheduler | A (see placement note) |
+| Frontend | `deploy/split/frontend.compose.yml` | Caddy (TLS at `app.<domain>`), Next.js | B |
+
+No application code changes are involved — every cross-tier address is
+already env-driven. The wiring rules:
+
+1. **Once per machine**: `docker network create builders-net` (the stacks
+   join it as an external network, so independently-deployed stacks on the
+   same machine can still reach each other by service name).
+2. **DNS**: `app.<domain>` → machine B, `api.<domain>` → machine A. Both
+   machines need 80/443 open for Let's Encrypt.
+3. **Backend machine `.env`** (same table as §2, plus): `API_ADDRESS=api.<domain>`,
+   `FRONTEND_SERVER_IP=<machine B's public IP>`,
+   `DOCUMENTS_DIR=/opt/builders-documents` (a host path now, not a named
+   volume, so the middleware stack can share it),
+   `FRONTEND_BASE_URL=https://app.<domain>`.
+4. **Frontend machine `.env`**: `SITE_ADDRESS=app.<domain>`,
+   `NEXT_PUBLIC_API_URL=https://api.<domain>`.
+5. **Access control**: the API Caddy (`deploy/Caddyfile.api`) allowlists
+   `FRONTEND_SERVER_IP` — the frontend server is the only legitimate
+   caller (the BFF proxies everything server-side; browsers never call the
+   API), so the backend keeps its no-public-surface property even split.
+6. **Client-IP chain**: `Caddyfile.api` declares the frontend server a
+   trusted proxy so the BFF-forwarded `X-Forwarded-For` (the real end
+   client) passes through. **Re-run smoke-test item 6 (ESIGN IP) after any
+   topology change** — if the recorded IP is machine B's address, the
+   trusted-proxies wiring is broken.
+7. **Middleware placement**: run the middleware stack on machine A
+   (joining `builders-net`, resolving `postgres`/`redis` by name, sharing
+   `DOCUMENTS_DIR`). It deploys independently:
+   `docker compose -f deploy/split/middleware.compose.yml up -d --build`
+   restarts workers with zero API downtime. Running it on a **third**
+   machine additionally requires (a) `DATABASE_URL`/`REDIS_URL` in its
+   `.env` pointing at machine A over a **private network/VPN** — never
+   publish Postgres/Redis publicly — and (b) shared document storage
+   (NFS `DOCUMENTS_DIR`, or wait for the S3 seam): the PDF worker writes
+   files the API serves.
+8. **Backups** run on machine A exactly as §6 (the db-backup service lives
+   in the backend stack).
+
+Independent deploys, per tier:
+
+```bash
+# machine A — API only (middleware/frontend untouched):
+docker compose -f deploy/split/backend.compose.yml up -d --build backend
+# machine A — middleware only:
+docker compose -f deploy/split/middleware.compose.yml up -d --build
+# machine B — frontend only:
+docker compose -f deploy/split/frontend.compose.yml up -d --build
+```
+
+Upgrade ordering when a change spans tiers: **backend first** (migrations
+gate it), then middleware (same image lineage), then frontend (its
+generated API types always trail the deployed backend, never lead it —
+the OpenAPI snapshot workflow guarantees backward-compatible reads).
+
+## 9. Deferred follow-ups (not blocking production)
 
 | Item | Note |
 |---|---|
