@@ -14,6 +14,7 @@ import { DocumentsTab } from "@/components/projects/DocumentsTab";
 import { DailyLogsTab } from "@/components/projects/DailyLogsTab";
 import { ClientProjectDashboard, ClientProjectShape } from "@/components/projects/ClientProjectDashboard";
 import { ChangeOrdersTab } from "@/components/change-orders/ChangeOrdersTab";
+import { SubcontractorAssignments } from "@/components/projects/SubcontractorAssignments";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +27,7 @@ interface StaffProject {
   projected_start_date: string | null;
 }
 
-const TABS = ["Overview", "Phases & tasks", "Documents", "Daily logs", "Change orders", "Estimates"] as const;
+const TABS = ["Overview", "Phases & tasks", "Documents", "Daily logs", "Change orders", "Estimates", "Subcontractors"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function ProjectDetailPage() {
@@ -118,6 +119,7 @@ export default function ProjectDetailPage() {
       {tab === "Daily logs" && <DailyLogsTab projectId={project.id} />}
       {tab === "Change orders" && <ChangeOrdersTab projectId={project.id} />}
       {tab === "Estimates" && <ProjectEstimatesTab projectId={project.id} />}
+      {tab === "Subcontractors" && <SubcontractorAssignments projectId={project.id} />}
     </main>
   );
 }
