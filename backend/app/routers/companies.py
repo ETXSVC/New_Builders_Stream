@@ -50,6 +50,51 @@ async def list_company_members(
     )
 
 
+@router.get("/{company_id}/users", response_model=CompanyMemberListResponse)
+async def list_company_users(
+    company_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_MEMBER_LIST_ROLES)),
+) -> CompanyMemberListResponse:
+    """Members of a specific company by id (the API spec's
+    `GET /companies/{id}/users`, previously unimplemented) — the
+    parameterized sibling of `/members` above, for a parent-company session
+    inspecting a descendant branch's roster.
+
+    The explicit Company visibility check comes first because a freshly
+    created child branch legitimately has zero members — an empty member
+    list must mean "visible company, no members" (200 + []), never stand in
+    for "company not found". RLS makes another tenant's company invisible,
+    so the 404 covers both "doesn't exist" and "exists but isn't yours",
+    same intentional indistinguishability as `get_company` below.
+
+    No declaration-order concern with `GET /{company_id}`: the extra
+    literal `/users` segment gives this a different path shape (only
+    same-shape routes like `/members` need the declared-above trick)."""
+    company = (
+        await current.session.execute(select(Company).where(Company.id == company_id))
+    ).scalar_one_or_none()
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Company not found")
+
+    result = await current.session.execute(
+        select(CompanyUser, User.full_name, User.email)
+        .join(User, CompanyUser.user_id == User.id)
+        .where(CompanyUser.company_id == company_id)
+        .order_by(User.full_name, User.email)
+    )
+    return CompanyMemberListResponse(
+        items=[
+            CompanyMemberResponse(
+                user_id=membership.user_id,
+                full_name=full_name,
+                email=email,
+                role=membership.role,
+            )
+            for membership, full_name, email in result.all()
+        ]
+    )
+
+
 @router.get("/{company_id}", response_model=CompanyResponse)
 async def get_company(company_id: uuid.UUID, current: CurrentUser = Depends(get_current_user)) -> CompanyResponse:
     result = await current.session.execute(select(Company).where(Company.id == company_id))

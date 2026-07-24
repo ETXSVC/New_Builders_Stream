@@ -74,3 +74,53 @@ async def test_members_denied_for_field_crew(client):
     crew = await _invite_and_login_as(client, admin, "field_crew", "members-deny-crew@acme.test")
     response = await client.get("/companies/members", headers=crew["headers"])
     assert response.status_code == 403
+
+
+# --- GET /companies/{company_id}/users — the parameterized sibling of
+# /members (the API spec's route, closing a requirements-audit gap) ---
+
+
+async def test_company_users_lists_own_company_by_id(client):
+    admin = await _register_and_login(client, "ById Co", "byid-admin@acme.test")
+    await _invite_and_login_as(client, admin, "field_crew", "byid-crew@acme.test")
+
+    listed = await client.get(f"/companies/{admin['company_id']}/users", headers=admin["headers"])
+    assert listed.status_code == 200, listed.text
+    by_email = {m["email"]: m for m in listed.json()["items"]}
+    assert by_email["byid-admin@acme.test"]["role"] == "admin"
+    assert by_email["byid-crew@acme.test"]["role"] == "field_crew"
+
+
+async def test_company_users_returns_empty_list_for_a_memberless_child_branch(client):
+    """A freshly created child branch legitimately has zero members — the
+    route's explicit Company visibility check must yield 200 + [], not let
+    an empty membership read as 404."""
+    from tests.conftest import set_subscription_tier
+
+    admin = await _register_and_login(client, "ById Parent Co", "byid-parent@acme.test")
+    await set_subscription_tier(admin["company_id"], "enterprise")
+    child = await client.post(
+        f"/companies/{admin['company_id']}/children",
+        json={"name": "ById Child Branch"},
+        headers=admin["headers"],
+    )
+    assert child.status_code == 201, child.text
+
+    listed = await client.get(f"/companies/{child.json()['id']}/users", headers=admin["headers"])
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"] == []
+
+
+async def test_company_users_cross_tenant_id_is_404(client):
+    admin = await _register_and_login(client, "ById Co A", "byid-a@acme.test")
+    other = await _register_and_login(client, "ById Co B", "byid-b@acme.test")
+
+    response = await client.get(f"/companies/{other['company_id']}/users", headers=admin["headers"])
+    assert response.status_code == 404
+
+
+async def test_company_users_denied_for_field_crew(client):
+    admin = await _register_and_login(client, "ById Deny Co", "byid-deny@acme.test")
+    crew = await _invite_and_login_as(client, admin, "field_crew", "byid-deny-crew@acme.test")
+    response = await client.get(f"/companies/{admin['company_id']}/users", headers=crew["headers"])
+    assert response.status_code == 403
