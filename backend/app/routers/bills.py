@@ -183,7 +183,7 @@ async def list_bills(
         .where(BillPayment.bill_id.in_(bill_ids))
         .group_by(BillPayment.bill_id)
     )
-    paid_by_bill_id: dict[uuid.UUID, Decimal] = dict(paid_result.all())
+    paid_by_bill_id: dict[uuid.UUID, Decimal] = dict(paid_result.tuples().all())
 
     items = [
         BillResponse(

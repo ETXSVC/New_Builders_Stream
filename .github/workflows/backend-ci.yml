@@ -56,6 +56,12 @@ jobs:
         working-directory: backend
         run: ruff check .
 
+      # Type-checks app/ only (tests are exercised by the suite itself);
+      # scope/settings live in pyproject's [tool.mypy].
+      - name: Type check (mypy)
+        working-directory: backend
+        run: mypy
+
       # Guards the committed OpenAPI snapshot (backend/openapi.json) that
       # frontend/lib/api/types.ts is generated from: a route/schema change
       # that isn't accompanied by a regenerated snapshot fails here instead

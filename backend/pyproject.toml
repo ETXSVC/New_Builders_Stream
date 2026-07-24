@@ -60,6 +60,7 @@ dev = [
     "pytest-asyncio>=0.24,<0.25",
     "httpx>=0.27,<0.28",
     "ruff>=0.8,<1.0",
+    "mypy>=1.13,<3.0",
 ]
 
 [build-system]
@@ -83,3 +84,14 @@ target-version = "py312"
 # default): F catches real defects, E4/E7/E9 the syntax-adjacent pycodestyle
 # errors. Stylistic families stay off.
 select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+# Scoped to app/ (the shipped code); tests are exercised by the suite
+# itself and stay outside the type gate for now. ignore_missing_imports
+# covers untyped third-party packages (xhtml2pdf, dramatiq's redis broker
+# internals, pyotp). The pydantic plugin teaches mypy pydantic's
+# constructor/computed_field semantics.
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+files = ["app"]

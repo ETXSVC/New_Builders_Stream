@@ -90,14 +90,14 @@ async def get_profitability_report(
         )
         .group_by(Invoice.project_id)
     )
-    revenue_by_project: dict[uuid.UUID, Decimal] = dict(revenue_result.all())
+    revenue_by_project: dict[uuid.UUID, Decimal] = dict(revenue_result.tuples().all())
 
     expense_result = await current.session.execute(
         select(Expense.project_id, func.coalesce(func.sum(Expense.amount), 0))
         .where(Expense.incurred_on >= start_date, Expense.incurred_on <= end_date)
         .group_by(Expense.project_id)
     )
-    cost_by_project: dict[uuid.UUID, Decimal] = dict(expense_result.all())
+    cost_by_project: dict[uuid.UUID, Decimal] = dict(expense_result.tuples().all())
 
     bill_result = await current.session.execute(
         select(Bill.project_id, func.coalesce(func.sum(Bill.amount), 0))

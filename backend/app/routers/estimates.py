@@ -358,14 +358,14 @@ async def list_estimates(
         project_result = await current.session.execute(
             select(Project.id, Project.name).where(Project.id.in_(project_ids))
         )
-        project_names = dict(project_result.all())
+        project_names = dict(project_result.tuples().all())
 
     lead_names: dict[uuid.UUID, str] = {}
     if lead_ids:
         lead_result = await current.session.execute(
             select(Lead.id, Lead.project_name).where(Lead.id.in_(lead_ids))
         )
-        lead_names = dict(lead_result.all())
+        lead_names = dict(lead_result.tuples().all())
 
     items = []
     for row in rows:

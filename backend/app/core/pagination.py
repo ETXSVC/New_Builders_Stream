@@ -35,7 +35,7 @@ being a breaking API change.
 
 import uuid
 from base64 import urlsafe_b64decode, urlsafe_b64encode
-from datetime import datetime
+from datetime import date, datetime
 from typing import TypeVar
 
 from sqlalchemy import Select, tuple_
@@ -79,7 +79,7 @@ async def paginate(
     session: AsyncSession,
     query: Select[tuple[_Row]],
     *,
-    created_at_col: InstrumentedAttribute[datetime],
+    created_at_col: InstrumentedAttribute[datetime] | InstrumentedAttribute[date],
     id_col: InstrumentedAttribute[uuid.UUID],
     cursor: str | None,
     limit: int,

@@ -69,4 +69,6 @@ class Settings(BaseSettings):
     register_rate_limit_window_seconds: int = 3600
 
 
-settings = Settings()
+# Required (no-default) fields are populated from the environment/.env by
+# pydantic-settings at runtime — invisible to mypy's constructor check.
+settings = Settings()  # type: ignore[call-arg]

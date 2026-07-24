@@ -37,6 +37,13 @@ def verify_totp_code(user: User, code: str) -> bool:
     commit (login commits explicitly; the get_current_user routes commit
     after the handler returns).
     """
+    # Callers only reach this for users with MFA state (mfa_activated_at
+    # or a pending enrollment), which implies a stored secret — a None here
+    # is the same operator/data-inconsistency category as the undecryptable
+    # case below, and gets the same honest-500 treatment (RuntimeError, not
+    # a user-fixable 401). Also narrows the str | None for the type checker.
+    if user.totp_secret_encrypted is None:
+        raise RuntimeError("verify_totp_code called for a user with no stored TOTP secret")
     # An undecryptable stored secret (operator rotated
     # integration_token_encryption_key with MFA-active users) propagates
     # TokenDecryptionError -> 500. Deliberate: a 401 would tell the user
