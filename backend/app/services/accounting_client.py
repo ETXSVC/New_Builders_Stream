@@ -18,6 +18,20 @@ Typed methods per operation (push_invoice/push_expense/push_bill), not one
 generic push_record(entity_type, ...) dispatch method — matching
 StripeClient's own established shape, since a real SDK genuinely has
 separate endpoints per record type.
+
+`idempotency_key` on every push_* method (added alongside Task 4.12's own
+retry-safety fix, `app/tasks/accounting_sync.py`): the sync actor commits
+its own "this record synced successfully" bookkeeping AFTER the push call
+returns, so a failure in that bookkeeping step (not the push itself) makes
+Dramatiq retry the whole actor — which would otherwise call push_* a
+second time for a push that already succeeded. Every real accounting API
+(and every serious payment API, e.g. Stripe) supports exactly this via a
+client-supplied idempotency key the provider deduplicates against, so this
+is a real, provider-side capability, not fake-client-only plumbing —
+RealQuickBooksClient/RealFreshBooksClient will pass this same value
+through to whatever native idempotency-key parameter their SDK exposes.
+The sync actor always passes the entity_id (stable across retries of the
+SAME logical sync) as this key.
 """
 from __future__ import annotations
 
@@ -39,11 +53,11 @@ class AccountingProviderClient(Protocol):
 
     async def exchange_code_for_tokens(self, *, code: str) -> tuple[str, str]: ...
 
-    async def push_invoice(self, *, access_token: str, invoice: dict) -> str: ...
+    async def push_invoice(self, *, access_token: str, invoice: dict, idempotency_key: str) -> str: ...
 
-    async def push_expense(self, *, access_token: str, expense: dict) -> str: ...
+    async def push_expense(self, *, access_token: str, expense: dict, idempotency_key: str) -> str: ...
 
-    async def push_bill(self, *, access_token: str, bill: dict) -> str: ...
+    async def push_bill(self, *, access_token: str, bill: dict, idempotency_key: str) -> str: ...
 
 
 @dataclass
@@ -58,13 +72,26 @@ class FakeAccountingProviderClient:
     `should_fail`, when True, makes every push_* call raise
     AccountingProviderError instead of accumulating — the one test hook
     needed to exercise the retry/failure path without real network
-    flakiness."""
+    flakiness.
+
+    `_synced_keys` is the fake provider-side idempotency dedup store (see
+    this module's own docstring): a `(operation, idempotency_key) ->
+    external_id` map, populated only on a successful push. A repeat
+    push_* call with a key already in this map returns the SAME external_id
+    immediately — no `should_fail` check, no re-append to `pushed_*` — the
+    same "already processed this exact operation, here's what happened
+    last time" contract a real provider's idempotency-key handling gives.
+    Keyed on `(operation, idempotency_key)`, not `idempotency_key` alone,
+    since the same entity_id is never reused across entity types but this
+    keeps the map's intent explicit rather than relying on that as an
+    unstated invariant."""
 
     provider: str
     should_fail: bool = False
     pushed_invoices: list[dict] = field(default_factory=list)
     pushed_expenses: list[dict] = field(default_factory=list)
     pushed_bills: list[dict] = field(default_factory=list)
+    _synced_keys: dict[tuple[str, str], str] = field(default_factory=dict)
 
     async def get_authorization_url(self, *, company_id: str, state: str) -> str:
         return f"https://{self.provider}.fake-oauth.test/authorize?state={state}"
@@ -75,23 +102,38 @@ class FakeAccountingProviderClient:
             f"refresh_fake_{uuid.uuid4().hex[:16]}",
         )
 
-    async def push_invoice(self, *, access_token: str, invoice: dict) -> str:
+    async def push_invoice(self, *, access_token: str, invoice: dict, idempotency_key: str) -> str:
+        cache_key = ("invoice", idempotency_key)
+        if cache_key in self._synced_keys:
+            return self._synced_keys[cache_key]
         if self.should_fail:
             raise AccountingProviderError(f"Fake {self.provider} push_invoice failure")
         self.pushed_invoices.append(invoice)
-        return f"{self.provider}_inv_{uuid.uuid4().hex[:16]}"
+        external_id = f"{self.provider}_inv_{uuid.uuid4().hex[:16]}"
+        self._synced_keys[cache_key] = external_id
+        return external_id
 
-    async def push_expense(self, *, access_token: str, expense: dict) -> str:
+    async def push_expense(self, *, access_token: str, expense: dict, idempotency_key: str) -> str:
+        cache_key = ("expense", idempotency_key)
+        if cache_key in self._synced_keys:
+            return self._synced_keys[cache_key]
         if self.should_fail:
             raise AccountingProviderError(f"Fake {self.provider} push_expense failure")
         self.pushed_expenses.append(expense)
-        return f"{self.provider}_exp_{uuid.uuid4().hex[:16]}"
+        external_id = f"{self.provider}_exp_{uuid.uuid4().hex[:16]}"
+        self._synced_keys[cache_key] = external_id
+        return external_id
 
-    async def push_bill(self, *, access_token: str, bill: dict) -> str:
+    async def push_bill(self, *, access_token: str, bill: dict, idempotency_key: str) -> str:
+        cache_key = ("bill", idempotency_key)
+        if cache_key in self._synced_keys:
+            return self._synced_keys[cache_key]
         if self.should_fail:
             raise AccountingProviderError(f"Fake {self.provider} push_bill failure")
         self.pushed_bills.append(bill)
-        return f"{self.provider}_bill_{uuid.uuid4().hex[:16]}"
+        external_id = f"{self.provider}_bill_{uuid.uuid4().hex[:16]}"
+        self._synced_keys[cache_key] = external_id
+        return external_id
 
 
 def get_accounting_client(provider: str) -> AccountingProviderClient:

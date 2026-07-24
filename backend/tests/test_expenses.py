@@ -44,6 +44,46 @@ async def test_create_and_list_expenses(client):
     assert listing.json()["items"][0]["description"] == "Lumber run"
 
 
+async def test_create_expense_rejects_zero_or_negative_amount(client):
+    admin = await _register_and_login(client, "Expense Co Neg", "expense-neg@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    zero = await client.post(
+        f"/projects/{project['id']}/expenses",
+        json={"description": "Free stuff", "amount": "0.00", "incurred_on": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        f"/projects/{project['id']}/expenses",
+        json={"description": "Negative", "amount": "-10.00", "incurred_on": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert negative.status_code == 422
+
+
+async def test_create_expense_quantizes_amount_to_two_decimal_places(client):
+    """Without quantizing before persisting, the create response (built
+    from the in-memory ORM object) would show the raw unrounded value
+    while Postgres's NUMERIC(12,2) column silently rounds it on INSERT —
+    a later list read would then disagree with what create originally
+    returned."""
+    admin = await _register_and_login(client, "Expense Co Quant", "expense-quant@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    create = await client.post(
+        f"/projects/{project['id']}/expenses",
+        json={"description": "Odd amount", "amount": "100.005", "incurred_on": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert create.status_code == 201, create.text
+    assert create.json()["amount"] == "100.01"
+
+    listing = await client.get(f"/projects/{project['id']}/expenses", headers=admin["headers"])
+    assert listing.json()["items"][0]["amount"] == "100.01"
+
+
 async def test_project_manager_cannot_create_expense(client):
     admin = await _register_and_login(client, "Expense Co 2", "expense-2@example.test")
     project = await _create_project(client, admin["headers"])

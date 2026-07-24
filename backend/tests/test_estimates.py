@@ -1482,3 +1482,168 @@ async def test_approved_and_snapshotted_estimate_blocks_lines_and_calculate_via_
         f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
     )
     assert calc_response.status_code == 409, calc_response.text
+
+
+# =============================================================================
+# company_id sourcing: parent-company session (unswitched headers) creating
+# an Estimate against a child-branch Project/Lead. Same empirical shape as
+# test_tenant_isolation_phase2.py's own
+# test_creating_change_order_under_child_branch_project_uses_project_company_id
+# and test_subcontractor_assignments.py's own
+# test_creating_assignment_under_child_branch_project_and_subcontractor_uses_child_company_id.
+# =============================================================================
+
+
+async def test_creating_estimate_against_child_branch_project_uses_child_company_id(client):
+    """The new Estimate's company_id (and its `estimate.created` audit_log
+    entry's company_id) must come from the referenced Project's own
+    company_id (the CHILD), never current.company_id (the PARENT acting
+    session). The Project and MarkupProfile are created under the CHILD
+    branch (via X-Tenant-ID-switched headers, backed by a genuine
+    company_users row); the Estimate is then created using the PARENT's
+    own DEFAULT headers — deliberately NOT X-Tenant-ID-switched — so RLS's
+    get_all_descendant_ids() grant alone is what makes the child's Project
+    visible/writable to this session, which is the only way
+    current.company_id (parent) and project.company_id (child) genuinely
+    diverge without an explicit header switch."""
+    parent = await _register_and_login(client, "Parent Co", "estimate-parent-co@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    project = await _create_project(client, child_headers)
+    markup = await _create_markup_profile(client, child_headers)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Estimate created against a child-branch Project must belong to "
+        "the PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    audit_rows = await _fetch_audit_rows(child_id)
+    created_rows = [r for r in audit_rows if r["action"] == "estimate.created"]
+    assert len(created_rows) == 1 and str(created_rows[0]["entity_id"]) == body["id"], (
+        "audit_log entry for a child-branch Estimate creation must carry "
+        f"the CHILD's company_id, got rows={audit_rows!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    get_response = await client.get(f"/estimates/{body['id']}", headers=child_headers)
+    assert get_response.status_code == 200, get_response.text
+
+
+async def test_creating_estimate_against_child_branch_lead_uses_child_company_id(client):
+    """Same bug class as
+    test_creating_estimate_against_child_branch_project_uses_child_company_id
+    above, for the sibling lead_id-based creation path: the new Estimate's
+    company_id must come from the referenced Lead's own company_id (the
+    CHILD), never current.company_id (the PARENT acting session)."""
+    parent = await _register_and_login(client, "Parent Co", "estimate-lead-parent@acme.test")
+    child_id = await _create_child_with_membership(client, parent, "Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+
+    lead = await _create_lead(client, child_headers)
+    await _advance_lead_to(client, child_headers, lead["id"], "estimating")
+    markup = await _create_markup_profile(client, child_headers)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        "/estimates",
+        json={"lead_id": lead["id"], "markup_profile_id": markup["id"]},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Estimate created against a child-branch Lead must belong to the "
+        "LEAD's own company (the child), not the acting session's company "
+        f"(the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    get_response = await client.get(f"/estimates/{body['id']}", headers=child_headers)
+    assert get_response.status_code == 200, get_response.text
+
+
+# =============================================================================
+# 'sent' estimates must not be editable — a client must always e-sign the
+# exact total they were shown, not one silently changed after send-for-
+# signature but before their own approve/reject action.
+# =============================================================================
+
+
+async def test_replace_line_items_blocked_while_estimate_is_sent(client):
+    """Editing line items must be rejected the moment an estimate is
+    'sent', not only once it's later approved/snapshotted — otherwise an
+    admin/PM could change what the client is about to sign after they were
+    sent the estimate, without the client's own view ever being
+    invalidated or re-sent."""
+    admin = await _register_and_login(client, "Acme Construction", "sent-lines-admin@acme.test")
+    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.put(
+        f"/estimates/{sent_estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "999.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+
+    detail = await client.get(f"/estimates/{sent_estimate['id']}", headers=admin["headers"])
+    assert detail.json()["total"] == sent_estimate["total"], (
+        "total must be unchanged — the blocked PUT must not have altered "
+        "line items despite the 409"
+    )
+
+
+async def test_calculate_totals_blocked_while_estimate_is_sent(client):
+    """Same rule as test_replace_line_items_blocked_while_estimate_is_sent
+    above, for the sibling recalculation route."""
+    admin = await _register_and_login(client, "Acme Construction", "sent-calc-admin@acme.test")
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+
+    response = await client.post(
+        f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
+    )
+    assert response.status_code == 409, response.text
+
+
+async def test_replace_line_items_and_calculate_remain_legal_on_rejected_estimate(client):
+    """Deliberately NOT blocked: reject_estimate's own docstring documents
+    that a rejected estimate stays editable ("this route... does not
+    otherwise lock the estimate") — proving the new 'sent' guard above
+    didn't accidentally widen to cover 'rejected' too."""
+    admin = await _register_and_login(client, "Acme Construction", "rejected-edit-admin@acme.test")
+    client_role = await _invite_and_login_as(
+        client, admin, "client", "rejected-edit-client@acme.test"
+    )
+    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+
+    reject_response = await client.post(
+        f"/estimates/{sent_estimate['id']}/reject",
+        json={"reason": "Too expensive"},
+        headers=client_role["headers"],
+    )
+    assert reject_response.status_code == 200, reject_response.text
+
+    put_response = await client.put(
+        f"/estimates/{sent_estimate['id']}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "5.00"}]},
+        headers=admin["headers"],
+    )
+    assert put_response.status_code == 200, put_response.text
+
+    calc_response = await client.post(
+        f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
+    )
+    assert calc_response.status_code == 200, calc_response.text

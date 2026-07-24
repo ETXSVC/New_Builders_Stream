@@ -164,6 +164,23 @@ async def create_estimate(
             "Exactly one of project_id or lead_id must be supplied",
         )
 
+    # `resolved_company_id` — the referenced Project's/Lead's own
+    # `company_id`, NOT `current.company_id` — is what actually stamps the
+    # new Estimate below. A parent company's session can legitimately
+    # create an Estimate against a descendant branch's Project/Lead
+    # without switching `X-Tenant-ID` to that branch first (RLS's
+    # `get_all_descendant_ids()` grant already makes the descendant's rows
+    # visible/writable). Using `current.company_id` would silently stamp
+    # this Estimate with the PARENT's id instead of its own Project's/
+    # Lead's, producing a row whose `company_id` disagrees with the
+    # resource it's actually built against — a session later scoped
+    # directly to the descendant branch would then find its own Project's/
+    # Lead's Estimate invisible under RLS. Same bug class already fixed in
+    # change_orders.py/expenses.py/subcontractor_assignments.py and
+    # projects.py's upload_document/create_daily_log, per the post-Phase-2
+    # audit of this exact pattern — this route was missed by that audit.
+    resolved_company_id = current.company_id
+
     if payload.project_id is not None:
         # No explicit company_id filter — same pattern as every other
         # single-row-by-id lookup in this codebase: the tenant_isolation
@@ -171,8 +188,10 @@ async def create_estimate(
         result = await current.session.execute(
             select(Project).where(Project.id == payload.project_id)
         )
-        if result.scalar_one_or_none() is None:
+        project = result.scalar_one_or_none()
+        if project is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+        resolved_company_id = project.company_id
 
     if payload.lead_id is not None:
         result = await current.session.execute(select(Lead).where(Lead.id == payload.lead_id))
@@ -191,6 +210,7 @@ async def create_estimate(
                 f"Lead must be in one of {_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE} status "
                 f"to create an Estimate against it, got '{lead.status}'",
             )
+        resolved_company_id = lead.company_id
 
     markup_result = await current.session.execute(
         select(MarkupProfile).where(MarkupProfile.id == payload.markup_profile_id)
@@ -199,7 +219,7 @@ async def create_estimate(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Markup profile not found")
 
     estimate = Estimate(
-        company_id=current.company_id,
+        company_id=resolved_company_id,
         project_id=payload.project_id,
         lead_id=payload.lead_id,
         markup_profile_id=payload.markup_profile_id,
@@ -213,7 +233,7 @@ async def create_estimate(
 
     await write_audit_log(
         current.session,
-        company_id=current.company_id,
+        company_id=resolved_company_id,
         actor_id=current.user.id,
         action="estimate.created",
         entity_type="estimate",
@@ -409,11 +429,17 @@ async def replace_estimate_line_items(
     commits once after the handler returns), so as long as nothing below
     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
     guarantees the eventual commit never happens at all and the estimate's
-    line items are left completely untouched. Two independent checks, both
-    performed before any DELETE/INSERT is issued:
+    line items are left completely untouched. Three independent checks,
+    all performed before any DELETE/INSERT is issued:
       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
          snapshotted Estimate's line items are immutable).
-      2. Every input line's `cost_catalog_item_id` must resolve via
+      2. `estimate.status == "sent"` -> 409: an estimate awaiting the
+         client's signature must not be editable out from under them
+         between send-for-signature and their approve/reject (closes a
+         gap this guard previously missed — `is_snapshotted` alone only
+         starts being `True` at approval, not at send). `"rejected"`
+         deliberately stays editable, per reject_estimate's own docstring.
+      3. Every input line's `cost_catalog_item_id` must resolve via
          `resolve_visible_catalog_items` -> 422 on the FIRST one that
          doesn't. Resolved (not raw-table-queried) so the rate captured
          below respects inheritance/override resolution — a PM building an
@@ -459,6 +485,23 @@ async def replace_estimate_line_items(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Estimate is snapshotted and its line items can no longer be modified",
+        )
+
+    # `status == "sent"` is blocked separately from `is_snapshotted` above:
+    # an estimate stops being editable the moment it's sent for the
+    # client's signature, not only once approved/snapshotted. Without this,
+    # line items could still be replaced (and calculate_estimate_totals
+    # re-run) between send-for-signature and the client's approve/reject —
+    # letting the client e-sign a total they never actually reviewed.
+    # `status == "rejected"` deliberately remains editable here — see
+    # reject_estimate's own docstring above ("this route... does not
+    # otherwise lock the estimate"), a documented, separate decision this
+    # fix does not change.
+    if estimate.status == "sent":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is awaiting client signature and its line items cannot be modified "
+            "until it is approved or rejected",
         )
 
     resolved_items = await resolve_visible_catalog_items(current.session, current.company_id)
@@ -531,10 +574,18 @@ async def calculate_estimate_totals(
     rationale, to `replace_estimate_line_items` above (design decision #4):
     an approved/snapshotted Estimate's totals are as immutable as its line
     items, and recomputing them would silently contradict the very
-    snapshot that was taken. Checked, and raised, BEFORE
-    `calculate_estimate` is ever called — a 409 here guarantees
-    `estimate.subtotal`/`total` are left completely untouched, same "one
-    transaction, one outcome" discipline as Task 2.11's own guard.
+    snapshot that was taken.
+
+    **409 if `estimate.status == "sent"`** — same additional guard as
+    `replace_estimate_line_items` above, same rationale: a total
+    recalculated while an estimate is awaiting the client's signature would
+    let them e-sign a total they never actually reviewed. `"rejected"`
+    deliberately stays recalculable, per reject_estimate's own docstring.
+
+    Both checks are raised BEFORE `calculate_estimate` is ever called — a
+    409 here guarantees `estimate.subtotal`/`total` are left completely
+    untouched, same "one transaction, one outcome" discipline as Task
+    2.11's own guard.
 
     Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
     same header + line_items shape `GET /estimates/{id}` returns, plus this
@@ -549,6 +600,18 @@ async def calculate_estimate_totals(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Estimate is snapshotted and its totals can no longer be recalculated",
+        )
+
+    # Same "sent" guard, same rationale, as replace_estimate_line_items
+    # above: a total recalculated between send-for-signature and the
+    # client's approve/reject would let the client e-sign a total they
+    # never actually reviewed. `status == "rejected"` deliberately remains
+    # recalculable here — see reject_estimate's own docstring.
+    if estimate.status == "sent":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Estimate is awaiting client signature and its totals cannot be recalculated "
+            "until it is approved or rejected",
         )
 
     calculation = await calculate_estimate(current.session, estimate)

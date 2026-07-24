@@ -6,7 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class InvoiceCreateRequest(BaseModel):
-    amount: Decimal
+    # gt=0: a zero/negative invoice represents no real money owed and is
+    # never a legitimate state — same floor InvoicePaymentCreateRequest.
+    # amount below already enforces for the payment side.
+    amount: Decimal = Field(gt=0)
     due_date: date | None = None
 
 
@@ -15,14 +18,15 @@ class InvoiceSendRequest(BaseModel):
 
 
 class InvoicePaymentCreateRequest(BaseModel):
-    # gt=0, unlike InvoiceCreateRequest.amount above (which just records
-    # what's owed): this field represents actual money changing hands and
-    # feeds directly into whether an invoice's cumulative payments cross
-    # its amount. A zero/negative value here isn't just bad data — since
-    # the status transition only ever moves forward (never un-marks
-    # "paid"), a negative "payment" recorded before the real total is
-    # reached could permanently suppress the sum from ever crossing the
-    # threshold.
+    # gt=0: this field represents actual money changing hands and feeds
+    # directly into whether an invoice's cumulative payments cross its
+    # amount. A zero/negative value here isn't just bad data — since the
+    # status transition only ever moves forward (never un-marks "paid"),
+    # a negative "payment" recorded before the real total is reached
+    # could permanently suppress the sum from ever crossing the
+    # threshold. Same floor as InvoiceCreateRequest.amount above, for a
+    # complementary reason (that one guards the total owed; this one
+    # guards each individual payment against it).
     amount: Decimal = Field(gt=0)
     paid_date: date
 

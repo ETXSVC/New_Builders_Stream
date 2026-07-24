@@ -30,3 +30,12 @@ node_modules/
 .next/
 next-env.d.ts
 *.tsbuildinfo
+
+# Playwright e2e artifacts
+frontend/test-results/
+frontend/playwright-report/
+
+# Redis local snapshot (created by `redis-server` when run from backend/
+# during local/manual testing outside docker-compose, which runs Redis in
+# its own container instead)
+backend/dump.rdb

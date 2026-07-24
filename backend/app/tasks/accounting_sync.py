@@ -37,6 +37,22 @@ may genuinely not exist yet when this actor runs. That race is real,
 not hypothetical, and specifically what this task's own regression
 test below exercises.
 
+Double-post safety: a genuinely distinct race from the one above — a
+push_* call can SUCCEED and then THIS function's own success-path
+_upsert_sync_record/commit can fail for an unrelated reason (a DB
+blip, the worker process dying mid-commit). That failure is NOT caught
+by the try/except above (it happens after the try block exits cleanly),
+so it propagates raw and Dramatiq retries the whole actor — which would
+re-run the entity lookup and call push_* again for a push that already
+succeeded, double-posting to the provider. `idempotency_key=entity_id`
+on every push_* call (added specifically to close this gap; see
+app/services/accounting_client.py's own docstring) is what makes that
+retry safe: entity_id is stable across every retry of this same logical
+sync, so the provider (real or fake) recognizes the repeat and returns
+the SAME external_record_id without processing it again, rather than
+this module trying to infer "was it already synced?" from its own
+possibly-never-written bookkeeping.
+
 Note on the accounting client import: this module imports the
 app.services.accounting_client MODULE (not `get_accounting_client`
 directly) and calls `accounting_client.get_accounting_client(...)` at
@@ -90,6 +106,7 @@ def _serialize(entity_type: str, record: Invoice | Expense | Bill) -> dict:
 async def _upsert_sync_record(
     session: AsyncSession, *, company_id: uuid.UUID, connection_id: uuid.UUID,
     entity_type: str, entity_id: uuid.UUID, status: str, last_error: str | None,
+    external_record_id: str | None = None,
 ) -> None:
     """One upsert, called exactly once per _sync_financial_record invocation
     (from either the success or the failure branch, never both) —
@@ -113,6 +130,7 @@ async def _upsert_sync_record(
             status=status,
             attempt_count=1,
             last_error=last_error,
+            external_record_id=external_record_id,
         )
         .on_conflict_do_update(
             index_elements=["connection_id", "entity_type", "entity_id"],
@@ -121,6 +139,15 @@ async def _upsert_sync_record(
                 "attempt_count": IntegrationSyncRecord.__table__.c.attempt_count + 1,
                 "last_error": last_error,
                 "last_attempted_at": func.now(),
+                # COALESCE, not an unconditional overwrite: a retried
+                # success (idempotency-key dedup returned the SAME
+                # external_id, see accounting_client.py) passes the same
+                # value again, but a FAILED attempt passes None here and
+                # must never blank out a real external_record_id a prior
+                # successful attempt already recorded.
+                "external_record_id": func.coalesce(
+                    external_record_id, IntegrationSyncRecord.__table__.c.external_record_id
+                ),
             },
         )
     )
@@ -151,12 +178,26 @@ async def _sync_financial_record(
             client = accounting_client.get_accounting_client(connection.provider)
 
             payload = _serialize(entity_type, record)
+            # entity_id as the idempotency key: stable across every retry
+            # of THIS logical sync (Dramatiq re-invokes with the same
+            # entity_id), which is exactly what lets the provider (real or
+            # fake, see accounting_client.py's own docstring) recognize a
+            # retried push as "already processed" instead of double-posting
+            # it — the actual fix for the race this module's own docstring
+            # describes (a failure between a successful push and this
+            # function's own success-bookkeeping commit).
             if entity_type == "invoice":
-                await client.push_invoice(access_token=access_token, invoice=payload)
+                external_record_id = await client.push_invoice(
+                    access_token=access_token, invoice=payload, idempotency_key=entity_id
+                )
             elif entity_type == "expense":
-                await client.push_expense(access_token=access_token, expense=payload)
+                external_record_id = await client.push_expense(
+                    access_token=access_token, expense=payload, idempotency_key=entity_id
+                )
             else:
-                await client.push_bill(access_token=access_token, bill=payload)
+                external_record_id = await client.push_bill(
+                    access_token=access_token, bill=payload, idempotency_key=entity_id
+                )
         except Exception as exc:
             await _upsert_sync_record(
                 session,
@@ -182,6 +223,7 @@ async def _sync_financial_record(
             entity_id=uuid.UUID(entity_id),
             status="success",
             last_error=None,
+            external_record_id=external_record_id,
         )
         await session.commit()
 

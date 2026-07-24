@@ -28,6 +28,7 @@ class SyncRecordResponse(BaseModel):
     attempt_count: int
     last_error: str | None
     last_attempted_at: datetime | None
+    external_record_id: str | None
 
 
 class SyncStatusResponse(BaseModel):

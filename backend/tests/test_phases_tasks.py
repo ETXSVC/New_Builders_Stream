@@ -7,7 +7,7 @@ test_leads.py, test_projects.py) rather than sharing them via conftest.py.
 """
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -83,6 +83,37 @@ async def _create_phase(client, admin, project_id, name="Foundation", sequence=0
     )
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+async def _add_membership_directly(user_id, company_id, role):
+    """Test-setup plumbing, identical rationale to
+    test_subcontractor_assignments.py's own helper of the same name."""
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role, created_at) "
+            "VALUES ($1, $2, $3, now())",
+            company_id,
+            user_id,
+            role,
+        )
+    finally:
+        await conn.close()
+
+
+async def _create_child_with_membership(client, parent, name, role="admin"):
+    """Identical to test_subcontractor_assignments.py's helper of the same
+    name — duplicated rather than imported across test modules, matching
+    this codebase's existing convention."""
+    create = await client.post(
+        f"/companies/{parent['company_id']}/children",
+        json={"name": name},
+        headers=parent["headers"],
+    )
+    assert create.status_code == 201, create.text
+    child_id = create.json()["id"]
+    await _add_membership_directly(parent["user_id"], child_id, role)
+    return child_id
 
 
 async def _create_task(client, admin, project_id, phase_id, name="Pour footings", assignee_id=None):
@@ -180,6 +211,200 @@ async def test_create_phase_rejects_invalid_payload(client):
         headers=admin["headers"],
     )
     assert response.status_code == 422
+
+
+# --- Phase update (PATCH /projects/{id}/phases/{phase_id}) -------------------
+
+
+async def test_admin_can_update_phase_name_and_sequence(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id, name="Foundation", sequence=0)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": "Foundation & Framing", "sequence": 2},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["name"] == "Foundation & Framing"
+    assert body["sequence"] == 2
+
+
+async def test_project_manager_can_update_phase(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-pm-admin@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "phase-update-pm@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": "Renamed by PM"},
+        headers=pm["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "Renamed by PM"
+
+
+async def test_update_phase_only_touches_supplied_fields(client):
+    """PATCH semantics: omitting `sequence` must leave it unchanged."""
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-partial@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id, name="Foundation", sequence=5)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": "Foundation Renamed"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["name"] == "Foundation Renamed"
+    assert body["sequence"] == 5
+
+
+async def test_field_crew_cannot_update_phase(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "phase-update-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": "Hijacked"},
+        headers=field_crew["headers"],
+    )
+    assert response.status_code == 403
+
+
+async def test_update_phase_cross_tenant_project_returns_404(client):
+    a = await _register_and_login(client, "Company A", "phase-update-cross-a@acme.test")
+    b = await _register_and_login(client, "Company B", "phase-update-cross-b@acme.test")
+    project_id = await _create_project(client, b)
+    phase_id = await _create_phase(client, b, project_id)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": "Hijacked"},
+        headers=a["headers"],
+    )
+    assert response.status_code == 404
+
+
+async def test_update_phase_belonging_to_a_different_project_returns_404(client):
+    """A real, same-tenant Phase, but addressed via the WRONG project_id in
+    the URL — must 404, not silently update a phase the URL doesn't
+    actually name (same "path must match the exact resource" convention
+    _get_phase_or_404's own docstring establishes)."""
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-wrongproj@acme.test")
+    project_a = await _create_project(client, admin, name="Project A")
+    project_b = await _create_project(client, admin, name="Project B", site_address="2 Main St")
+    phase_id = await _create_phase(client, admin, project_a)
+
+    response = await client.patch(
+        f"/projects/{project_b}/phases/{phase_id}",
+        json={"name": "Hijacked"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 404
+
+
+async def test_update_nonexistent_phase_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-noexist@acme.test")
+    project_id = await _create_project(client, admin)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/00000000-0000-0000-0000-000000000000",
+        json={"name": "Ghost"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 404
+
+
+async def test_update_phase_rejects_invalid_payload(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-update-invalid@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    response = await client.patch(
+        f"/projects/{project_id}/phases/{phase_id}",
+        json={"name": ""},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422
+
+
+# --- Phase deletion (DELETE /projects/{id}/phases/{phase_id}) ----------------
+
+
+async def test_admin_can_delete_phase_and_its_tasks_cascade(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-delete-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    await _create_task(client, admin, project_id, phase_id, name="Pour footings")
+
+    response = await client.delete(
+        f"/projects/{project_id}/phases/{phase_id}", headers=admin["headers"]
+    )
+    assert response.status_code == 204
+
+    listed = await client.get(f"/projects/{project_id}/phases", headers=admin["headers"])
+    assert listed.json()["items"] == []
+
+    # The phase itself is gone — a second PATCH/DELETE against the same id
+    # now 404s, proving it wasn't a soft-delete/no-op.
+    second_delete = await client.delete(
+        f"/projects/{project_id}/phases/{phase_id}", headers=admin["headers"]
+    )
+    assert second_delete.status_code == 404
+
+
+async def test_project_manager_can_delete_phase(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-delete-pm-admin@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "phase-delete-pm@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    response = await client.delete(
+        f"/projects/{project_id}/phases/{phase_id}", headers=pm["headers"]
+    )
+    assert response.status_code == 204
+
+
+async def test_field_crew_cannot_delete_phase(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-delete-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "phase-delete-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    response = await client.delete(
+        f"/projects/{project_id}/phases/{phase_id}", headers=field_crew["headers"]
+    )
+    assert response.status_code == 403
+
+
+async def test_delete_phase_cross_tenant_project_returns_404(client):
+    a = await _register_and_login(client, "Company A", "phase-delete-cross-a@acme.test")
+    b = await _register_and_login(client, "Company B", "phase-delete-cross-b@acme.test")
+    project_id = await _create_project(client, b)
+    phase_id = await _create_phase(client, b, project_id)
+
+    response = await client.delete(
+        f"/projects/{project_id}/phases/{phase_id}", headers=a["headers"]
+    )
+    assert response.status_code == 404
+
+
+async def test_delete_nonexistent_phase_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "phase-delete-noexist@acme.test")
+    project_id = await _create_project(client, admin)
+
+    response = await client.delete(
+        f"/projects/{project_id}/phases/00000000-0000-0000-0000-000000000000",
+        headers=admin["headers"],
+    )
+    assert response.status_code == 404
 
 
 # --- Task creation -----------------------------------------------------------
@@ -312,6 +537,44 @@ async def test_admin_can_patch_any_task_field(client):
     body = response.json()
     assert body["status"] == "in_progress"
     assert body["assignee_id"] == field_crew["user_id"]
+
+
+async def test_admin_can_patch_task_name_and_due_date(client):
+    admin = await _register_and_login(client, "Acme Construction", "patch-namedue-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id, name="Pour footings")
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"name": "Pour footings (revised)", "due_date": "2026-09-15"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["name"] == "Pour footings (revised)"
+    assert body["due_date"] == "2026-09-15"
+
+
+async def test_field_crew_cannot_patch_task_name_even_on_own_task(client):
+    """Same field-level restriction test_field_crew_cannot_patch_assignee_id_
+    even_on_own_task exercises for `assignee_id`, extended to the newer
+    `name` field — adding fields to TaskUpdateRequest must not widen
+    field_crew's own allowed set past `status`."""
+    admin = await _register_and_login(client, "Acme Construction", "patch-namefc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-namefc-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(
+        client, admin, project_id, phase_id, assignee_id=field_crew["user_id"]
+    )
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"name": "Renamed by field crew"},
+        headers=field_crew["headers"],
+    )
+    assert response.status_code == 403
 
 
 async def test_project_manager_can_patch_any_task(client):
@@ -490,6 +753,87 @@ async def test_patch_nonexistent_task_returns_404(client):
     assert response.status_code == 404
 
 
+# --- Task deletion (DELETE /tasks/{task_id}) ---------------------------------
+
+
+async def test_admin_can_delete_task(client):
+    admin = await _register_and_login(client, "Acme Construction", "task-delete-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    response = await client.delete(f"/tasks/{task_id}", headers=admin["headers"])
+    assert response.status_code == 204
+
+    listed = await client.get(f"/projects/{project_id}/phases", headers=admin["headers"])
+    assert listed.json()["items"][0]["tasks"] == []
+
+    # A second delete of the same, now-gone task 404s — proving this wasn't
+    # a soft-delete/no-op.
+    second_delete = await client.delete(f"/tasks/{task_id}", headers=admin["headers"])
+    assert second_delete.status_code == 404
+
+
+async def test_project_manager_can_delete_task(client):
+    admin = await _register_and_login(client, "Acme Construction", "task-delete-pm-admin@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "task-delete-pm@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    response = await client.delete(f"/tasks/{task_id}", headers=pm["headers"])
+    assert response.status_code == 204
+
+
+async def test_field_crew_cannot_delete_task_even_their_own(client):
+    """Narrower than patch_task's RBAC: field_crew's only grant is updating
+    `status` on a task assigned to them — deleting isn't part of that
+    grant, even for a task genuinely assigned to the caller."""
+    admin = await _register_and_login(client, "Acme Construction", "task-delete-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "task-delete-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(
+        client, admin, project_id, phase_id, assignee_id=field_crew["user_id"]
+    )
+
+    response = await client.delete(f"/tasks/{task_id}", headers=field_crew["headers"])
+    assert response.status_code == 403
+
+
+async def test_accountant_and_client_cannot_delete_task(client):
+    admin = await _register_and_login(client, "Acme Construction", "task-delete-acct-admin@acme.test")
+    accountant = await _invite_and_login_as(client, admin, "accountant", "task-delete-acct@acme.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "task-delete-client@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+
+    for actor in (accountant, client_role):
+        task_id = await _create_task(client, admin, project_id, phase_id)
+        response = await client.delete(f"/tasks/{task_id}", headers=actor["headers"])
+        assert response.status_code == 403
+
+
+async def test_delete_task_cross_tenant_returns_404(client):
+    a = await _register_and_login(client, "Company A", "task-delete-cross-a@acme.test")
+    b = await _register_and_login(client, "Company B", "task-delete-cross-b@acme.test")
+    project_id = await _create_project(client, b)
+    phase_id = await _create_phase(client, b, project_id)
+    task_id = await _create_task(client, b, project_id, phase_id)
+
+    response = await client.delete(f"/tasks/{task_id}", headers=a["headers"])
+    assert response.status_code == 404
+
+
+async def test_delete_nonexistent_task_returns_404(client):
+    admin = await _register_and_login(client, "Acme Construction", "task-delete-noexist-admin@acme.test")
+
+    response = await client.delete(
+        "/tasks/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
+    )
+    assert response.status_code == 404
+
+
 # --- Phase list (GET /projects/{id}/phases) ----------------------------------
 
 
@@ -509,3 +853,92 @@ async def test_list_phases_returns_phases_with_nested_tasks_in_sequence_order(cl
     assert [p["name"] for p in items] == ["First", "Second"]
     assert [t["name"] for t in items[0]["tasks"]] == ["In First"]
     assert items[1]["tasks"] == []
+
+
+# =============================================================================
+# company_id sourcing: parent-company session (unswitched headers) creating a
+# Phase/Task against a child-branch Project. Same empirical shape as
+# test_tenant_isolation_phase2.py's own
+# test_creating_change_order_under_child_branch_project_uses_project_company_id
+# and test_subcontractor_assignments.py's own
+# test_creating_assignment_under_child_branch_project_and_subcontractor_uses_child_company_id.
+# =============================================================================
+
+
+async def test_creating_phase_under_child_branch_project_uses_child_company_id(client):
+    """The new Phase's company_id must come from project.company_id (the
+    CHILD), never current.company_id (the PARENT acting session). The
+    Project is created under the CHILD branch (via X-Tenant-ID-switched
+    headers, backed by a genuine company_users row); the Phase is then
+    created using the PARENT's own DEFAULT headers — deliberately NOT
+    X-Tenant-ID-switched — so RLS's get_all_descendant_ids() grant alone is
+    what makes the child's Project visible/writable to this session, which
+    is the only way current.company_id (parent) and project.company_id
+    (child) genuinely diverge without an explicit header switch."""
+    parent = await _register_and_login(client, "Parent Co", "phase-parent-co@acme.test")
+    await set_subscription_tier(parent["company_id"], "enterprise")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    child_actor = {"headers": child_headers}
+
+    project_id = await _create_project(client, child_actor)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        f"/projects/{project_id}/phases",
+        json={"name": "Foundation", "sequence": 0},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Phase created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    listed = await client.get(f"/projects/{project_id}/phases", headers=child_headers)
+    assert listed.status_code == 200, listed.text
+    assert [p["id"] for p in listed.json()["items"]] == [body["id"]]
+
+
+async def test_creating_task_under_child_branch_project_uses_child_company_id(client):
+    """Same bug class as test_creating_phase_under_child_branch_project_uses_child_company_id
+    above, for the sibling create_task route: the new Task's company_id
+    must come from project.company_id (the CHILD), never
+    current.company_id (the PARENT acting session)."""
+    parent = await _register_and_login(client, "Parent Co", "task-parent-co@acme.test")
+    await set_subscription_tier(parent["company_id"], "enterprise")
+    child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
+    child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
+    child_actor = {"headers": child_headers}
+
+    project_id = await _create_project(client, child_actor)
+    phase_id = await _create_phase(client, child_actor, project_id)
+
+    # Deliberately the parent's own default headers, NOT X-Tenant-ID-switched
+    # to the child.
+    response = await client.post(
+        f"/projects/{project_id}/tasks",
+        json={"name": "Pour footings", "phase_id": phase_id},
+        headers=parent["headers"],
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["company_id"] == child_id, (
+        "Task created against a child-branch Project must belong to the "
+        "PROJECT's own company (the child), not the acting session's "
+        f"company (the parent) — got {body['company_id']!r}, expected "
+        f"child_id={child_id!r}"
+    )
+
+    # Read it back via the child's own tenant context to confirm it's
+    # genuinely visible there too, not just correctly labeled.
+    listed = await client.get(f"/projects/{project_id}/phases", headers=child_headers)
+    assert listed.status_code == 200, listed.text
+    tasks = listed.json()["items"][0]["tasks"]
+    assert [t["id"] for t in tasks] == [body["id"]]

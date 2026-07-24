@@ -19,6 +19,25 @@ export function TypedSignature({
   const [signerName, setSignerName] = React.useState("");
   const [signerEmail, setSignerEmail] = React.useState("");
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  // Synchronous double-submit guard, distinct from the `submitting` PROP
+  // above: `handleSubmit` below is async and does `await
+  // canvas.toBlob(...)` — a real async gap — BEFORE it ever calls
+  // `onSign`, which is what actually flips the parent's `submitting`
+  // state. Two clicks close together both read `submitting === false`
+  // during that gap (React hasn't re-rendered with a new prop value yet,
+  // because nothing has set it), so the prop-only check below was not
+  // enough to stop both calls from reaching `canvas.toBlob` and,
+  // eventually, both calling `onSign` — firing two concurrent approve
+  // requests. A ref is set synchronously, in the same tick as the first
+  // click, closing that gap; the effect further down keeps it in sync
+  // with the `submitting` prop so a legitimate retry after a FAILED
+  // approve (parent resets `submitting` to false) isn't permanently
+  // blocked.
+  const submittingRef = React.useRef(false);
+
+  React.useEffect(() => {
+    submittingRef.current = submitting;
+  }, [submitting]);
 
   function renderToCanvas(name: string): void {
     const canvas = canvasRef.current;
@@ -40,12 +59,35 @@ export function TypedSignature({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting || !signerName.trim() || !signerEmail.trim()) return;
+    if (submittingRef.current || submitting || !signerName.trim() || !signerEmail.trim()) return;
+    // Set synchronously, before the first `await` below — this is what
+    // actually closes the race (see submittingRef's own declaration
+    // above), not the `submitting`-prop check just above, which can't
+    // observe a concurrent click until React re-renders with a new prop
+    // value.
+    submittingRef.current = true;
+
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      // Never reached onSign, so the parent's `submitting` prop will
+      // never flip true/false to re-sync this ref via the effect above —
+      // must reset explicitly here, or every future submit attempt would
+      // be silently blocked forever.
+      submittingRef.current = false;
+      return;
+    }
     renderToCanvas(signerName);
     const artifact = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!artifact) return;
+    if (!artifact) {
+      // Same reasoning as the !canvas branch above.
+      submittingRef.current = false;
+      return;
+    }
+    // From here on, onSign (synchronously, inside SigningPanel's own
+    // handleApprove) is what flips the `submitting` prop true — the
+    // effect above then keeps submittingRef in sync with it for the rest
+    // of this request's lifecycle, including resetting back to false if
+    // the approve call later fails and the parent re-enables the form.
     onSign({ signerName, signerEmail, artifact });
   }
 

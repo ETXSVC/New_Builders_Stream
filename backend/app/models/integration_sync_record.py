@@ -34,3 +34,8 @@ class IntegrationSyncRecord(Base, UUIDPKMixin, TimestampMixin):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The provider's own record id, returned by push_invoice/push_expense/
+    # push_bill on a successful push (migration 0017). Nullable — a row
+    # that never had a successful push (status='pending'/'failed') has
+    # none to record.
+    external_record_id: Mapped[str | None] = mapped_column(String(100), nullable=True)

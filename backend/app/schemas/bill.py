@@ -9,7 +9,10 @@ class BillCreateRequest(BaseModel):
     project_id: uuid.UUID | None = None
     subcontractor_id: uuid.UUID | None = None
     vendor_name: str | None = None
-    amount: Decimal
+    # gt=0: a zero/negative bill represents no real obligation and is
+    # never a legitimate state — same floor BillPaymentCreateRequest.
+    # amount below already enforces for the payment side.
+    amount: Decimal = Field(gt=0)
     due_date: date | None = None
     bill_number: str | None = None
 
@@ -21,10 +24,12 @@ class BillCreateRequest(BaseModel):
 
 
 class BillPaymentCreateRequest(BaseModel):
-    # gt=0 — see InvoicePaymentCreateRequest.amount's own comment
-    # (app/schemas/invoice.py) for why this field, unlike BillCreateRequest
-    # .amount above, needs the floor: it's actual money changing hands and
-    # feeds the status transition directly.
+    # gt=0: this field represents actual money changing hands and feeds
+    # the status transition directly — see InvoicePaymentCreateRequest.
+    # amount's own comment (app/schemas/invoice.py) for the full
+    # rationale. Same floor as BillCreateRequest.amount above, for a
+    # complementary reason (that one guards the total owed; this one
+    # guards each individual payment against it).
     amount: Decimal = Field(gt=0)
     paid_date: date
 

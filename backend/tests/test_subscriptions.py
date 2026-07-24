@@ -114,3 +114,49 @@ async def test_portal_session_returns_a_url_for_admin(client):
 
     assert response.status_code == 200, response.text
     assert response.json()["url"].startswith("https://")
+
+
+async def _invite_and_login_as(client, admin, role, email):
+    invite = await client.post(
+        "/invitations", json={"email": email, "role": role}, headers=admin["headers"]
+    )
+    assert invite.status_code == 201, invite.text
+    accept = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": "Invited User", "password": "correct horse battery staple"},
+    )
+    assert accept.status_code == 200, accept.text
+    login = await client.post(
+        "/auth/login", json={"email": email, "password": "correct horse battery staple"}
+    )
+    assert login.status_code == 200, login.text
+    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+
+
+async def test_portal_session_forbidden_for_accountant(client):
+    """The important case this module's own docstring calls out:
+    `_PORTAL_ROLES = ("admin",)` is deliberately NARROWER than
+    `_READ_ROLES = ("admin", "accountant")` — an accountant can read
+    `/subscriptions/me` but must NOT be able to open a Stripe billing
+    portal session. A regression that widened `_PORTAL_ROLES` to match
+    `_READ_ROLES` (an easy mistake, since every OTHER Accounting/Billing
+    route in this codebase gives Accountant the same access as Admin)
+    would go undetected without this test — the sibling
+    test_get_subscriptions_me_forbidden_for_project_manager test above
+    only exercises `/me`, never `/portal-session`, and only ever with a
+    role that's forbidden from BOTH routes."""
+    admin = await _register(client, email="portal-forbidden-admin@subtest.test")
+    accountant = await _invite_and_login_as(
+        client, admin, "accountant", "portal-accountant@subtest.test"
+    )
+
+    response = await client.post("/subscriptions/portal-session", headers=accountant["headers"])
+    assert response.status_code == 403
+
+
+async def test_portal_session_forbidden_for_project_manager(client):
+    admin = await _register(client, email="portal-pm-admin@subtest.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "portal-pm@subtest.test")
+
+    response = await client.post("/subscriptions/portal-session", headers=pm["headers"])
+    assert response.status_code == 403

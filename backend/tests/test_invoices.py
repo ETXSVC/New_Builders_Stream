@@ -72,6 +72,41 @@ async def test_create_invoice_assigns_sequential_number_and_draft_status(client)
     assert body["outstanding_balance"] == "1000.00"
 
 
+async def test_create_invoice_rejects_zero_or_negative_amount(client):
+    admin = await _register_and_login(client, "Invoice Co Neg", "invoice-neg@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    zero = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "0.00"}, headers=admin["headers"]
+    )
+    assert zero.status_code == 422
+
+    negative = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "-10.00"}, headers=admin["headers"]
+    )
+    assert negative.status_code == 422
+
+
+async def test_create_invoice_quantizes_amount_to_two_decimal_places(client):
+    """Without quantizing before persisting, the create response (built
+    from the in-memory ORM object) would show the raw unrounded value
+    while Postgres's NUMERIC(12,2) column silently rounds it on INSERT —
+    a later GET would then disagree with what create originally
+    returned."""
+    admin = await _register_and_login(client, "Invoice Co Quant", "invoice-quant@example.test")
+    project = await _create_project(client, admin["headers"])
+
+    create = await client.post(
+        f"/projects/{project['id']}/invoices", json={"amount": "100.005"}, headers=admin["headers"]
+    )
+    assert create.status_code == 201, create.text
+    invoice_id = create.json()["id"]
+    assert create.json()["amount"] == "100.01"
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    assert detail.json()["amount"] == "100.01"
+
+
 async def test_second_invoice_for_same_company_gets_the_next_number(client):
     admin = await _register_and_login(client, "Invoice Co 2", "invoice-seq@example.test")
     project = await _create_project(client, admin["headers"])
@@ -315,21 +350,85 @@ async def test_cumulative_payment_reaching_full_amount_auto_marks_paid(client):
     assert body["outstanding_balance"] == "0.00"
 
 
-async def test_overpayment_leaves_outstanding_balance_negative(client):
+async def test_overpayment_exceeding_remaining_balance_returns_409(client):
+    """A single payment larger than the invoice's remaining balance must be
+    rejected outright, not silently accepted into a negative
+    outstanding_balance — the invoice stays at 'sent' with no payment row
+    recorded."""
     admin = await _register_and_login(client, "Pay Co 3", "pay-3@example.test")
     project = await _create_project(client, admin["headers"])
     invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
 
-    await client.post(
+    response = await client.post(
         f"/invoices/{invoice_id}/payments",
         json={"amount": "150.00", "paid_date": "2026-08-01"},
         headers=admin["headers"],
     )
+    assert response.status_code == 409, response.text
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "sent"
+    assert body["outstanding_balance"] == "100.00"
+    assert body["payments"] == []
+
+
+async def test_cumulative_overpayment_exceeding_remaining_balance_returns_409(client):
+    """Same rule as the single-payment case above, but against a partially
+    paid invoice: a second payment larger than what's LEFT (not the
+    original total) must be rejected."""
+    admin = await _register_and_login(client, "Pay Co 3b", "pay-3b@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+
+    first = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "60.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "50.00", "paid_date": "2026-08-02"},
+        headers=admin["headers"],
+    )
+    assert second.status_code == 409, second.text
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    body = detail.json()
+    assert body["status"] == "sent"
+    assert body["outstanding_balance"] == "40.00"
+    assert len(body["payments"]) == 1
+
+
+async def test_payment_against_an_already_paid_invoice_returns_409(client):
+    """Once an invoice is fully paid, a further payment must be rejected —
+    not silently accepted, stacking unlimited additional "payments" on a
+    settled invoice."""
+    admin = await _register_and_login(client, "Pay Co 3c", "pay-3c@example.test")
+    project = await _create_project(client, admin["headers"])
+    invoice_id = await _create_and_send_invoice(client, admin["headers"], project["id"], "100.00")
+
+    paid_in_full = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "100.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert paid_in_full.status_code == 201, paid_in_full.text
+
+    further = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "10.00", "paid_date": "2026-08-02"},
+        headers=admin["headers"],
+    )
+    assert further.status_code == 409, further.text
 
     detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
     body = detail.json()
     assert body["status"] == "paid"
-    assert body["outstanding_balance"] == "-50.00"
+    assert body["outstanding_balance"] == "0.00"
+    assert len(body["payments"]) == 1
 
 
 async def test_payment_against_a_draft_invoice_returns_409(client):

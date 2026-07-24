@@ -7,13 +7,14 @@ Admin/Accountant only, ZERO Client access — Bills are the company's own
 internal obligations, never client-facing (unlike Invoices).
 """
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Bill, BillPayment
@@ -73,24 +74,63 @@ async def create_bill(
     _ro: None = Depends(block_if_read_only),
     _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> BillResponse:
+    # `resolved_company_id` — the referenced Project's (or, absent a
+    # Project, the referenced Subcontractor's) own `company_id`, NOT
+    # `current.company_id` — is what actually stamps the new Bill below.
+    # A parent company's session can legitimately create a Bill against a
+    # descendant branch's Project/Subcontractor without switching
+    # `X-Tenant-ID` to that branch first (RLS's `get_all_descendant_ids()`
+    # grant already makes the descendant's rows visible/writable). Using
+    # `current.company_id` would silently stamp this Bill with the
+    # PARENT's id instead of its own Project's/Subcontractor's, producing
+    # a row whose `company_id` disagrees with the resource it's actually
+    # billed against — a session later scoped directly to the descendant
+    # branch would then find its own Project's/Subcontractor's Bill
+    # invisible under RLS. Same bug class already fixed in
+    # change_orders.py/expenses.py/subcontractor_assignments.py,
+    # projects.py's upload_document/create_daily_log, tasks.py's
+    # create_phase/create_task, and estimates.py's create_estimate — this
+    # route was missed by all of those.
+    #
+    # Project takes precedence over Subcontractor when both are given
+    # (matches subcontractor_assignments.py's own project.company_id
+    # precedent for the identical Project+Subcontractor combination); a
+    # free-text `vendor_name`-only Bill (no Project, no Subcontractor —
+    # a genuine "company overhead bill") has no other resource to derive
+    # from, so `current.company_id` is the only correct source there.
+    resolved_company_id = current.company_id
     project_id: uuid.UUID | None = None
+    project = None
     if body.project_id is not None:
         project = await _get_project_or_404(current, body.project_id)
         project_id = project.id
+        resolved_company_id = project.company_id
 
     vendor_name = body.vendor_name
     if body.subcontractor_id is not None:
         subcontractor = await _get_subcontractor_or_404(current, body.subcontractor_id)
         vendor_name = vendor_name or subcontractor.name
+        if project is None:
+            resolved_company_id = subcontractor.company_id
+
+    # Quantized to 2 decimal places (ROUND_HALF_UP, matching Postgres's own
+    # NUMERIC rounding — app/core/money.py's own module comment) BEFORE
+    # constructing the row: without this, a client-supplied amount with
+    # more than 2 decimal places (e.g. "100.005") gets silently rounded by
+    # Postgres's NUMERIC(12,2) column on INSERT, but this handler's own
+    # response (built from the in-memory ORM object, never re-queried
+    # after flush) would still show the UNROUNDED value — a real
+    # create-response-disagrees-with-a-later-GET bug, not just cosmetic.
+    quantized_amount = body.amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
     bill = Bill(
         id=uuid.uuid4(),
-        company_id=current.company_id,
+        company_id=resolved_company_id,
         project_id=project_id,
         subcontractor_id=body.subcontractor_id,
         vendor_name=vendor_name,
         bill_number=body.bill_number,
-        amount=body.amount,
+        amount=quantized_amount,
         status="unpaid",
         due_date=body.due_date,
     )
@@ -224,8 +264,26 @@ async def record_bill_payment(
     )
     bill = locked.scalar_one()
 
-    if bill.status == "void":
-        raise HTTPException(status.HTTP_409_CONFLICT, "Cannot record a payment against a void bill")
+    # "paid" is blocked alongside void: without it, a second payment
+    # against an already-fully-paid bill was silently accepted (only void
+    # was rejected), stacking unlimited further "payments" on a settled
+    # bill — same gap fixed in invoices.py's record_invoice_payment.
+    if bill.status in ("void", "paid"):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Cannot record a payment against a {bill.status} bill")
+
+    # Reads the already-committed payment total BEFORE this payment is
+    # inserted, under the row lock acquired above — same remaining-balance
+    # guard as invoices.py's own record_invoice_payment, and for the same
+    # reason: without it, a payment could exceed the bill's remaining
+    # balance, producing a negative outstanding_balance (bill.amount -
+    # paid) for every reader after.
+    already_paid = await _paid_amount(current, bill.id)
+    remaining = bill.amount - already_paid
+    if body.amount > remaining:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Payment amount {body.amount} exceeds the bill's remaining balance {remaining}",
+        )
 
     payment = BillPayment(
         id=uuid.uuid4(),
