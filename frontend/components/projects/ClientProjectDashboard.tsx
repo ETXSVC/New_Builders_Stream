@@ -97,6 +97,67 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
   );
 }
 
+function ClientInvoicesCard({ projectId }: { projectId: string }) {
+  const { accessToken } = useAuth();
+  const [invoices, setInvoices] = React.useState<
+    { id: string; invoice_number: string; amount: string; status: string; due_date: string | null; outstanding_balance: string }[]
+  >([]);
+
+  React.useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    (async () => {
+      // The backend already scopes this list for the client role (non-draft
+      // invoices only) — no client-side filtering needed.
+      const all: typeof invoices = [];
+      try {
+        let cursor: string | null = null;
+        do {
+          const params = new URLSearchParams();
+          if (cursor) params.set("cursor", cursor);
+          const response = await fetch(`/api/projects/${projectId}/invoices?${params}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (!response.ok) return;
+          const data = await response.json();
+          all.push(...data.items);
+          cursor = data.next_cursor ?? null;
+        } while (cursor);
+        if (!cancelled) setInvoices(all);
+      } catch {
+        // Non-blocking — the dashboard still renders without invoices.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, projectId]);
+
+  if (invoices.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Invoices</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul className="flex flex-col divide-y divide-slate-200 text-sm">
+          {invoices.map((invoice) => (
+            <li key={invoice.id} className="flex items-center gap-3 py-2">
+              <span className="flex-1 font-medium">{invoice.invoice_number}</span>
+              <span className="text-slate-600">{formatCurrency(invoice.amount)}</span>
+              <span className="text-slate-500">
+                {invoice.due_date ? `due ${formatDate(invoice.due_date)}` : ""}
+              </span>
+              <StatusBadge status={invoice.status} />
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 export interface ClientProjectShape {
   id: string;
   name: string;
@@ -128,6 +189,7 @@ export function ClientProjectDashboard({ project }: { project: ClientProjectShap
           </p>
         </CardContent>
       </Card>
+      <ClientInvoicesCard projectId={project.id} />
     </div>
   );
 }
