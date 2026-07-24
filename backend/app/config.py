@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # Docker; docker-compose maps the frontend to host port 3001, so the
     # Compose .env overrides this to http://localhost:3001.
     frontend_base_url: str = "http://localhost:3000"
+    # Outbound email (invitation delivery). smtp_host unset (the default)
+    # selects the recording fake client — local dev, tests, and CI all send
+    # nothing with zero configuration; setting SMTP_HOST is the single
+    # switch that turns on real delivery. See app/services/email.py.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str = "no-reply@localhost"
+    smtp_starttls: bool = True
     # Task 4.3: Fernet key (44-char urlsafe-base64, generate with
     # `Fernet.generate_key()`) for encrypting integration_connections'
     # access_token_encrypted/refresh_token_encrypted columns at the

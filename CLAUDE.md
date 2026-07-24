@@ -15,12 +15,9 @@ per-feature implementation plans and design specs actually built against;
 when a router/model/migration's docstring references one of these, read it
 for the "why" before changing that area.
 
-`README.md`'s "Build Status" table can lag reality — features have shipped
-whose plan/spec files postdate the README's last edit (e.g. MFA/TOTP,
-refresh-token rotation, accounting/billing, and QuickBooks/FreshBooks
-integrations all exist in `backend/app/models` and `backend/app/routers`
-despite older "not started" notes). Trust the code and its migrations over
-the README's status table.
+`README.md`'s "Build Status" table was refreshed 2026-07-24 to match the
+code, but READMEs drift — when in doubt, trust the code and its migrations
+over any prose status table.
 
 ## Commands
 
