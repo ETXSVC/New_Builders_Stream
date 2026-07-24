@@ -40,6 +40,8 @@ alembic revision -m "description"          # hand-write the migration body
 
 # Full stack locally (Postgres, Redis, backend, worker, scheduler, frontend)
 docker compose up
+# Production stack (Caddy TLS, hardened): docker-compose.prod.yml — see
+# docs/11-production-deployment.md; the dev compose above is unchanged
 ```
 
 Test setup notes (see `backend/tests/conftest.py` for the full rationale):

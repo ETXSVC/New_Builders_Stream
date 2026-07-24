@@ -17,6 +17,14 @@ interface RequestOptions {
   // Appended as a query string (?k=v&...). Entries with undefined values
   // are skipped, so callers can pass optional filters unconditionally.
   query?: Record<string, string | undefined>;
+  // Forwarded to the backend as X-Forwarded-For. The BFF hop is a fresh
+  // server-side fetch, so without this the backend's peer address is the
+  // frontend container — the register rate limiter and the ESIGN capture
+  // (legally significant) would record the wrong IP behind the production
+  // proxy. Only the IP-sensitive route handlers pass it, sourced from the
+  // reverse proxy's own spoof-safe X-Forwarded-For header; undefined
+  // (e.g. bare `npm run dev` with no proxy) omits the header entirely.
+  clientIp?: string;
 }
 
 export class ApiError extends Error {
@@ -66,6 +74,7 @@ export async function apiFetch<Path extends keyof paths, M extends Method>(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (options.accessToken) headers["Authorization"] = `Bearer ${options.accessToken}`;
   if (options.companyId) headers["X-Tenant-ID"] = options.companyId;
+  if (options.clientIp) headers["X-Forwarded-For"] = options.clientIp;
 
   const response = await fetch(url, {
     method: method.toUpperCase(),

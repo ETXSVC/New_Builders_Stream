@@ -1,0 +1,50 @@
+# SPLIT TOPOLOGY — frontend stack (machine B).
+# Runs: Caddy (TLS at the app domain) + the Next.js app (UI + BFF).
+#
+#   docker network create builders-net   # once per machine
+#   docker compose -f deploy/split/frontend.compose.yml up -d --build
+#
+# This stack's .env needs:
+#   SITE_ADDRESS=app.example.com
+#   NEXT_PUBLIC_API_URL=https://api.example.com   # the backend stack's
+#                                                 # api-caddy endpoint
+# The BFF calls the API server-side, so the browser never needs to reach
+# the backend directly (no CORS), and the backend's IP allowlist admits
+# only this machine.
+
+name: builders-frontend
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?e.g. app.example.com}
+    volumes:
+      - ../Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [builders-net]
+    depends_on:
+      - frontend
+
+  frontend:
+    build:
+      context: ../../frontend
+      target: production
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?e.g. https://api.example.com}
+    networks: [builders-net]
+
+networks:
+  builders-net:
+    external: true
+
+volumes:
+  caddy_data:
+  caddy_config:

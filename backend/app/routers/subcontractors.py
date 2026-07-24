@@ -19,6 +19,8 @@ from datetime import date
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 
+from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
@@ -188,7 +190,7 @@ async def upload_compliance_document(
         )
 
     compliance_document_id = uuid.uuid4()
-    content = await file.read()
+    content = await read_upload_limited(file, settings.max_document_upload_bytes)
 
     try:
         storage_path = write_compliance_document_file(

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import aliased
 
 from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
@@ -474,7 +475,7 @@ async def upload_document(
     )
     version = (previous_max_version or 0) + 1
 
-    content = await file.read()
+    content = await read_upload_limited(file, settings.max_document_upload_bytes)
     try:
         storage_path = write_document_file(
             company_id=project.company_id,

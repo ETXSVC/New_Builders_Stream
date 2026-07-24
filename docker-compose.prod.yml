@@ -1,0 +1,190 @@
+# Production stack — self-contained on purpose, NOT an override of the dev
+# docker-compose.yml (an override would inherit its source bind-mounts and
+# --reload commands; a standalone file is auditable at a glance).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Full deployment guide (server .env requirements, first-deploy checklist,
+# backups, upgrades): docs/11-production-deployment.md.
+#
+# Topology: caddy (the ONLY published ports, 80/443) → frontend (Next.js
+# BFF) → backend. Postgres/Redis/backend/worker/scheduler live on the
+# internal network with no published ports — docs/06 §6's "database/Redis
+# restricted to the internal Docker network" requirement, and the reason
+# the backend's --forwarded-allow-ips=* is safe (see backend/Dockerfile).
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS to your domain, e.g. app.example.com}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+    depends_on:
+      - frontend
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # Append-only persistence: queued jobs (PDF export, accounting sync,
+    # invitation email, daily scheduler messages) survive a host reboot.
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies Alembic migrations before the backend starts. Every
+  # `up -d` migrates first (backend depends on successful completion), so
+  # upgrades never serve traffic against an unmigrated schema.
+  migrate:
+    build:
+      context: ./backend
+      target: production
+    restart: "no"
+    env_file: .env
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    command: alembic upgrade head
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+    volumes:
+      - documents_data:/data/documents
+    networks: [internal]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # /ready probes Postgres and Redis (app/core/readiness.py); a plain
+      # /health check would report "healthy" with the database down.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - documents_data:/data/documents
+    networks: [internal]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Same actor-module discipline as the dev compose documents at length:
+    # every module in app/tasks/ defining an actor MUST be listed, or its
+    # messages are silently dead-lettered.
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email
+    # No healthcheck: no HTTP surface. Accepted gap — restart policy plus
+    # `docker compose logs worker` are the operational handles.
+
+  scheduler:
+    build:
+      context: ./backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      # BlockingScheduler crons fire in container-local time — unpinned,
+      # "02:00" silently means UTC. Set TZ in .env if off-peak should mean
+      # YOUR night. Single replica only: two schedulers double-fire jobs.
+      TZ: ${TZ:-UTC}
+    networks: [internal]
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: python -m app.scheduler
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    networks: [edge, internal]
+    depends_on:
+      - backend
+
+  # Nightly dump + prune, run by HOST cron (not started by `up` — the
+  # `backup` profile keeps it out of the normal stack):
+  #   30 1 * * * cd /opt/builders-stream && docker compose -f docker-compose.prod.yml run --rm db-backup
+  # See docs/11-production-deployment.md for restore + off-host sync.
+  db-backup:
+    image: postgres:16
+    profiles: ["backup"]
+    restart: "no"
+    env_file: .env
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    volumes:
+      - ./deploy/backup/backup.sh:/backup.sh:ro
+      - documents_data:/data/documents:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    networks: [internal]
+    entrypoint: ["bash", "/backup.sh"]
+
+networks:
+  edge:
+  internal:
+
+volumes:
+  pgdata:
+  documents_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

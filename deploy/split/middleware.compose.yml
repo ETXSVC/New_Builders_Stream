@@ -1,0 +1,51 @@
+# SPLIT TOPOLOGY — middleware stack (the async tier: Dramatiq worker +
+# APScheduler). Independently deployable from the backend API: restart,
+# upgrade, or scale this stack without touching the API's availability.
+#
+#   docker compose -f deploy/split/middleware.compose.yml up -d --build
+#
+# Placement: run on the BACKEND machine (joined to the same external
+# builders-net network, resolving postgres/redis by service name, sharing
+# DOCUMENTS_DIR). Running it on a different machine requires:
+# - DATABASE_URL/MIGRATIONS_DATABASE_URL/REDIS_URL in this stack's .env
+#   pointing at the backend machine over a PRIVATE network/VPN (never the
+#   public internet — Postgres/Redis are unpublished by design), and
+# - shared document storage (NFS mount of DOCUMENTS_DIR, or wait for the
+#   S3 storage seam) — the PDF-export worker writes files the API serves.
+
+name: builders-middleware
+
+services:
+  worker:
+    build:
+      context: ../../backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      MIGRATIONS_DATABASE_URL: ${MIGRATIONS_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
+    volumes:
+      - ${DOCUMENTS_DIR:?host path shared with the backend stack}:/data/documents
+    networks: [builders-net]
+    # Every module in backend/app/tasks/ defining an actor MUST be listed,
+    # or its messages are silently dead-lettered (see the dev compose's
+    # incident note).
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email
+
+  scheduler:
+    build:
+      context: ../../backend
+      target: production
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: production
+      TZ: ${TZ:-UTC}
+    networks: [builders-net]
+    command: python -m app.scheduler
+    # Single replica only — two schedulers double-fire every daily job.
+
+networks:
+  builders-net:
+    external: true

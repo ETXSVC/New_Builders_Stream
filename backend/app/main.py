@@ -1,9 +1,14 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.config import settings
 from app.core.event_handlers import register_event_handlers
+from app.core.logging import configure_logging
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
+from app.core.readiness import probe_database, probe_redis
 from app.routers import (
     auth,
     bills,
@@ -29,7 +34,21 @@ from app.routers import (
     webhooks,
 )
 
-app = FastAPI(title="Builders Stream API", version="0.1.0")
+configure_logging()
+logger = logging.getLogger("app")
+
+# In production the interactive docs/schema endpoints are disabled — the
+# backend isn't publicly routed there (the reverse proxy only fronts the
+# Next.js BFF), so this is free defense in depth, not the boundary itself.
+# scripts/export_openapi.py runs under the development default, unaffected.
+_in_production = settings.app_env == "production"
+app = FastAPI(
+    title="Builders Stream API",
+    version="0.1.0",
+    docs_url=None if _in_production else "/docs",
+    redoc_url=None if _in_production else "/redoc",
+    openapi_url=None if _in_production else "/openapi.json",
+)
 app.add_middleware(TenantMiddleware)
 app.include_router(auth.router)
 # branding.router is registered BEFORE companies.router deliberately:
@@ -81,6 +100,36 @@ async def invalid_cursor_handler(request: Request, exc: InvalidCursorError) -> J
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Turns silent 500s into greppable log lines (docker logs is the
+    # observability surface on the single-box deployment) without leaking
+    # internals to the client. Starlette re-raises through this handler's
+    # response, so the traceback is captured here, not swallowed.
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
 @app.get("/health")
 async def health() -> dict:
+    """Static liveness: is the process serving requests at all. Dependency
+    state deliberately excluded — that's /ready's job (see
+    app/core/readiness.py for the split's rationale)."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    """Readiness: can this process do useful work right now. Probes report
+    per-dependency status so a failing healthcheck names the dependency."""
+    database_ok = await probe_database()
+    redis_ok = await probe_redis()
+    all_ok = database_ok and redis_ok
+    return JSONResponse(
+        status_code=200 if all_ok else 503,
+        content={
+            "status": "ready" if all_ok else "degraded",
+            "database": "ok" if database_ok else "unavailable",
+            "redis": "ok" if redis_ok else "unavailable",
+        },
+    )
