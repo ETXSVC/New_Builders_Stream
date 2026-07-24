@@ -1404,7 +1404,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Health */
+        /**
+         * Health
+         * @description Static liveness: is the process serving requests at all. Dependency
+         *     state deliberately excluded — that's /ready's job (see
+         *     app/core/readiness.py for the split's rationale).
+         */
         get: operations["health_health_get"];
         put?: never;
         post?: never;
@@ -2334,6 +2339,27 @@ export interface paths {
         put?: never;
         /** Create Task */
         post: operations["create_task_projects__project_id__tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ready
+         * @description Readiness: can this process do useful work right now. Probes report
+         *     per-dependency status so a failing healthcheck names the dependency.
+         */
+        get: operations["ready_ready_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -8034,6 +8060,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ready_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

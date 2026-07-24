@@ -5,9 +5,13 @@ counter rather than anything register-specific, so a future caller with a
 different rate-limit need can reuse it with its own key prefix and limits.
 """
 
+import logging
+
 import redis.asyncio as redis
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _redis_client: redis.Redis | None = None
 
@@ -48,9 +52,21 @@ async def check_rate_limit(key: str, max_attempts: int, window_seconds: int) -> 
     attacker gets at most one extra burst at each window boundary compared
     to a true sliding window, which doesn't matter for slowing down bulk
     email enumeration to impractical levels.
+
+    Fails OPEN on a Redis outage (WARNING-logged): this limiter exists as
+    anti-enumeration hardening, and failing closed would convert a Redis
+    outage into a total signup outage — a strictly worse availability
+    trade for a marginal, temporary loss of enumeration resistance during
+    a window an attacker would have to know about to exploit. Same
+    documented fail-open stance block_if_read_only/tier_allows already
+    take for a missing subscription row.
     """
-    client = _get_redis_client()
-    count = await client.incr(key)
-    if count == 1:
-        await client.expire(key, window_seconds)
+    try:
+        client = _get_redis_client()
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, window_seconds)
+    except (redis.RedisError, OSError) as exc:
+        logger.warning("rate limiter unavailable, failing open for %s: %s", key, exc)
+        return True
     return count <= max_attempts

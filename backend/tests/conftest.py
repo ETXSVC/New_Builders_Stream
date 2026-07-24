@@ -46,6 +46,7 @@ TEST_APP_DATABASE_URL = f"postgresql+asyncpg://app_user:app_password@localhost:5
 os.environ["DATABASE_URL"] = TEST_APP_DATABASE_URL
 os.environ["MIGRATIONS_DATABASE_URL"] = TEST_DATABASE_URL.replace("+asyncpg", "+asyncpg")
 os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
+os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_EXPIRE_MINUTES", "60")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")

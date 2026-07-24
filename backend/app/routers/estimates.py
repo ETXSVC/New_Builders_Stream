@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from sqlalchemy import delete, select
 
 from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.money import CENTS
@@ -820,7 +821,9 @@ async def approve_estimate(
     estimate = await _get_estimate_or_404(current, estimate_id)
     _require_estimate_sent(estimate)
 
-    signature_artifact_bytes = await signature_artifact.read()
+    signature_artifact_bytes = await read_upload_limited(
+        signature_artifact, settings.max_signature_upload_bytes
+    )
     ip_address = request.client.host if request.client else "unknown"
 
     esignature = await capture_esignature(
