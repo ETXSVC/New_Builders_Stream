@@ -63,6 +63,11 @@ export function Nav({ companyId }: { companyId: string }) {
             Catalog
           </Link>
         )}
+        {(role === "admin" || role === "accountant") && (
+          <Link href="/billing" className="text-sm text-slate-600 hover:text-slate-900">
+            Billing
+          </Link>
+        )}
         {role === "field_crew" && (
           <Link href="/my-tasks" className="text-sm text-slate-600 hover:text-slate-900">
             My tasks
