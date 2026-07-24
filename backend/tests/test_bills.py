@@ -141,6 +141,43 @@ async def test_create_bill_quantizes_amount_to_two_decimal_places(client):
     assert detail.json()["amount"] == "100.01"
 
 
+async def test_create_bill_rejects_cross_tenant_project_id(client):
+    """`create_bill` resolves `body.project_id` via `_get_project_or_404`,
+    which relies on RLS to make another tenant's Project invisible — same
+    "doesn't exist or isn't visible to you" 404 every other referenced-id
+    check in this codebase uses (see test_estimates.py's own
+    test_create_estimate_cross_tenant_project_id_returns_404). Company A
+    and Company B here are two genuinely UNRELATED tenants (no
+    parent/child relationship), unlike this file's own child-branch
+    company_id-sourcing tests above."""
+    a = await _register_and_login(client, "Bill Cross Co A", "bill-cross-proj-a@example.test")
+    b = await _register_and_login(client, "Bill Cross Co B", "bill-cross-proj-b@example.test")
+    project = await _create_project(client, b["headers"])
+
+    response = await client.post(
+        "/bills",
+        json={"project_id": project["id"], "vendor_name": "Vendor X", "amount": "100.00"},
+        headers=a["headers"],
+    )
+    assert response.status_code == 404
+
+
+async def test_create_bill_rejects_cross_tenant_subcontractor_id(client):
+    """Same rationale as test_create_bill_rejects_cross_tenant_project_id
+    above, for the sibling `subcontractor_id` reference — resolved via
+    `_get_subcontractor_or_404`, same RLS-backed 404 pattern."""
+    a = await _register_and_login(client, "Bill Cross Co C", "bill-cross-sub-a@example.test")
+    b = await _register_and_login(client, "Bill Cross Co D", "bill-cross-sub-b@example.test")
+    subcontractor = await _create_subcontractor(client, b["headers"])
+
+    response = await client.post(
+        "/bills",
+        json={"subcontractor_id": subcontractor["id"], "amount": "100.00"},
+        headers=a["headers"],
+    )
+    assert response.status_code == 404
+
+
 # =============================================================================
 # company_id sourcing: parent-company session (unswitched headers) creating a
 # Bill against a child-branch Project/Subcontractor. Same empirical shape as

@@ -580,3 +580,80 @@ def test_every_gated_module_mutating_route_has_the_correct_tier_gate():
         f"rename orphaned a module's whole prefix?): {set(MODULE_MIN_TIER) - seen_modules}"
     )
     assert problems == [], f"Tier-gating gaps: {problems}"
+
+
+def test_tier_gating_classified_route_count_per_module_is_pinned():
+    """Closes the specific blind spot the test above's own docstring
+    documents ("PARTIAL drift is invisible... only WHOLE-module orphaning
+    is structurally caught"): a single existing route silently falling out
+    of module_for()'s hand-maintained path-prefix matching (e.g. an
+    estimates route renamed to a path outside `/estimates`) would still
+    leave every OTHER route in that module classified — `seen_modules >=
+    set(MODULE_MIN_TIER)` above stays satisfied, and `problems` stays
+    empty (a route module_for() doesn't recognize is silently SKIPPED, not
+    flagged as missing its gate), so that test passes even though a real
+    route quietly lost its tier-gating coverage entirely.
+
+    Pinning the exact per-module COUNT of classified mutating routes
+    closes that gap: if a route's path changes in a way that stops
+    matching its module's prefix rule, that module's count drops by one
+    and this test fails loudly — a repeat of the same
+    recompute-and-diff-the-classification-inputs technique the test above
+    already uses for `seen_modules`, just applied at route-count
+    granularity instead of module-presence granularity. A genuine,
+    intentional route addition/removal is expected to require updating
+    this literal alongside it, the same maintenance cost
+    `test_every_gated_module_mutating_route_has_the_correct_tier_gate`'s
+    own docstring already asks of `module_for()` itself.
+
+    `integrations` is deliberately absent from this count: its only
+    mutating-methods-loop-visible route is `/integrations/{provider}/
+    connect` (a GET, special-cased and separately asserted via
+    `connect_checked` in the test above), so it never contributes to this
+    loop's Counter at all — asserting `0` for it here would be checking a
+    tautology, not a real invariant.
+    """
+    from app.main import app
+
+    def module_for(path: str) -> str | None:
+        if path.startswith("/catalogs") or path.startswith("/markup-profiles") or path.startswith("/estimates"):
+            return "estimation"
+        if "/change-orders" in path:
+            return "estimation"
+        if path.startswith("/subcontractors") or path.startswith("/compliance") or "/subcontractor-assignments" in path:
+            return "compliance"
+        if "/invoices" in path or path.startswith("/bills") or "/expenses" in path:
+            return "accounting"
+        if path.startswith("/integrations"):
+            return "integrations"
+        if path == "/companies/{company_id}/children":
+            return "child_branches"
+        return None
+
+    excluded = {"/integrations/{provider}/callback", "/integrations/{provider}/connect"}
+
+    counts: dict[str, int] = {}
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        if not methods or methods.isdisjoint({"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        path = route.path
+        if path in excluded:
+            continue
+        expected = module_for(path)
+        if expected is None:
+            continue
+        counts[expected] = counts.get(expected, 0) + 1
+
+    assert counts == {
+        "child_branches": 1,
+        "estimation": 21,
+        "compliance": 4,
+        "accounting": 8,
+    }, (
+        f"classified mutating-route count per tier-gated module changed: {counts!r}. "
+        "If this is a genuine, intentional route addition/removal, update this "
+        "literal. If it's NOT — a route's path changed and silently fell out of "
+        "module_for()'s classification — that route just lost its tier-gating "
+        "test coverage entirely; fix module_for() instead."
+    )
