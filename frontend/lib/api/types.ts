@@ -4,68 +4,6 @@
  */
 
 export interface paths {
-    "/auth/register": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Register */
-        post: operations["register_auth_register_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Login */
-        post: operations["login_auth_login_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/auth/refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Refresh
-         * @description Rotate a refresh token (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md).
-         *
-         *     Reuse of a spent token is suspected compromise: the service revokes the
-         *     whole family, and that containment must be COMMITTED before the 401
-         *     leaves. Committing first and raising after is safe even inside the
-         *     session block — close() only rolls back a PENDING transaction, and after
-         *     commit() nothing is pending (login's post-commit return relies on the
-         *     same fact). All failure modes share one message (no oracle for which of
-         *     unknown/expired/revoked/reused it was).
-         */
-        post: operations["refresh_auth_refresh_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/auth/change-password": {
         parameters: {
             query?: never;
@@ -99,7 +37,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/auth/mfa/enroll": {
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Login */
+        post: operations["login_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
         parameters: {
             query?: never;
             header?: never;
@@ -109,14 +64,14 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Mfa Enroll
-         * @description Begin (or restart) TOTP enrollment. The base32 secret is presentable
-         *     exactly once, here; storage is Fernet ciphertext. Re-enrolling while
-         *     still PENDING rotates the secret (the user may have lost the first QR
-         *     before scanning); re-enrolling while ACTIVE is refused — disable first,
-         *     which requires both factors.
+         * Logout
+         * @description Revoke the presented token's whole rotation family. Possession of
+         *     the refresh token is the credential (same no-bearer reasoning as the
+         *     OAuth callback and invitation-accept routes). Always 204 — a logout
+         *     endpoint must not be a validity oracle, so unknown/spent tokens
+         *     succeed silently.
          */
-        post: operations["mfa_enroll_auth_mfa_enroll_post"];
+        post: operations["logout_auth_logout_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -176,7 +131,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/auth/logout": {
+    "/auth/mfa/enroll": {
         parameters: {
             query?: never;
             header?: never;
@@ -186,39 +141,21 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Logout
-         * @description Revoke the presented token's whole rotation family. Possession of
-         *     the refresh token is the credential (same no-bearer reasoning as the
-         *     OAuth callback and invitation-accept routes). Always 204 — a logout
-         *     endpoint must not be a validity oracle, so unknown/spent tokens
-         *     succeed silently.
+         * Mfa Enroll
+         * @description Begin (or restart) TOTP enrollment. The base32 secret is presentable
+         *     exactly once, here; storage is Fernet ciphertext. Re-enrolling while
+         *     still PENDING rotates the secret (the user may have lost the first QR
+         *     before scanning); re-enrolling while ACTIVE is refused — disable first,
+         *     which requires both factors.
          */
-        post: operations["logout_auth_logout_post"];
+        post: operations["mfa_enroll_auth_mfa_enroll_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/companies/branding": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Branding */
-        get: operations["get_branding_companies_branding_get"];
-        /** Put Branding */
-        put: operations["put_branding_companies_branding_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/companies/branding/logo": {
+    "/auth/refresh": {
         parameters: {
             query?: never;
             header?: never;
@@ -227,56 +164,26 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Upload Branding Logo */
-        post: operations["upload_branding_logo_companies_branding_logo_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/companies/members": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
         /**
-         * List Company Members
-         * @description Members of the caller's active tenant, for task-assignee pickers.
-         *     company_users' RLS scopes rows to the active tenant; the explicit
-         *     company_id filter narrows a parent-company session (which can see
-         *     descendant memberships) to the active tenant only — an assignee picker
-         *     should offer this company's people, not the whole subtree's.
+         * Refresh
+         * @description Rotate a refresh token (docs/superpowers/specs/2026-07-16-auth-token-lifecycle-design.md).
+         *
+         *     Reuse of a spent token is suspected compromise: the service revokes the
+         *     whole family, and that containment must be COMMITTED before the 401
+         *     leaves. Committing first and raising after is safe even inside the
+         *     session block — close() only rolls back a PENDING transaction, and after
+         *     commit() nothing is pending (login's post-commit return relies on the
+         *     same fact). All failure modes share one message (no oracle for which of
+         *     unknown/expired/revoked/reused it was).
          */
-        get: operations["list_company_members_companies_members_get"];
-        put?: never;
-        post?: never;
+        post: operations["refresh_auth_refresh_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/companies/{company_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Company */
-        get: operations["get_company_companies__company_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/companies/{company_id}/children": {
+    "/auth/register": {
         parameters: {
             query?: never;
             header?: never;
@@ -285,15 +192,50 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Child Company */
-        post: operations["create_child_company_companies__company_id__children_post"];
+        /** Register */
+        post: operations["register_auth_register_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/invitations": {
+    "/bills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Bills */
+        get: operations["list_bills_bills_get"];
+        put?: never;
+        /** Create Bill */
+        post: operations["create_bill_bills_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bills/{bill_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Bill */
+        get: operations["get_bill_bills__bill_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bills/{bill_id}/payments": {
         parameters: {
             query?: never;
             header?: never;
@@ -302,15 +244,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Invitation */
-        post: operations["create_invitation_invitations_post"];
+        /** Record Bill Payment */
+        post: operations["record_bill_payment_bills__bill_id__payments_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/invitations/{invitation_id}/accept": {
+    "/bills/{bill_id}/void": {
         parameters: {
             query?: never;
             header?: never;
@@ -319,472 +261,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Accept Invitation */
-        post: operations["accept_invitation_invitations__invitation_id__accept_post"];
+        /** Void Bill */
+        post: operations["void_bill_bills__bill_id__void_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
-        trace?: never;
-    };
-    "/leads": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Leads */
-        get: operations["list_leads_leads_get"];
-        put?: never;
-        /** Create Lead */
-        post: operations["create_lead_leads_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/leads/{lead_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Lead */
-        get: operations["get_lead_leads__lead_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Update Lead */
-        patch: operations["update_lead_leads__lead_id__patch"];
-        trace?: never;
-    };
-    "/leads/{lead_id}/communications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Communication Logs */
-        get: operations["list_communication_logs_leads__lead_id__communications_get"];
-        put?: never;
-        /** Create Communication Log */
-        post: operations["create_communication_log_leads__lead_id__communications_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Projects */
-        get: operations["list_projects_projects_get"];
-        put?: never;
-        /** Create Project */
-        post: operations["create_project_projects_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Project */
-        get: operations["get_project_projects__project_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Patch Project */
-        patch: operations["patch_project_projects__project_id__patch"];
-        trace?: never;
-    };
-    "/projects/{project_id}/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /**
-         * Update Project Status
-         * @description Task 1.13: the Project status state machine, entirely separate from
-         *     `patch_project` above (design decision #3 — Project splits field edits
-         *     and status transitions into two routes/schemas, unlike Lead's combined
-         *     `PATCH /leads/{id}`). Reuses `_get_project_or_404` for the existence/
-         *     tenant check; field_crew can never reach this route at all (`_WRITE_ROLES`
-         *     is admin/project_manager only), so the field_crew-scoping half of that
-         *     helper is inert here — it's reused purely to avoid duplicating the
-         *     existence/tenant-404 check, not because field_crew's assigned-only
-         *     visibility is relevant to this route.
-         *
-         *     The audit log entry below uses `company_id=project.company_id`, not
-         *     `current.company_id` — same rationale as `upload_document`'s/
-         *     `create_daily_log`'s own fix (this router, above): a parent company's
-         *     session can legitimately transition a descendant branch's Project
-         *     without switching `X-Tenant-ID` first (`_get_project_or_404` already
-         *     makes the descendant's Project reachable via RLS's
-         *     `get_all_descendant_ids()` grant). Using `current.company_id` here
-         *     would record the `project.status_changed` audit entry under the
-         *     PARENT's company instead of the Project's own, making it invisible to
-         *     a session later scoped directly to the descendant branch auditing its
-         *     own Project's history.
-         */
-        patch: operations["update_project_status_projects__project_id__status_patch"];
-        trace?: never;
-    };
-    "/projects/{project_id}/documents": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Documents
-         * @description Task 1.15. Not in the API spec's literal route table (only `POST
-         *     /projects/{id}/documents` is listed there) — added for the same reason
-         *     design decision #3 added `PATCH /projects/{id}`: the spec doc "describes
-         *     API contracts conceptually," and without a list route there is no way
-         *     to satisfy US-3.4's "the most recent version is shown by default with
-         *     prior versions accessible" at all.
-         *
-         *     `_LIST_ROLES` (admin, project_manager, accountant, field_crew) reused
-         *     as-is from list_projects above: the RBAC matrix's Project Management row
-         *     gives every one of those four roles some form of read access, and
-         *     `client` is deliberately excluded — the API spec never documents any
-         *     list-shaped route for `client` (design decision #8: client only ever
-         *     gets the single sanitized `GET /projects/{id}` dashboard route), same
-         *     reasoning list_projects's own docstring gives for excluding `client`
-         *     from that route.
-         *
-         *     `_get_project_or_404` handles field_crew's assigned-only scoping here
-         *     exactly as it does for phase/task creation: a field_crew caller whose
-         *     project isn't theirs (no assigned task on it) gets a 404 before this
-         *     function ever queries `documents`, so no separate per-document
-         *     field_crew filter is needed below — visibility is gated at the project
-         *     level, not the document level (documents have no assignee concept of
-         *     their own).
-         */
-        get: operations["list_documents_projects__project_id__documents_get"];
-        put?: never;
-        /**
-         * Upload Document
-         * @description Task 1.15. `require_role("admin", "project_manager")` per the API
-         *     spec table and the RBAC matrix (docs/07-security-compliance.md Section
-         *     2: Project Management is "Full CRUD" for Admin/PM only, matching
-         *     _WRITE_ROLES's existing rationale above).
-         *
-         *     `_get_project_or_404` first, same order every other project-nested
-         *     write route in this router/tasks.py uses (existence/tenant check
-         *     before any semantic validation of the payload) — a cross-tenant
-         *     project_id and an invalid file_name both fail, but the caller learns
-         *     "not found" before "bad filename", never the other way around, so a
-         *     cross-tenant probe can't be used to fish for filename-validation
-         *     feedback.
-         *
-         *     `company_id=project.company_id`, not `current.company_id`: a parent
-         *     company's session can legitimately act on a descendant branch's Project
-         *     without switching `X-Tenant-ID` to that branch first (RLS's
-         *     `get_all_descendant_ids()` grant already makes the descendant's rows
-         *     visible/writable). Using `current.company_id` here would silently stamp
-         *     this Document — and the filesystem path it's written to, both derived
-         *     from the same `company_id` value below — with the PARENT's id instead
-         *     of the Project's own, producing a row whose `company_id` disagrees with
-         *     its own parent Project's `company_id`. A session later scoped directly
-         *     to the descendant branch (rather than the parent) would then find its
-         *     own Project's Document invisible under RLS. Fixed as part of a
-         *     dedicated post-Phase-2 audit of this exact pattern across every
-         *     nested-resource-creation route in this codebase.
-         */
-        post: operations["upload_document_projects__project_id__documents_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/documents/{document_id}/download": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Download Document
-         * @description Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
-         *     Same visibility rules as the document list: _get_project_or_404 covers
-         *     tenant/role/project scope, and the document must belong to the path's
-         *     project (a mismatched pair 404s — same id-pair discipline as every
-         *     nested resource in this codebase). storage_path is always relative to
-         *     settings.storage_root (document_storage.py's invariant), and file_name
-         *     was traversal-validated at upload, so joining them is safe here.
-         */
-        get: operations["download_document_projects__project_id__documents__document_id__download_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/daily-logs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Daily Logs
-         * @description Task 1.16. The plan spec says "same read roles as project detail" —
-         *     read literally that would mean _GET_ROLES (which additionally includes
-         *     `client`). This deliberately uses `_LIST_ROLES` (client-EXCLUDED)
-         *     instead, for the same reason list_documents does immediately above:
-         *     `client`'s only documented read surface anywhere in the RBAC matrix or
-         *     API spec is the single sanitized `GET /projects/{id}` dashboard route
-         *     (design decision #8: "client only ever gets the single sanitized
-         *     dashboard route"), which itself now exposes `phase_count`/`task_count`/
-         *     `completed_task_count` as the client-facing substitute for granular
-         *     per-record detail. A `client` caller hitting a raw, unsanitized,
-         *     paginated list of daily log notes would both contradict design decision
-         *     #8 and go beyond US-3.5's explicit exclusion of "internal task detail"
-         *     from what the client sees. `_LIST_ROLES` = admin, project_manager,
-         *     accountant, field_crew — the matrix's Project Management row gives all
-         *     four some read access (accountant's row says "Read (financial fields
-         *     only)", which for Phase 1 collapses to plain read, same reasoning
-         *     _LIST_ROLES's own comment gives above).
-         *
-         *     `_get_project_or_404` applies field_crew's assigned-only scoping here
-         *     exactly as list_documents does: an unassigned field_crew caller gets a
-         *     404 before any daily_logs query runs.
-         */
-        get: operations["list_daily_logs_projects__project_id__daily_logs_get"];
-        put?: never;
-        /**
-         * Create Daily Log
-         * @description Task 1.16. `require_role("admin", "project_manager", "field_crew")`
-         *     per _DAILY_LOG_WRITE_ROLES above — the RBAC matrix's Project Management
-         *     row is the only place field_crew gets any write verb at all ("create
-         *     Daily Logs"), so this route intentionally does NOT reuse _WRITE_ROLES.
-         *
-         *     `_get_project_or_404` first, same ordering as every other project-nested
-         *     write route in this router (existence/tenant/field-crew-assigned-scope
-         *     check before touching the payload) — this doubles as field_crew's
-         *     project-level scoping: a field_crew caller with no assigned task on
-         *     `project_id` gets a 404 here before a DailyLog row is ever created,
-         *     exactly like upload_document's field_crew scoping. US-3.3 ("submit a
-         *     Daily Log ... for a Project") and every other field_crew scoping
-         *     decision in this plan point the same direction: assigned-project-only,
-         *     not "any project in the tenant."
-         *
-         *     `author_id=current.user.id` always — DailyLogCreateRequest has no
-         *     `author_id` field (see its docstring), so a caller cannot claim to be
-         *     someone else's author by payload manipulation; this line is the only
-         *     place author_id is ever set.
-         *
-         *     No update/delete route exists anywhere in this router for daily_logs,
-         *     and Task 1.10's migration additionally `REVOKE`s UPDATE/DELETE on this
-         *     table from `app_user` at the DB level (design decision #6) — immutable
-         *     once submitted, matching US-3.3's acceptance criterion, the same
-         *     two-layer discipline (no route + DB-level REVOKE) Task 1.7 established
-         *     for communication_logs.
-         *
-         *     `company_id=project.company_id`, not `current.company_id` — see
-         *     `upload_document`'s docstring above for the full rationale (a parent
-         *     company's session acting on a descendant branch's Project, without
-         *     switching `X-Tenant-ID`, must not stamp this child row with the
-         *     parent's own company_id).
-         */
-        post: operations["create_daily_log_projects__project_id__daily_logs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/phases": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Phases
-         * @description Phases ordered by (sequence, id), each with its tasks nested,
-         *     ordered by (created_at, id). _get_project_or_404 covers existence,
-         *     tenant scope, and field_crew's assigned-projects-only visibility, same
-         *     as the create routes above.
-         */
-        get: operations["list_phases_projects__project_id__phases_get"];
-        put?: never;
-        /** Create Phase */
-        post: operations["create_phase_projects__project_id__phases_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create Task */
-        post: operations["create_task_projects__project_id__tasks_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/phases/{phase_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete Phase
-         * @description `admin`/`project_manager` only, same gate as `update_phase` above.
-         *     This Phase's Tasks cascade with it at the DB level — migration
-         *     `0004_project_management_schema.py` declares `tasks.phase_id` with
-         *     `ondelete="CASCADE"`, so no explicit `delete(Task)` call is needed here
-         *     before deleting the Phase itself; Postgres removes the child rows as
-         *     part of the same statement (same pattern `delete_estimate`'s own
-         *     docstring establishes for `estimate_line_items`, `app/routers/estimates.py`).
-         */
-        delete: operations["delete_phase_projects__project_id__phases__phase_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * Update Phase
-         * @description Rename/reorder a Phase — `admin`/`project_manager` only, matching
-         *     `create_phase`'s own role gate (field_crew can never reach this route).
-         *     `_get_project_or_404` first, same "existence/tenant before touching the
-         *     nested resource" ordering every other project-nested route in this
-         *     file/router uses.
-         */
-        patch: operations["update_phase_projects__project_id__phases__phase_id__patch"];
-        trace?: never;
-    };
-    "/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List My Tasks
-         * @description Cross-project list of the CURRENT USER's assigned tasks. `assignee`
-         *     accepts only the literal "me" — there is no legitimate frontend need to
-         *     list another user's assignments today (422 otherwise, YAGNI). Ordered
-         *     by due date (nulls last) then creation, capped at 200.
-         */
-        get: operations["list_my_tasks_tasks_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/tasks/{task_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete Task
-         * @description `admin`/`project_manager` only — narrower than `patch_task`'s
-         *     admin/PM/field_crew set. field_crew's only grant on this row
-         *     (docs/07-security-compliance.md Section 2's RBAC matrix) is updating
-         *     `status` on a task assigned to them; deleting isn't part of that
-         *     grant, so `_WRITE_ROLES` (not `patch_task`'s three-role tuple) gates
-         *     this route. Reuses `_get_task_or_404` purely for the existence/tenant
-         *     404 — its field_crew-scoping branch is inert here, same "helper reused
-         *     for a role that can never reach this route" pattern `create_phase`'s
-         *     own docstring notes for `_get_project_or_404`.
-         */
-        delete: operations["delete_task_tasks__task_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * Patch Task
-         * @description The genuinely new RBAC shape Task 1.14 calls out: role AND ownership
-         *     AND a field-level restriction, combined, not just a role gate.
-         *
-         *     - admin/project_manager: unrestricted — can set any field this schema
-         *       exposes (name, due_date, status, assignee_id) on any task in their
-         *       tenant.
-         *     - field_crew: can set `status` ONLY, and ONLY on a task assigned to
-         *       them (`assignee_id == current.user.id`).
-         *
-         *     Ownership is enforced by _get_task_or_404 (404 if the task isn't
-         *     theirs — they can't see it at all, so it doesn't "exist" from their
-         *     point of view, matching projects.py's _get_project_or_404 precedent).
-         *
-         *     The field-level restriction below is enforced with an explicit 403,
-         *     not a silent drop of disallowed fields. Alternative considered: quietly
-         *     ignore any field in the payload a field_crew caller isn't allowed to
-         *     touch (the same shape ProjectPatchRequest uses for `status`, which
-         *     doesn't exist on that schema at all, so extra fields are dropped by
-         *     Pydantic itself before the router ever sees them). Rejected here
-         *     because TaskUpdateRequest's `assignee_id` field is real and admin/PM
-         *     ARE allowed to set it — the restriction is role-conditional, not
-         *     schema-level, so silently ignoring it would mean a field_crew caller
-         *     who explicitly tried to reassign a task gets a 200 that looks
-         *     successful but did something other than what they asked. An explicit
-         *     403 makes the privilege boundary visible instead of silently
-         *     swallowing the attempt (same "professional honesty"/fail-loud
-         *     instinct behind this codebase's other explicit-rejection choices,
-         *     e.g. the illegal-status-transition 409s in leads.py/projects.py rather
-         *     than silently no-op'ing an illegal transition).
-         */
-        patch: operations["patch_task_tasks__task_id__patch"];
         trace?: never;
     };
     "/catalogs/items": {
@@ -843,6 +325,93 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/catalogs/items/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bulk Create Catalog Items
+         * @description CSV-import batch create. Each row is inserted independently — one
+         *     bad row (already caught at the Pydantic layer for most malformed
+         *     input, since `items` is `list[CostCatalogItemCreateRequest]`) does not
+         *     abort the rest. `Field(..., max_length=500)` on the request schema
+         *     already rejects an oversized batch with a 422 before this handler body
+         *     runs at all, so no additional length check is needed here.
+         *
+         *     Every successfully created row is flushed individually (not batched
+         *     into one flush at the end) so a later row's insert failure — e.g. a
+         *     DB-level constraint this schema doesn't already catch — doesn't roll
+         *     back an earlier row's success within the same request; each row is its
+         *     own outcome, matching the per-row report this route promises.
+         *
+         *     Deviation from the plan doc's own Task 7 Step 4 sample code: the plan
+         *     wrote a plain `await current.session.rollback()` inside the per-row
+         *     `except` block. That does NOT do what its own docstring claims —
+         *     `rollback()` on an `AsyncSession` rolls back the session's entire
+         *     ambient transaction, not just the failing row's own pending work.
+         *     Because `get_current_user` (Inherited Invariant #4) commits
+         *     `current.session` only ONCE, after this handler returns, every row's
+         *     `flush()` up to that point shares that same not-yet-committed
+         *     transaction; calling `session.rollback()` after row N's failure was
+         *     verified (via `test_bulk_import_partial_failure_reports_per_row`) to
+         *     silently discard every EARLIER row's already-"created" insert too — the
+         *     exact bug the docstring's "doesn't roll back an earlier row's success"
+         *     claim was supposed to prevent, not cause. Each row's insert is wrapped
+         *     in its own SAVEPOINT via `session.begin_nested()` instead: on success
+         *     the nested transaction releases (folding the row into the outer,
+         *     still-uncommitted transaction); on failure only that SAVEPOINT rolls
+         *     back, leaving every earlier row's flushed insert untouched for the
+         *     final commit.
+         */
+        post: operations["bulk_create_catalog_items_catalogs_items_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalogs/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Catalog Item
+         * @description 409 if any EstimateLineItem references this item, or any other
+         *     CostCatalogItem overrides it (parent_catalog_item_id points here) —
+         *     both are real, in-use references the model's own ondelete behavior
+         *     (SET NULL for overrides; no FK at all constrains line items, since
+         *     unit_rate_snapshot already copied the rate) would otherwise let this
+         *     delete silently proceed through, orphaning history a caller almost
+         *     certainly didn't intend to lose. Checked before the DELETE is issued —
+         *     one transaction, one outcome, same discipline every other guarded
+         *     mutation in this codebase uses.
+         */
+        delete: operations["delete_catalog_item_catalogs_items__item_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Catalog Item
+         * @description Edits category/name/unit/unit_rate on an existing item. Does not
+         *     touch `EstimateLineItem.unit_rate_snapshot` on any estimate that already
+         *     referenced this item at some past rate — snapshots are immutable by
+         *     design (see `replace_estimate_line_items`'s own docstring in
+         *     estimates.py); only future line-item adds/recalculates see the new
+         *     rate.
+         */
+        patch: operations["update_catalog_item_catalogs_items__item_id__patch"];
         trace?: never;
     };
     "/catalogs/items/{parent_catalog_item_id}/override": {
@@ -908,632 +477,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/catalogs/items/{item_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete Catalog Item
-         * @description 409 if any EstimateLineItem references this item, or any other
-         *     CostCatalogItem overrides it (parent_catalog_item_id points here) —
-         *     both are real, in-use references the model's own ondelete behavior
-         *     (SET NULL for overrides; no FK at all constrains line items, since
-         *     unit_rate_snapshot already copied the rate) would otherwise let this
-         *     delete silently proceed through, orphaning history a caller almost
-         *     certainly didn't intend to lose. Checked before the DELETE is issued —
-         *     one transaction, one outcome, same discipline every other guarded
-         *     mutation in this codebase uses.
-         */
-        delete: operations["delete_catalog_item_catalogs_items__item_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * Update Catalog Item
-         * @description Edits category/name/unit/unit_rate on an existing item. Does not
-         *     touch `EstimateLineItem.unit_rate_snapshot` on any estimate that already
-         *     referenced this item at some past rate — snapshots are immutable by
-         *     design (see `replace_estimate_line_items`'s own docstring in
-         *     estimates.py); only future line-item adds/recalculates see the new
-         *     rate.
-         */
-        patch: operations["update_catalog_item_catalogs_items__item_id__patch"];
-        trace?: never;
-    };
-    "/catalogs/items/bulk": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Bulk Create Catalog Items
-         * @description CSV-import batch create. Each row is inserted independently — one
-         *     bad row (already caught at the Pydantic layer for most malformed
-         *     input, since `items` is `list[CostCatalogItemCreateRequest]`) does not
-         *     abort the rest. `Field(..., max_length=500)` on the request schema
-         *     already rejects an oversized batch with a 422 before this handler body
-         *     runs at all, so no additional length check is needed here.
-         *
-         *     Every successfully created row is flushed individually (not batched
-         *     into one flush at the end) so a later row's insert failure — e.g. a
-         *     DB-level constraint this schema doesn't already catch — doesn't roll
-         *     back an earlier row's success within the same request; each row is its
-         *     own outcome, matching the per-row report this route promises.
-         *
-         *     Deviation from the plan doc's own Task 7 Step 4 sample code: the plan
-         *     wrote a plain `await current.session.rollback()` inside the per-row
-         *     `except` block. That does NOT do what its own docstring claims —
-         *     `rollback()` on an `AsyncSession` rolls back the session's entire
-         *     ambient transaction, not just the failing row's own pending work.
-         *     Because `get_current_user` (Inherited Invariant #4) commits
-         *     `current.session` only ONCE, after this handler returns, every row's
-         *     `flush()` up to that point shares that same not-yet-committed
-         *     transaction; calling `session.rollback()` after row N's failure was
-         *     verified (via `test_bulk_import_partial_failure_reports_per_row`) to
-         *     silently discard every EARLIER row's already-"created" insert too — the
-         *     exact bug the docstring's "doesn't roll back an earlier row's success"
-         *     claim was supposed to prevent, not cause. Each row's insert is wrapped
-         *     in its own SAVEPOINT via `session.begin_nested()` instead: on success
-         *     the nested transaction releases (folding the row into the outer,
-         *     still-uncommitted transaction); on failure only that SAVEPOINT rolls
-         *     back, leaving every earlier row's flushed insert untouched for the
-         *     final commit.
-         */
-        post: operations["bulk_create_catalog_items_catalogs_items_bulk_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/markup-profiles": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Markup Profiles
-         * @description Plain company-scoped list — no inheritance concept, unlike
-         *     `list_catalog_items` above (design decision #1's closing note). No
-         *     explicit `company_id` filter needed: `markup_profiles`' ordinary
-         *     (non-bidirectional) `tenant_isolation` RLS policy already scopes every
-         *     row this query can see to the caller's active tenant, same pattern
-         *     `list_projects`/`list_leads` rely on.
-         */
-        get: operations["list_markup_profiles_markup_profiles_get"];
-        put?: never;
-        /**
-         * Create Markup Profile
-         * @description Plain company-scoped create, no inheritance concept at all — design
-         *     decision #1's closing note and `MarkupProfile`'s own model docstring:
-         *     `markup_profiles` has no `parent_profile_id` column, unlike
-         *     `cost_catalog_items`.
-         */
-        post: operations["create_markup_profile_markup_profiles_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/markup-profiles/{profile_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * Delete Markup Profile
-         * @description 409 if any Estimate references this profile — same "real, in-use
-         *     reference blocks the delete" reasoning as delete_catalog_item above.
-         */
-        delete: operations["delete_markup_profile_markup_profiles__profile_id__delete"];
-        options?: never;
-        head?: never;
-        /** Update Markup Profile */
-        patch: operations["update_markup_profile_markup_profiles__profile_id__patch"];
-        trace?: never;
-    };
-    "/estimates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Estimates */
-        get: operations["list_estimates_estimates_get"];
-        put?: never;
-        /**
-         * Create Estimate
-         * @description US-4.1: an Estimate is built "against a Lead or Project" — exactly
-         *     one of `project_id`/`lead_id`, never neither, never both. Each
-         *     referenced id must additionally resolve to something real and visible
-         *     (Inherited Invariant #8's "doesn't exist or isn't visible to you" 404,
-         *     same pattern `create_catalog_item_override`'s `parent_catalog_item_id`
-         *     check uses), and a referenced Lead must additionally be far enough
-         *     along the pipeline to carry an Estimate at all
-         *     (`_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE` above).
-         *
-         *     `markup_profile_id` IS validated against a real, visible MarkupProfile
-         *     here (added during Task 2.12's review, closing a gap Task 2.10 had
-         *     deliberately left open): the FK constraint alone only checks row
-         *     EXISTENCE, not RLS visibility, so a well-formed cross-tenant
-         *     `markup_profile_id` was previously accepted here with 201 and only
-         *     surfaced as an unhandled `NoResultFound` 500 the first time
-         *     `POST /estimates/{id}/calculate` (Task 2.12) tried to look the profile
-         *     up — a real, ordinary-API-reachable crash, not a theoretical edge case.
-         *     Closing it at creation time, the same "doesn't exist or isn't visible
-         *     to you" 404 every other referenced-id check in this route already
-         *     uses, is more correct than only catching the symptom later in
-         *     `calculate_estimate`.
-         */
-        post: operations["create_estimate_estimates_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Estimate
-         * @description Returns the Estimate header fields plus its current line items in one
-         *     call (`EstimateDetailResponse`, `app/schemas/estimate.py`) — the
-         *     frontend needs both to render a usable Estimate-editing UI. No
-         *     `client`-specific `status='sent'` scoping here (unlike `list_estimates`
-         *     above) — see `_get_estimate_or_404`'s docstring for why.
-         */
-        get: operations["get_estimate_estimates__estimate_id__get"];
-        put?: never;
-        post?: never;
-        /**
-         * Delete Estimate
-         * @description Draft-only, same guard as update_estimate above. Line items cascade
-         *     with the parent row at the DB level — migration `0007_estimates_schema.py`
-         *     declares `estimate_line_items.estimate_id` with `ondelete="CASCADE"`
-         *     (verified directly in that migration file), so no explicit
-         *     `delete(EstimateLineItem)` call is needed here before deleting the
-         *     estimate itself; Postgres removes the child rows as part of the same
-         *     statement.
-         */
-        delete: operations["delete_estimate_estimates__estimate_id__delete"];
-        options?: never;
-        head?: never;
-        /**
-         * Update Estimate
-         * @description Draft-only (spec Decision 1, item 5) — 409 once sent/approved/rejected,
-         *     same "existence/tenant before semantic validation" ordering every other
-         *     guarded mutation in this router uses. Only `markup_profile_id` is
-         *     accepted; changing it does NOT retroactively touch already-computed
-         *     `subtotal`/`total` or any line item's `unit_rate_snapshot` — a caller
-         *     must re-run `POST /calculate` to see the new markup applied, same
-         *     "recalculation is a deliberate, explicit step" precedent
-         *     `calculate_estimate_totals`'s own docstring establishes.
-         */
-        patch: operations["update_estimate_estimates__estimate_id__patch"];
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/lines": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * Replace Estimate Line Items
-         * @description Task 2.11: US-4.3's "As a Project Manager, I can add/edit line items
-         *     with quantities" — a full batch replace (API spec's own wording), not a
-         *     partial patch/append: every existing `EstimateLineItem` row for this
-         *     Estimate is deleted and the request body's `items` are inserted fresh,
-         *     in the same request. There is no natural key to diff old vs. new line
-         *     items against beyond `cost_catalog_item_id` (and the API spec doesn't
-         *     forbid duplicate `cost_catalog_item_id` entries in one request), so
-         *     delete-then-insert is the simplest reading of "full replace" that avoids
-         *     inventing an unrequested dedup/merge rule.
-         *
-         *     **Validate everything before mutating anything**, same "one transaction,
-         *     one outcome" discipline `update_lead`'s status-transition check
-         *     established in `app/routers/leads.py`: this handler never calls
-         *     `session.commit()` itself (Inherited Invariant #4 — `get_current_user`
-         *     commits once after the handler returns), so as long as nothing below
-         *     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
-         *     guarantees the eventual commit never happens at all and the estimate's
-         *     line items are left completely untouched. Three independent checks,
-         *     all performed before any DELETE/INSERT is issued:
-         *       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
-         *          snapshotted Estimate's line items are immutable).
-         *       2. `estimate.status == "sent"` -> 409: an estimate awaiting the
-         *          client's signature must not be editable out from under them
-         *          between send-for-signature and their approve/reject (closes a
-         *          gap this guard previously missed — `is_snapshotted` alone only
-         *          starts being `True` at approval, not at send). `"rejected"`
-         *          deliberately stays editable, per reject_estimate's own docstring.
-         *       3. Every input line's `cost_catalog_item_id` must resolve via
-         *          `resolve_visible_catalog_items` -> 422 on the FIRST one that
-         *          doesn't. Resolved (not raw-table-queried) so the rate captured
-         *          below respects inheritance/override resolution — a PM building an
-         *          estimate against an item their branch has overridden must get the
-         *          override's rate, not the ancestor's original, same reasoning
-         *          `create_catalog_item_override` (`app/routers/catalogs.py`) already
-         *          applies to its own `parent_catalog_item_id` visibility check.
-         *          `resolve_visible_catalog_items` is called ONCE for the whole
-         *          request (not once per input line) and the result turned into an
-         *          id-keyed dict for lookup, same shape `create_catalog_item_override`
-         *          uses for its own single-call/membership-check pattern.
-         *
-         *     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
-         *     this moment, never a live reference (schema doc Section 9's historical-
-         *     immutability rule, `EstimateLineItem.unit_rate_snapshot`'s own docstring
-         *     in `app/models/estimate_line_item.py`) — a later edit to the catalog
-         *     item must not retroactively change what this Estimate shows. `line_total
-         *     = quantity * unit_rate_snapshot` is plain `Decimal` arithmetic (both
-         *     operands are already `Decimal` — `EstimateLineItemInput.quantity` and
-         *     `CostCatalogItem.unit_rate` are both `Numeric` columns / `Decimal`
-         *     schema fields, never `float`), matching Inherited Invariant #9.
-         *
-         *     Does NOT recompute `estimate.subtotal`/`total` — that is `POST
-         *     /estimates/{id}/calculate`'s job (Task 2.12), a deliberately separate,
-         *     explicit step per US-4.3's own "I can trigger a recalculation" framing.
-         *
-         *     `EstimateLineItem.company_id` is set to `current.company_id` on every
-         *     new row, matching `create_estimate`'s own convention of always sourcing
-         *     `company_id` from the current user rather than the parent row (the two
-         *     are guaranteed equal here, since `_get_estimate_or_404` already
-         *     RLS-scoped `estimate` to the caller's own tenant, but `current.company_id`
-         *     is used for consistency with every other create path in this codebase).
-         *
-         *     Returns `EstimateDetailResponse` (Task 2.10's `GET /estimates/{id}`
-         *     shape) rather than a bespoke response — the frontend needs to see the
-         *     resulting line items immediately after a replace, and this schema
-         *     already exists precisely for "header + current line items in one
-         *     response."
-         */
-        put: operations["replace_estimate_line_items_estimates__estimate_id__lines_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/calculate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Calculate Estimate Totals
-         * @description Task 2.12: US-4.3's "I can trigger a recalculation" — runs
-         *     `app/services/estimate_calculation.py`'s fixed-order calculation engine
-         *     (docs/03-technical-architecture.md Section 6) against this Estimate's
-         *     CURRENT line items and MarkupProfile, then persists the result as the
-         *     authoritative `estimate.subtotal`/`estimate.total`. "Client-submitted
-         *     totals are always ignored in favor of a server-side recompute" (Section
-         *     6's own closing line) — this route takes no request body at all; there
-         *     is nothing for a client to submit here, the recompute is unconditional
-         *     and always server-derived.
-         *
-         *     **409 if `estimate.is_snapshotted`** — identical guard, identical
-         *     rationale, to `replace_estimate_line_items` above (design decision #4):
-         *     an approved/snapshotted Estimate's totals are as immutable as its line
-         *     items, and recomputing them would silently contradict the very
-         *     snapshot that was taken.
-         *
-         *     **409 if `estimate.status == "sent"`** — same additional guard as
-         *     `replace_estimate_line_items` above, same rationale: a total
-         *     recalculated while an estimate is awaiting the client's signature would
-         *     let them e-sign a total they never actually reviewed. `"rejected"`
-         *     deliberately stays recalculable, per reject_estimate's own docstring.
-         *
-         *     Both checks are raised BEFORE `calculate_estimate` is ever called — a
-         *     409 here guarantees `estimate.subtotal`/`total` are left completely
-         *     untouched, same "one transaction, one outcome" discipline as Task
-         *     2.11's own guard.
-         *
-         *     Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
-         *     same header + line_items shape `GET /estimates/{id}` returns, plus this
-         *     route's own `category_breakdown` (resolved judgment call #5): the
-         *     caller gets to see the just-recomputed totals, the line items they were
-         *     computed from, and the category-level view in one response, without a
-         *     follow-up `GET`.
-         */
-        post: operations["calculate_estimate_totals_estimates__estimate_id__calculate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Export Estimate Pdf
-         * @description Task 2.15: enqueues async PDF generation
-         *     (`app/tasks/estimate_pdf.py`'s `generate_estimate_pdf` Dramatiq actor)
-         *     and returns immediately (202) with the Estimate's now-`pending` header —
-         *     `EstimateResponse` (resolved judgment call #6), not
-         *     `EstimateDetailResponse`/`EstimateCalculationResponse`, since this route
-         *     doesn't touch line items, matching `create_estimate`'s own "minimal
-         *     sufficient schema per route" precedent (Task 2.10).
-         *
-         *     No `total IS NULL` guard (resolved judgment call #7) and no
-         *     `is_snapshotted` guard (resolved judgment call #8): neither is asked for
-         *     by this task's own spec, and both are real, reachable, already-supported
-         *     states this route has no reason to reject — an un-calculated Estimate
-         *     renders "Not yet calculated" placeholders (Task 2.13's
-         *     `render_estimate_html`), and a snapshotted/approved Estimate is exactly
-         *     the state where a client-facing PDF is most likely to actually be
-         *     needed (a signed, final proposal document). The `is_snapshotted` guard
-         *     that DOES exist on `replace_estimate_line_items`/
-         *     `calculate_estimate_totals` above exists specifically because those
-         *     routes MUTATE line items/totals, which this one does not.
-         *
-         *     `estimate.pdf_status` is set to `'pending'` via the normal
-         *     request-scoped session (Inherited Invariant #4 — no explicit commit
-         *     here; `get_current_user` commits `current.session` once, after this
-         *     handler returns) before the job is enqueued. `current.user.id` (the
-         *     admin/PM making this call) is captured now and passed through the
-         *     Dramatiq message payload as `requesting_user_id` — the actor needs a
-         *     real, non-optional user id to call `set_current_user` inside its own,
-         *     separately-managed session (Inherited Invariant #3's worker exception;
-         *     see `app/tasks/estimate_pdf.py`'s module docstring for the full
-         *     rationale, including why this is NOT used to write an audit_log entry).
-         */
-        post: operations["export_estimate_pdf_estimates__estimate_id__export_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/pdf": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Download Estimate Pdf
-         * @description Streams the exported PDF from `pdf_storage_path`. Same read roles as
-         *     `get_estimate` (admin/PM/accountant/client) — a client needs this to
-         *     actually see what they're about to sign, same reasoning `_READ_ROLES`
-         *     already documents at the top of this module.
-         *
-         *     409, not 404, when `pdf_status != "ready"`: the Estimate itself exists
-         *     and is visible, it just has no artifact to serve yet (or export failed) —
-         *     a real, reachable state, not "doesn't exist."
-         */
-        get: operations["download_estimate_pdf_estimates__estimate_id__pdf_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/send-for-signature": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Send Estimate For Signature
-         * @description Task 2.19: US-4.5's send-for-signature step — marks an Estimate as
-         *     awaiting the client's approve/reject action. No e-signature is captured
-         *     here at all; this route only flips `status` to `'sent'` so the estimate
-         *     becomes visible to `client`-role callers (`list_estimates`'s own
-         *     `status='sent'` scoping) and eligible for the `approve`/`reject` routes
-         *     below, both of which require `status='sent'` as their own precondition.
-         *
-         *     **409 if `estimate.total IS NULL`**: `total`
-         *     only becomes non-NULL after at least one successful
-         *     `POST /estimates/{id}/calculate` run — sending an un-calculated estimate
-         *     for the client's signature makes no sense, there is nothing meaningful
-         *     for them to review yet. Checked AFTER `_get_estimate_or_404` (existence/
-         *     tenant before semantic validation, the same ordering
-         *     `calculate_estimate_totals`'s own `is_snapshotted` check uses above).
-         */
-        post: operations["send_estimate_for_signature_estimates__estimate_id__send_for_signature_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/approve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Approve Estimate
-         * @description Task 2.19: US-4.5's "As a Client, I can review an emailed Estimate
-         *     and approve it with an e-signature." `require_role("client")` only
-         *     (design decision #3's authenticated-in-app-client model) — Admin/PM/
-         *     Accountant never approve their own estimate on a client's behalf.
-         *
-         *     Only legal from `status='sent'` (`_require_estimate_sent`, 409
-         *     otherwise) — checked immediately after `_get_estimate_or_404`, before
-         *     the uploaded file is even read, so an illegal-state call never touches
-         *     the filesystem.
-         *
-         *     `multipart/form-data`, matching `upload_document`'s exact precedent
-         *     (`app/routers/projects.py`) — `signer_name`/`signer_email` as `Form(...)`
-         *     fields, `signature_artifact` as `File(...)`, read via `.read()` into raw
-         *     bytes. No content-type/extension validation on the uploaded file:
-         *     `write_esignature_artifact_file` already hardcodes a `.png` extension
-         *     regardless of what was actually uploaded (Task 2.18), so there is
-         *     nothing meaningful to validate here.
-         *
-         *     Side effects, in order: capture the e-signature (`capture_esignature`,
-         *     Task 2.18, `document_type="estimate"` — a valid member of
-         *     `VALID_DOCUMENT_TYPES`, `app/models/esignature.py`), link it onto this
-         *     Estimate, flip `status='approved'` and **`is_snapshotted=True`** (design
-         *     decision #4 — from this instant forward, `PUT /estimates/{id}/lines` and
-         *     `POST /estimates/{id}/calculate` both 409 on this estimate permanently),
-         *     write an `estimate.approved` audit log entry, then publish
-         *     `ESTIMATE_APPROVED`.
-         *
-         *     `ip_address`: `request.client.host` if `request.client` is not `None`,
-         *     else the literal string `"unknown"` — defensive against the rare ASGI
-         *     scope where `request.client` is `None`; `capture_esignature`'s
-         *     `ip_address` parameter is a non-optional `str` matching
-         *     `Esignature.ip_address`'s non-nullable column, so some value must
-         *     always be passed.
-         *
-         *     `ESTIMATE_APPROVED`'s payload includes `project_id`, which **may be
-         *     `None`** — an Estimate created against a bare Lead (no Project yet) has
-         *     no `project_id` at all (`Estimate.project_id`'s own nullable column).
-         *     This is intentional and expected, not an oversight:
-         *     `app.services.estimate_approved_handler.handle_estimate_approved`
-         *     (Task 3.39, registered via `app.core.event_handlers
-         *     .register_event_handlers()`) no-ops silently on a `None` project_id
-         *     rather than requiring one; this task deliberately does not add a NOT
-         *     NULL constraint or an artificial Project requirement just to make this
-         *     field always populated.
-         */
-        post: operations["approve_estimate_estimates__estimate_id__approve_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/estimates/{estimate_id}/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Reject Estimate
-         * @description Task 2.19: US-4.5's "or reject it with a reason." Same `client`-only
-         *     role gate and `status='sent'` precondition (`_require_estimate_sent`,
-         *     409 otherwise) as `approve` above — both routes share the exact same
-         *     check via that one helper.
-         *
-         *     No e-signature is captured and `is_snapshotted` stays `False`: a
-         *     rejection isn't a signed document, so there is nothing to snapshot and
-         *     nothing decoupling this Estimate's line items/totals from live catalog
-         *     data. `PUT /estimates/{id}/lines` and `POST /estimates/{id}/calculate`
-         *     both remain legal on a rejected estimate — this route only records the
-         *     rejection (`status='rejected'` plus an `estimate.rejected` audit log
-         *     entry carrying `{reason}`), it does not otherwise lock the estimate.
-         *
-         *     `EstimateRejectRequest` (`app/schemas/estimate.py`) is a plain JSON
-         *     body, not `multipart/form-data` — unlike `approve`, there is no binary
-         *     signature artifact to submit here.
-         */
-        post: operations["reject_estimate_estimates__estimate_id__reject_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/esignatures/{esignature_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Esignature
-         * @description Resolved judgment call #2: `client` gets BLANKET company-scoped read
-         *     access here (RLS-backed), NOT a per-row filter scoped to "signatures
-         *     this specific client signed." `Esignature` has no signer-to-user
-         *     linkage column at all — only `signer_name`/`signer_email` (captured,
-         *     free-text strings at signing time, not necessarily matching the exact
-         *     case/format of a `users` row) — so there is no schema-level way to
-         *     filter "this client's own" signatures from "any signature in this
-         *     tenant." This mirrors design decision #3's identical resolution for
-         *     `estimates`: `GET /estimates/{id}` (`app/routers/estimates.py`,
-         *     `_get_estimate_or_404`) applies no signer-linkage filter for `client`
-         *     either — blanket, tenant-scoped access, not a per-row restriction, is
-         *     this codebase's established answer to this exact ambiguity wherever it
-         *     has come up before.
-         */
-        get: operations["get_esignature_esignatures__esignature_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/change-orders/{change_order_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Change Order
-         * @description No client status scoping here (unlike list_change_orders/
-         *     list_all_change_orders below) — same "direct-by-id access isn't scoped,
-         *     only list-and-act-on-it flows are" precedent `_get_estimate_or_404`'s
-         *     docstring establishes for Estimates.
-         */
-        get: operations["get_change_order_change_orders__change_order_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/change-orders": {
         parameters: {
             query?: never;
@@ -1569,7 +512,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{project_id}/change-orders": {
+    "/change-orders/{change_order_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1577,117 +520,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Change Orders
-         * @description Task 2.21. Not in the API spec's literal route table (only `POST
-         *     /projects/{id}/change-orders` is listed there) — added for the same
-         *     "spec is conceptual" reasoning applied repeatedly through this and the
-         *     Phase 1 plan (e.g. `list_documents`'/`list_daily_logs`' own docstrings,
-         *     app/routers/projects.py): without a list route, a PM has no way to see
-         *     a project's Change Order history at all.
-         *
-         *     `_get_project_or_404` first, then `paginate()` scoped to this project —
-         *     copies `list_documents`'s exact structure (imports, `Query` params,
-         *     the `paginate()` call itself with `created_at_col`/`id_col`).
-         *
-         *     Uses `_READ_ROLES` (admin, project_manager, accountant, client — see
-         *     that constant's own comment for `client`'s Task 2.22 addition and
-         *     scoping), not `_get_project_or_404`'s field_crew-scoping machinery:
-         *     field_crew has no read access to Change Orders at all per the RBAC
-         *     matrix's Project Management row (field_crew's only granted verb there is
-         *     "create Daily Logs"), so it's simply absent from `_READ_ROLES` and
-         *     blocked with a 403 at the `require_role` dependency layer before this
-         *     handler body ever runs.
-         *
-         *     `client`'s own scoping (Task 2.22, mirroring `list_estimates`'s
-         *     `status="sent"` scoping exactly): a client only ever sees `pending`
-         *     Change Orders on this project — the ones actually awaiting their
-         *     approve/reject action — never already-decided `approved`/`rejected`
-         *     ones.
+         * Get Change Order
+         * @description No client status scoping here (unlike list_change_orders/
+         *     list_all_change_orders below) — same "direct-by-id access isn't scoped,
+         *     only list-and-act-on-it flows are" precedent `_get_estimate_or_404`'s
+         *     docstring establishes for Estimates.
          */
-        get: operations["list_change_orders_projects__project_id__change_orders_get"];
+        get: operations["get_change_order_change_orders__change_order_id__get"];
         put?: never;
-        /**
-         * Create Change Order
-         * @description Task 2.21. `_get_project_or_404` first, same ordering as every other
-         *     project-nested write route in this codebase (existence/tenant check
-         *     before any semantic validation of the payload) — a cross-tenant
-         *     project_id and a not-`active` project both fail, but the caller learns
-         *     "not found" before "wrong status", never the other way around, same
-         *     precedent `upload_document`'s docstring gives for its own ordering
-         *     (app/routers/projects.py).
-         *
-         *     Only legal against an `active` Project — US-3.6: "create a Change Order
-         *     against an ACTIVE Project" (not draft/pre_construction/suspended/
-         *     completed/archived). Rejected with 409, not 422: this isn't a malformed
-         *     request body, it's a real row (the Project) that exists and is visible
-         *     to the caller but is in the wrong state for this operation — the same
-         *     category of conflict `update_project_status`'s illegal-transition check
-         *     uses 409 for.
-         *
-         *     `company_id=project.company_id`, not `current.company_id`: a parent
-         *     company's session can legitimately act on a descendant branch's Project
-         *     without switching `X-Tenant-ID` to that branch first (RLS's
-         *     `get_all_descendant_ids()` grant already makes the descendant's rows
-         *     visible/writable). Using `current.company_id` here would silently stamp
-         *     this ChangeOrder with the PARENT's id instead of the Project's own,
-         *     producing a row whose `company_id` disagrees with its own parent
-         *     Project's `company_id` — a session later scoped directly to the
-         *     descendant branch would then find its own Project's ChangeOrder
-         *     invisible under RLS. `upload_document`/`create_daily_log`
-         *     (app/routers/projects.py) had the identical bug and are fixed
-         *     alongside this route, in a dedicated post-Phase-2 audit of this exact
-         *     pattern across every nested-resource-creation route in this codebase —
-         *     this docstring previously (incorrectly) cited those two routes'
-         *     `current.company_id` usage as an established precedent to follow; that
-         *     was itself the bug, not a precedent worth matching.
-         *
-         *     `status="pending"` always — `ChangeOrderCreateRequest` has no `status`
-         *     field (see its own docstring), so a caller cannot set it via payload.
-         *
-         *     No audit_log entry: docs/07-security-compliance.md Section 5's
-         *     audit-worthy-action list is "Change Order approval," not creation.
-         *     (Note: `create_estimate` does write an `estimate.created` audit entry —
-         *     so this is NOT a "creation is never audited" codebase-wide rule, just
-         *     what Section 5's own enumerated list actually asks for here.) Task
-         *     2.22's approve route is where an audit entry belongs for Change
-         *     Orders, exactly like `Estimate.approved`.
-         */
-        post: operations["create_change_order_projects__project_id__change_orders_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/change-orders/{change_order_id}/send-for-signature": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Send Change Order For Signature
-         * @description Task 2.22. Unlike `send_estimate_for_signature`
-         *     (`app/routers/estimates.py`, Task 2.19), this route does NOT transition
-         *     `status` at all — `ChangeOrder.VALID_STATUSES` has only three values
-         *     (`"pending"`, `"approved"`, `"rejected"`), with no `"sent"`-equivalent
-         *     for a ChangeOrder to move into. This route's entire job is therefore a
-         *     pure validation gate: confirm the ChangeOrder exists/is visible, confirm
-         *     it's still `"pending"` (409 otherwise, via `_require_change_order_pending`,
-         *     mirroring Estimate's own guard for the same category of check), and
-         *     return its current, UNCHANGED state. This is deliberate, not an
-         *     oversight — a direct consequence of ChangeOrder's smaller status enum
-         *     compared to Estimate's — and is why there is no `session.flush()` and no
-         *     `change_order.sent`-style audit_log entry here: nothing is ever mutated
-         *     by this route, so there is nothing to persist and nothing to audit. The
-         *     plan's own audit-entry list for this task only names
-         *     `change_order.approved`/`change_order.rejected`, never a `.sent`
-         *     variant.
-         */
-        post: operations["send_change_order_for_signature_change_orders__change_order_id__send_for_signature_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1795,49 +636,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/subcontractors": {
+    "/change-orders/{change_order_id}/send-for-signature": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Subcontractors
-         * @description Plain company-scoped list, no status/role-based row-scoping —
-         *     unlike Estimates' `client` status-scoping, there is no `client`-role
-         *     access to this resource at all (`client` is absent from `_READ_ROLES`).
-         *     No explicit `company_id` filter needed: the tenant_isolation RLS policy
-         *     already scopes every row this query can see to the caller's active
-         *     tenant, same pattern `list_estimates`/`list_projects`/`list_leads` rely
-         *     on.
-         */
-        get: operations["list_subcontractors_subcontractors_get"];
+        get?: never;
         put?: never;
         /**
-         * Create Subcontractor
-         * @description `company_id=current.company_id` directly — a standalone top-level
-         *     resource with no parent entity's own `company_id` to defer to, matching
-         *     `create_project`'s/`create_lead`'s own precedent (not the nested-resource
-         *     pattern used for tables that derive `company_id` from a parent entity,
-         *     e.g. `EstimateLineItem.company_id` in `replace_estimate_line_items`).
+         * Send Change Order For Signature
+         * @description Task 2.22. Unlike `send_estimate_for_signature`
+         *     (`app/routers/estimates.py`, Task 2.19), this route does NOT transition
+         *     `status` at all — `ChangeOrder.VALID_STATUSES` has only three values
+         *     (`"pending"`, `"approved"`, `"rejected"`), with no `"sent"`-equivalent
+         *     for a ChangeOrder to move into. This route's entire job is therefore a
+         *     pure validation gate: confirm the ChangeOrder exists/is visible, confirm
+         *     it's still `"pending"` (409 otherwise, via `_require_change_order_pending`,
+         *     mirroring Estimate's own guard for the same category of check), and
+         *     return its current, UNCHANGED state. This is deliberate, not an
+         *     oversight — a direct consequence of ChangeOrder's smaller status enum
+         *     compared to Estimate's — and is why there is no `session.flush()` and no
+         *     `change_order.sent`-style audit_log entry here: nothing is ever mutated
+         *     by this route, so there is nothing to persist and nothing to audit. The
+         *     plan's own audit-entry list for this task only names
+         *     `change_order.approved`/`change_order.rejected`, never a `.sent`
+         *     variant.
          */
-        post: operations["create_subcontractor_subcontractors_post"];
+        post: operations["send_change_order_for_signature_change_orders__change_order_id__send_for_signature_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/subcontractors/{subcontractor_id}": {
+    "/companies/branding": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Subcontractor */
-        get: operations["get_subcontractor_subcontractors__subcontractor_id__get"];
+        /** Get Branding */
+        get: operations["get_branding_companies_branding_get"];
+        /** Put Branding */
+        put: operations["put_branding_companies_branding_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/branding/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Branding Logo */
+        post: operations["upload_branding_logo_companies_branding_logo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Company Members
+         * @description Members of the caller's active tenant, for task-assignee pickers.
+         *     company_users' RLS scopes rows to the active tenant; the explicit
+         *     company_id filter narrows a parent-company session (which can see
+         *     descendant memberships) to the active tenant only — an assignee picker
+         *     should offer this company's people, not the whole subtree's.
+         */
+        get: operations["list_company_members_companies_members_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1846,7 +730,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/subcontractors/{subcontractor_id}/compliance-documents": {
+    "/companies/{company_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Company */
+        get: operations["get_company_companies__company_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/{company_id}/children": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Child Company */
+        post: operations["create_child_company_companies__company_id__children_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/{company_id}/users": {
         parameters: {
             query?: never;
             header?: never;
@@ -1854,64 +772,1420 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Compliance Documents
-         * @description Task 3.5. `_get_subcontractor_or_404` first — a nonexistent/
-         *     cross-tenant `subcontractor_id` in the path must 404, not just return an
-         *     empty list (the RLS `compliance_documents` scan alone would silently
-         *     return zero rows for a cross-tenant id, which would be indistinguishable
-         *     from "this subcontractor genuinely has no compliance documents yet" —
-         *     the explicit existence check up front avoids that ambiguity, same
-         *     reasoning `list_documents`/other project-nested list routes already
-         *     apply via their own `_get_project_or_404` call).
+         * List Company Users
+         * @description Members of a specific company by id (the API spec's
+         *     `GET /companies/{id}/users`, previously unimplemented) — the
+         *     parameterized sibling of `/members` above, for a parent-company session
+         *     inspecting a descendant branch's roster.
          *
-         *     Standard `paginate()` helper, `created_at_col=ComplianceDocument.created_at,
-         *     id_col=ComplianceDocument.id`, same as `list_subcontractors` above — this
-         *     table has a plain `created_at` column (`TimestampMixin`) and no
-         *     in-memory/inheritance-resolution complications, so there's no reason to
-         *     reach for `catalogs.py`'s bespoke pagination helpers.
+         *     The explicit Company visibility check comes first because a freshly
+         *     created child branch legitimately has zero members — an empty member
+         *     list must mean "visible company, no members" (200 + []), never stand in
+         *     for "company not found". RLS makes another tenant's company invisible,
+         *     so the 404 covers both "doesn't exist" and "exists but isn't yours",
+         *     same intentional indistinguishability as `get_company` below.
+         *
+         *     No declaration-order concern with `GET /{company_id}`: the extra
+         *     literal `/users` segment gives this a different path shape (only
+         *     same-shape routes like `/members` need the declared-above trick).
          */
-        get: operations["list_compliance_documents_subcontractors__subcontractor_id__compliance_documents_get"];
+        get: operations["list_company_users_companies__company_id__users_get"];
         put?: never;
-        /**
-         * Upload Compliance Document
-         * @description Task 3.5. `require_role("admin")` only (`_WRITE_ROLES`) — same RBAC
-         *     row this router's module docstring already cites: Compliance is "Full
-         *     CRUD" for Admin only.
-         *
-         *     `_get_subcontractor_or_404` first, same ordering `upload_document`
-         *     (app/routers/projects.py) uses: existence/tenant check before any
-         *     semantic validation of the payload, so a cross-tenant/nonexistent
-         *     `subcontractor_id` always 404s before the caller learns anything about
-         *     whether `doc_type` was valid.
-         *
-         *     `doc_type` is validated against `VALID_DOC_TYPES`
-         *     (`app/models/compliance_document.py`) in Python, BEFORE the uploaded
-         *     file is ever written to disk — mirrors `capture_esignature`'s own Task
-         *     2.18 "validate before any side effect" fix
-         *     (`app/services/esignature.py`'s `document_type not in
-         *     VALID_DOCUMENT_TYPES` check): without this, a rejected `doc_type` would
-         *     still leave behind a real, orphaned file on disk with no corresponding
-         *     row. Raised as `HTTPException(422, ...)` rather than `ValueError`
-         *     because this is a router (not a low-level shared service function),
-         *     same 422 mapping `validate_file_name`'s `InvalidFileNameError` gets in
-         *     `upload_document`.
-         *
-         *     **ID-generation sequencing**: follows `capture_esignature`'s exact
-         *     pattern — `compliance_document_id = uuid.uuid4()` is generated
-         *     explicitly here BEFORE the file is written, that same id is passed into
-         *     `write_compliance_document_file(...)`, and the same id is then passed
-         *     explicitly into `ComplianceDocument(id=compliance_document_id, ...)`.
-         *     Deliberately NOT `upload_document`'s flush-then-read-the-id ordering
-         *     (that pattern works there because `write_document_file` doesn't need
-         *     the row's own id as a path component at all — `write_compliance_document_file`
-         *     does, since the compliance document's id is itself part of the storage
-         *     path).
-         */
-        post: operations["upload_compliance_document_subcontractors__subcontractor_id__compliance_documents_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/compliance/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Compliance Dashboard
+         * @description Company-wide expiring/expired compliance document list, computed
+         *     live (no cached/materialized state) from `compliance_documents` joined
+         *     to `subcontractors` for the `subcontractor_name` display field.
+         *
+         *     A SINGLE query fetches every row where `expires_on <= today + 30 days`
+         *     — this covers both "expiring soon" and "already expired" documents at
+         *     once. The `status` field distinguishing the two for display is computed
+         *     in Python per-row by comparing `expires_on` to today, not via two
+         *     separate DB queries (one for each status) — there is no scenario where
+         *     running this as two queries would be more correct or more efficient,
+         *     only more code.
+         *
+         *     No explicit `company_id` filter on either side of the join: the
+         *     tenant_isolation RLS policy on both `compliance_documents` and
+         *     `subcontractors` already scopes every row this query can see to the
+         *     caller's active tenant, same pattern every other router in this
+         *     codebase relies on (see e.g. `_get_subcontractor_or_404`,
+         *     `app/routers/subcontractors.py`).
+         *
+         *     No pagination: a company-wide compliance dashboard is expected to be a
+         *     bounded, glanceable list. If this becomes a real scale problem later,
+         *     that's a future task, not something to pre-optimize for now.
+         */
+        get: operations["get_compliance_dashboard_compliance_dashboard_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/compliance/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Compliance Notifications
+         * @description Task 3.10. `require_role("admin")` only (`_NOTIFICATION_ROLES`), not
+         *     this router's `_READ_ROLES` — see that tuple's own comment above.
+         *
+         *     Paginated via the standard `paginate()` helper
+         *     (`created_at_col=ComplianceNotification.fired_at,
+         *     id_col=ComplianceNotification.id`, since this table has no `created_at`
+         *     of its own — `fired_at` plays that role, same rationale
+         *     `ComplianceNotification`'s own model docstring gives), scoped to a plain
+         *     `select(ComplianceNotification)` — no join in the paginated query itself,
+         *     since `paginate()`'s `result.scalars().all()` only works against a
+         *     single-entity `select()` (unlike the dashboard route's own manual
+         *     `select(ComplianceDocument, Subcontractor)` two-entity join, which
+         *     doesn't go through `paginate()` at all). The `compliance_documents`/
+         *     `subcontractors` display-context join happens in a SEPARATE, second
+         *     query below, scoped to just the `compliance_document_id`s present on
+         *     this page — the page is already bounded by `limit`, so this is a bounded
+         *     second round-trip, not an N+1.
+         *
+         *     `?unread_only=true` filters to `read_at IS NULL` before pagination is
+         *     applied, so the cursor/limit math is against the already-filtered set.
+         *
+         *     No explicit `company_id` filter anywhere: the tenant_isolation RLS
+         *     policy on `compliance_notifications` (and the two joined tables) already
+         *     scopes every row this query can see to the caller's active tenant, same
+         *     pattern every other router in this codebase relies on.
+         */
+        get: operations["list_compliance_notifications_compliance_notifications_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/compliance/notifications/{notification_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Compliance Notification
+         * @description Task 3.10. `require_role("admin")` only, same `_NOTIFICATION_ROLES`
+         *     tuple the list route above uses.
+         *
+         *     Idempotent: sets `read_at = datetime.now(timezone.utc)` only if it's
+         *     currently `None`. Dismissing an already-dismissed notification is a 200
+         *     no-op — `read_at` is NOT bumped to a later timestamp on a repeat call —
+         *     rather than a 409, per the task spec.
+         *
+         *     `datetime.now(timezone.utc)`, not the model-layer `utcnow` helper
+         *     (`app/models/base.py`): that helper is used as a column `default=`/
+         *     `onupdate=` inside model DEFINITIONS (e.g.
+         *     `app/models/compliance_notification.py`'s own `fired_at` column), not
+         *     from router code setting a value explicitly — router code elsewhere in
+         *     this codebase (`app/routers/invitations.py`'s `accepted_at`,
+         *     `app/services/esignature.py`'s `signed_at`) always calls
+         *     `datetime.now(timezone.utc)` directly instead.
+         */
+        post: operations["dismiss_compliance_notification_compliance_notifications__notification_id__dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dashboard Summary */
+        get: operations["dashboard_summary_dashboard_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/esignatures/{esignature_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Esignature
+         * @description Resolved judgment call #2: `client` gets BLANKET company-scoped read
+         *     access here (RLS-backed), NOT a per-row filter scoped to "signatures
+         *     this specific client signed." `Esignature` has no signer-to-user
+         *     linkage column at all — only `signer_name`/`signer_email` (captured,
+         *     free-text strings at signing time, not necessarily matching the exact
+         *     case/format of a `users` row) — so there is no schema-level way to
+         *     filter "this client's own" signatures from "any signature in this
+         *     tenant." This mirrors design decision #3's identical resolution for
+         *     `estimates`: `GET /estimates/{id}` (`app/routers/estimates.py`,
+         *     `_get_estimate_or_404`) applies no signer-linkage filter for `client`
+         *     either — blanket, tenant-scoped access, not a per-row restriction, is
+         *     this codebase's established answer to this exact ambiguity wherever it
+         *     has come up before.
+         */
+        get: operations["get_esignature_esignatures__esignature_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Estimates */
+        get: operations["list_estimates_estimates_get"];
+        put?: never;
+        /**
+         * Create Estimate
+         * @description US-4.1: an Estimate is built "against a Lead or Project" — exactly
+         *     one of `project_id`/`lead_id`, never neither, never both. Each
+         *     referenced id must additionally resolve to something real and visible
+         *     (Inherited Invariant #8's "doesn't exist or isn't visible to you" 404,
+         *     same pattern `create_catalog_item_override`'s `parent_catalog_item_id`
+         *     check uses), and a referenced Lead must additionally be far enough
+         *     along the pipeline to carry an Estimate at all
+         *     (`_LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE` above).
+         *
+         *     `markup_profile_id` IS validated against a real, visible MarkupProfile
+         *     here (added during Task 2.12's review, closing a gap Task 2.10 had
+         *     deliberately left open): the FK constraint alone only checks row
+         *     EXISTENCE, not RLS visibility, so a well-formed cross-tenant
+         *     `markup_profile_id` was previously accepted here with 201 and only
+         *     surfaced as an unhandled `NoResultFound` 500 the first time
+         *     `POST /estimates/{id}/calculate` (Task 2.12) tried to look the profile
+         *     up — a real, ordinary-API-reachable crash, not a theoretical edge case.
+         *     Closing it at creation time, the same "doesn't exist or isn't visible
+         *     to you" 404 every other referenced-id check in this route already
+         *     uses, is more correct than only catching the symptom later in
+         *     `calculate_estimate`.
+         */
+        post: operations["create_estimate_estimates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Estimate
+         * @description Returns the Estimate header fields plus its current line items in one
+         *     call (`EstimateDetailResponse`, `app/schemas/estimate.py`) — the
+         *     frontend needs both to render a usable Estimate-editing UI. No
+         *     `client`-specific `status='sent'` scoping here (unlike `list_estimates`
+         *     above) — see `_get_estimate_or_404`'s docstring for why.
+         */
+        get: operations["get_estimate_estimates__estimate_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Estimate
+         * @description Draft-only, same guard as update_estimate above. Line items cascade
+         *     with the parent row at the DB level — migration `0007_estimates_schema.py`
+         *     declares `estimate_line_items.estimate_id` with `ondelete="CASCADE"`
+         *     (verified directly in that migration file), so no explicit
+         *     `delete(EstimateLineItem)` call is needed here before deleting the
+         *     estimate itself; Postgres removes the child rows as part of the same
+         *     statement.
+         */
+        delete: operations["delete_estimate_estimates__estimate_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Estimate
+         * @description Draft-only (spec Decision 1, item 5) — 409 once sent/approved/rejected,
+         *     same "existence/tenant before semantic validation" ordering every other
+         *     guarded mutation in this router uses. Only `markup_profile_id` is
+         *     accepted; changing it does NOT retroactively touch already-computed
+         *     `subtotal`/`total` or any line item's `unit_rate_snapshot` — a caller
+         *     must re-run `POST /calculate` to see the new markup applied, same
+         *     "recalculation is a deliberate, explicit step" precedent
+         *     `calculate_estimate_totals`'s own docstring establishes.
+         */
+        patch: operations["update_estimate_estimates__estimate_id__patch"];
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Estimate
+         * @description Task 2.19: US-4.5's "As a Client, I can review an emailed Estimate
+         *     and approve it with an e-signature." `require_role("client")` only
+         *     (design decision #3's authenticated-in-app-client model) — Admin/PM/
+         *     Accountant never approve their own estimate on a client's behalf.
+         *
+         *     Only legal from `status='sent'` (`_require_estimate_sent`, 409
+         *     otherwise) — checked immediately after `_get_estimate_or_404`, before
+         *     the uploaded file is even read, so an illegal-state call never touches
+         *     the filesystem.
+         *
+         *     `multipart/form-data`, matching `upload_document`'s exact precedent
+         *     (`app/routers/projects.py`) — `signer_name`/`signer_email` as `Form(...)`
+         *     fields, `signature_artifact` as `File(...)`, read via `.read()` into raw
+         *     bytes. No content-type/extension validation on the uploaded file:
+         *     `write_esignature_artifact_file` already hardcodes a `.png` extension
+         *     regardless of what was actually uploaded (Task 2.18), so there is
+         *     nothing meaningful to validate here.
+         *
+         *     Side effects, in order: capture the e-signature (`capture_esignature`,
+         *     Task 2.18, `document_type="estimate"` — a valid member of
+         *     `VALID_DOCUMENT_TYPES`, `app/models/esignature.py`), link it onto this
+         *     Estimate, flip `status='approved'` and **`is_snapshotted=True`** (design
+         *     decision #4 — from this instant forward, `PUT /estimates/{id}/lines` and
+         *     `POST /estimates/{id}/calculate` both 409 on this estimate permanently),
+         *     write an `estimate.approved` audit log entry, then publish
+         *     `ESTIMATE_APPROVED`.
+         *
+         *     `ip_address`: `request.client.host` if `request.client` is not `None`,
+         *     else the literal string `"unknown"` — defensive against the rare ASGI
+         *     scope where `request.client` is `None`; `capture_esignature`'s
+         *     `ip_address` parameter is a non-optional `str` matching
+         *     `Esignature.ip_address`'s non-nullable column, so some value must
+         *     always be passed.
+         *
+         *     `ESTIMATE_APPROVED`'s payload includes `project_id`, which **may be
+         *     `None`** — an Estimate created against a bare Lead (no Project yet) has
+         *     no `project_id` at all (`Estimate.project_id`'s own nullable column).
+         *     This is intentional and expected, not an oversight:
+         *     `app.services.estimate_approved_handler.handle_estimate_approved`
+         *     (Task 3.39, registered via `app.core.event_handlers
+         *     .register_event_handlers()`) no-ops silently on a `None` project_id
+         *     rather than requiring one; this task deliberately does not add a NOT
+         *     NULL constraint or an artificial Project requirement just to make this
+         *     field always populated.
+         */
+        post: operations["approve_estimate_estimates__estimate_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/calculate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Calculate Estimate Totals
+         * @description Task 2.12: US-4.3's "I can trigger a recalculation" — runs
+         *     `app/services/estimate_calculation.py`'s fixed-order calculation engine
+         *     (docs/03-technical-architecture.md Section 6) against this Estimate's
+         *     CURRENT line items and MarkupProfile, then persists the result as the
+         *     authoritative `estimate.subtotal`/`estimate.total`. "Client-submitted
+         *     totals are always ignored in favor of a server-side recompute" (Section
+         *     6's own closing line) — this route takes no request body at all; there
+         *     is nothing for a client to submit here, the recompute is unconditional
+         *     and always server-derived.
+         *
+         *     **409 if `estimate.is_snapshotted`** — identical guard, identical
+         *     rationale, to `replace_estimate_line_items` above (design decision #4):
+         *     an approved/snapshotted Estimate's totals are as immutable as its line
+         *     items, and recomputing them would silently contradict the very
+         *     snapshot that was taken.
+         *
+         *     **409 if `estimate.status == "sent"`** — same additional guard as
+         *     `replace_estimate_line_items` above, same rationale: a total
+         *     recalculated while an estimate is awaiting the client's signature would
+         *     let them e-sign a total they never actually reviewed. `"rejected"`
+         *     deliberately stays recalculable, per reject_estimate's own docstring.
+         *
+         *     Both checks are raised BEFORE `calculate_estimate` is ever called — a
+         *     409 here guarantees `estimate.subtotal`/`total` are left completely
+         *     untouched, same "one transaction, one outcome" discipline as Task
+         *     2.11's own guard.
+         *
+         *     Returns `EstimateCalculationResponse` (`app/schemas/estimate.py`) — the
+         *     same header + line_items shape `GET /estimates/{id}` returns, plus this
+         *     route's own `category_breakdown` (resolved judgment call #5): the
+         *     caller gets to see the just-recomputed totals, the line items they were
+         *     computed from, and the category-level view in one response, without a
+         *     follow-up `GET`.
+         */
+        post: operations["calculate_estimate_totals_estimates__estimate_id__calculate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Estimate Pdf
+         * @description Task 2.15: enqueues async PDF generation
+         *     (`app/tasks/estimate_pdf.py`'s `generate_estimate_pdf` Dramatiq actor)
+         *     and returns immediately (202) with the Estimate's now-`pending` header —
+         *     `EstimateResponse` (resolved judgment call #6), not
+         *     `EstimateDetailResponse`/`EstimateCalculationResponse`, since this route
+         *     doesn't touch line items, matching `create_estimate`'s own "minimal
+         *     sufficient schema per route" precedent (Task 2.10).
+         *
+         *     No `total IS NULL` guard (resolved judgment call #7) and no
+         *     `is_snapshotted` guard (resolved judgment call #8): neither is asked for
+         *     by this task's own spec, and both are real, reachable, already-supported
+         *     states this route has no reason to reject — an un-calculated Estimate
+         *     renders "Not yet calculated" placeholders (Task 2.13's
+         *     `render_estimate_html`), and a snapshotted/approved Estimate is exactly
+         *     the state where a client-facing PDF is most likely to actually be
+         *     needed (a signed, final proposal document). The `is_snapshotted` guard
+         *     that DOES exist on `replace_estimate_line_items`/
+         *     `calculate_estimate_totals` above exists specifically because those
+         *     routes MUTATE line items/totals, which this one does not.
+         *
+         *     `estimate.pdf_status` is set to `'pending'` via the normal
+         *     request-scoped session (Inherited Invariant #4 — no explicit commit
+         *     here; `get_current_user` commits `current.session` once, after this
+         *     handler returns) before the job is enqueued. `current.user.id` (the
+         *     admin/PM making this call) is captured now and passed through the
+         *     Dramatiq message payload as `requesting_user_id` — the actor needs a
+         *     real, non-optional user id to call `set_current_user` inside its own,
+         *     separately-managed session (Inherited Invariant #3's worker exception;
+         *     see `app/tasks/estimate_pdf.py`'s module docstring for the full
+         *     rationale, including why this is NOT used to write an audit_log entry).
+         */
+        post: operations["export_estimate_pdf_estimates__estimate_id__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/lines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Replace Estimate Line Items
+         * @description Task 2.11: US-4.3's "As a Project Manager, I can add/edit line items
+         *     with quantities" — a full batch replace (API spec's own wording), not a
+         *     partial patch/append: every existing `EstimateLineItem` row for this
+         *     Estimate is deleted and the request body's `items` are inserted fresh,
+         *     in the same request. There is no natural key to diff old vs. new line
+         *     items against beyond `cost_catalog_item_id` (and the API spec doesn't
+         *     forbid duplicate `cost_catalog_item_id` entries in one request), so
+         *     delete-then-insert is the simplest reading of "full replace" that avoids
+         *     inventing an unrequested dedup/merge rule.
+         *
+         *     **Validate everything before mutating anything**, same "one transaction,
+         *     one outcome" discipline `update_lead`'s status-transition check
+         *     established in `app/routers/leads.py`: this handler never calls
+         *     `session.commit()` itself (Inherited Invariant #4 — `get_current_user`
+         *     commits once after the handler returns), so as long as nothing below
+         *     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
+         *     guarantees the eventual commit never happens at all and the estimate's
+         *     line items are left completely untouched. Three independent checks,
+         *     all performed before any DELETE/INSERT is issued:
+         *       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
+         *          snapshotted Estimate's line items are immutable).
+         *       2. `estimate.status == "sent"` -> 409: an estimate awaiting the
+         *          client's signature must not be editable out from under them
+         *          between send-for-signature and their approve/reject (closes a
+         *          gap this guard previously missed — `is_snapshotted` alone only
+         *          starts being `True` at approval, not at send). `"rejected"`
+         *          deliberately stays editable, per reject_estimate's own docstring.
+         *       3. Every input line's `cost_catalog_item_id` must resolve via
+         *          `resolve_visible_catalog_items` -> 422 on the FIRST one that
+         *          doesn't. Resolved (not raw-table-queried) so the rate captured
+         *          below respects inheritance/override resolution — a PM building an
+         *          estimate against an item their branch has overridden must get the
+         *          override's rate, not the ancestor's original, same reasoning
+         *          `create_catalog_item_override` (`app/routers/catalogs.py`) already
+         *          applies to its own `parent_catalog_item_id` visibility check.
+         *          `resolve_visible_catalog_items` is called ONCE for the whole
+         *          request (not once per input line) and the result turned into an
+         *          id-keyed dict for lookup, same shape `create_catalog_item_override`
+         *          uses for its own single-call/membership-check pattern.
+         *
+         *     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
+         *     this moment, never a live reference (schema doc Section 9's historical-
+         *     immutability rule, `EstimateLineItem.unit_rate_snapshot`'s own docstring
+         *     in `app/models/estimate_line_item.py`) — a later edit to the catalog
+         *     item must not retroactively change what this Estimate shows. `line_total
+         *     = quantity * unit_rate_snapshot` is plain `Decimal` arithmetic (both
+         *     operands are already `Decimal` — `EstimateLineItemInput.quantity` and
+         *     `CostCatalogItem.unit_rate` are both `Numeric` columns / `Decimal`
+         *     schema fields, never `float`), matching Inherited Invariant #9.
+         *
+         *     Does NOT recompute `estimate.subtotal`/`total` — that is `POST
+         *     /estimates/{id}/calculate`'s job (Task 2.12), a deliberately separate,
+         *     explicit step per US-4.3's own "I can trigger a recalculation" framing.
+         *
+         *     `EstimateLineItem.company_id` is set to `current.company_id` on every
+         *     new row, matching `create_estimate`'s own convention of always sourcing
+         *     `company_id` from the current user rather than the parent row (the two
+         *     are guaranteed equal here, since `_get_estimate_or_404` already
+         *     RLS-scoped `estimate` to the caller's own tenant, but `current.company_id`
+         *     is used for consistency with every other create path in this codebase).
+         *
+         *     Returns `EstimateDetailResponse` (Task 2.10's `GET /estimates/{id}`
+         *     shape) rather than a bespoke response — the frontend needs to see the
+         *     resulting line items immediately after a replace, and this schema
+         *     already exists precisely for "header + current line items in one
+         *     response."
+         */
+        put: operations["replace_estimate_line_items_estimates__estimate_id__lines_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Estimate Pdf
+         * @description Streams the exported PDF from `pdf_storage_path`. Same read roles as
+         *     `get_estimate` (admin/PM/accountant/client) — a client needs this to
+         *     actually see what they're about to sign, same reasoning `_READ_ROLES`
+         *     already documents at the top of this module.
+         *
+         *     409, not 404, when `pdf_status != "ready"`: the Estimate itself exists
+         *     and is visible, it just has no artifact to serve yet (or export failed) —
+         *     a real, reachable state, not "doesn't exist."
+         */
+        get: operations["download_estimate_pdf_estimates__estimate_id__pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Estimate
+         * @description Task 2.19: US-4.5's "or reject it with a reason." Same `client`-only
+         *     role gate and `status='sent'` precondition (`_require_estimate_sent`,
+         *     409 otherwise) as `approve` above — both routes share the exact same
+         *     check via that one helper.
+         *
+         *     No e-signature is captured and `is_snapshotted` stays `False`: a
+         *     rejection isn't a signed document, so there is nothing to snapshot and
+         *     nothing decoupling this Estimate's line items/totals from live catalog
+         *     data. `PUT /estimates/{id}/lines` and `POST /estimates/{id}/calculate`
+         *     both remain legal on a rejected estimate — this route only records the
+         *     rejection (`status='rejected'` plus an `estimate.rejected` audit log
+         *     entry carrying `{reason}`), it does not otherwise lock the estimate.
+         *
+         *     `EstimateRejectRequest` (`app/schemas/estimate.py`) is a plain JSON
+         *     body, not `multipart/form-data` — unlike `approve`, there is no binary
+         *     signature artifact to submit here.
+         */
+        post: operations["reject_estimate_estimates__estimate_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estimates/{estimate_id}/send-for-signature": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Estimate For Signature
+         * @description Task 2.19: US-4.5's send-for-signature step — marks an Estimate as
+         *     awaiting the client's approve/reject action. No e-signature is captured
+         *     here at all; this route only flips `status` to `'sent'` so the estimate
+         *     becomes visible to `client`-role callers (`list_estimates`'s own
+         *     `status='sent'` scoping) and eligible for the `approve`/`reject` routes
+         *     below, both of which require `status='sent'` as their own precondition.
+         *
+         *     **409 if `estimate.total IS NULL`**: `total`
+         *     only becomes non-NULL after at least one successful
+         *     `POST /estimates/{id}/calculate` run — sending an un-calculated estimate
+         *     for the client's signature makes no sense, there is nothing meaningful
+         *     for them to review yet. Checked AFTER `_get_estimate_or_404` (existence/
+         *     tenant before semantic validation, the same ordering
+         *     `calculate_estimate_totals`'s own `is_snapshotted` check uses above).
+         */
+        post: operations["send_estimate_for_signature_estimates__estimate_id__send_for_signature_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Health */
+        get: operations["health_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{provider}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Callback
+         * @description Task 4.9 (design spec Section 3): the OAuth redirect target.
+         *
+         *     No `CurrentUser` here — this is an external redirect from the
+         *     (fake, today) accounting provider back into our app, carrying no
+         *     bearer token, so `app/core/deps.py`'s `get_current_user` dependency
+         *     chain cannot run on this route at all (the same structural reality
+         *     `/invitations/{id}/accept` already established for this codebase).
+         *     Instead this route opens its own session and sets RLS tenant context
+         *     manually, exactly like every Dramatiq worker actor does for the same
+         *     "no request-scoped session to inherit" reason — see in particular
+         *     `app/tasks/estimate_pdf.py`'s `_generate_and_persist`, which is the
+         *     closest existing precedent: a standalone `SessionLocal()` session, one
+         *     explicit `set_current_tenant` call, then real work, then a single
+         *     `commit()`.
+         *
+         *     Reuses `app.db.session_scope`/`set_current_tenant` directly rather than
+         *     duplicating a second engine/sessionmaker in this file or inlining the
+         *     raw `SELECT set_config(...)` statement: `set_current_tenant` is a plain
+         *     function of `(session, company_id)` with no dependency on
+         *     `TenantMiddleware` or any other request-scoped state (confirmed by
+         *     reading `app/core/middleware.py` — `TenantMiddleware` only stashes the
+         *     raw bearer token/tenant header into contextvars, it never touches a
+         *     session or calls `set_current_tenant` itself). `accept_invitation`
+         *     (`app/routers/invitations.py`) is the closest existing precedent for
+         *     this exact shape — a route with no `CurrentUser` at all, using
+         *     `async with session_scope() as session: async with session.begin():` —
+         *     reused verbatim here rather than the plan's own literal reference code
+         *     (a bare, un-guarded `session.begin()`/`session.commit()`), because
+         *     `session.begin()` used as a context manager gives an automatic
+         *     rollback-on-exception guarantee `accept_invitation` already relies on;
+         *     a bare awaited `begin()` does not make that guarantee explicit, and
+         *     this is the single highest-stakes unauthenticated write route in this
+         *     feature to leave it implicit on.
+         *
+         *     Uses `session_scope()` (`app.db`, the `app_user`-role DSN
+         *     `get_current_user`'s own dependency chain uses via `settings.
+         *     database_url`), not the owner-role DSN cross-tenant worker actors like
+         *     `check_compliance_expiry` use — this route must go through RLS like any
+         *     other tenant-scoped write, it does not need cross-tenant visibility the
+         *     way a scheduled job scanning every company does.
+         *
+         *     Every write in this session must go through RLS scoped to the company
+         *     the signed `state` decoded — never trust `company_id` from anywhere
+         *     else in this request, since there is no `CurrentUser` to cross-check it
+         *     against.
+         */
+        get: operations["callback_integrations__provider__callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{provider}/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Connect */
+        get: operations["connect_integrations__provider__connect_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{provider}/sync-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Sync Status
+         * @description Task 4.10 (design spec Section 3): read-only, cursor-paginated sync
+         *     status listing. Same `_ROLES` (admin/accountant) RBAC gate as
+         *     `connect` above.
+         *
+         *     The `IntegrationConnection` lookup below DOES filter explicitly on
+         *     `company_id == current.company_id`, unlike `leads.py`'s `GET /leads`
+         *     (which relies on RLS alone) — `leads` is a LIST endpoint, where the
+         *     parent/child roll-up `get_all_descendant_ids()` RLS policy returning
+         *     multiple companies' rows is the intended behavior. This route instead
+         *     does a `scalar_one_or_none()` lookup keyed only on `provider`, which
+         *     has no such tolerance: `integration_connections` has a
+         *     `UNIQUE(company_id, provider)` constraint, not a globally unique one,
+         *     so a parent company and a child branch that each independently connect
+         *     the same provider are two distinct, RLS-visible rows to a parent
+         *     admin — `provider` alone can't disambiguate them, and `scalar_one_or_
+         *     none()` would raise `MultipleResultsFound` (an unhandled 500) instead
+         *     of correctly resolving to "this company's own connection." Matches
+         *     `subscriptions.py`'s own precedent for this exact "hierarchy + need
+         *     exactly one row" shape (an explicit company filter alongside RLS, not
+         *     RLS alone) — though unlike `subscriptions` (root-company-scoped by
+         *     design), `integration_connections` rows are scoped to whichever
+         *     specific company connected (see `connect`/`callback` above, both of
+         *     which use `current.company_id`/the signed state's own `company_id`
+         *     directly, never a root-company resolution), so the filter here is the
+         *     caller's own `company_id`, not `get_root_company_id(...)`.
+         *
+         *     `IntegrationSyncRecord` rows, by contrast, need no explicit
+         *     `company_id` filter of their own: they're looked up by `connection_id
+         *     == connection.id`, and `connection.id` is a global UUID primary key
+         *     that (once resolved to a specific row above) unambiguously identifies
+         *     one connection — filtering by that FK is sufficient on its own,
+         *     independent of RLS breadth.
+         */
+        get: operations["sync_status_integrations__provider__sync_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Invitation */
+        post: operations["create_invitation_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invitations/{invitation_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept Invitation */
+        post: operations["accept_invitation_invitations__invitation_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Invoice */
+        get: operations["get_invoice_invoices__invoice_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Invoice Payment */
+        post: operations["record_invoice_payment_invoices__invoice_id__payments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send Invoice */
+        post: operations["send_invoice_invoices__invoice_id__send_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Void Invoice */
+        post: operations["void_invoice_invoices__invoice_id__void_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/leads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Leads */
+        get: operations["list_leads_leads_get"];
+        put?: never;
+        /** Create Lead */
+        post: operations["create_lead_leads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/leads/{lead_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lead */
+        get: operations["get_lead_leads__lead_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Lead */
+        patch: operations["update_lead_leads__lead_id__patch"];
+        trace?: never;
+    };
+    "/leads/{lead_id}/communications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Communication Logs */
+        get: operations["list_communication_logs_leads__lead_id__communications_get"];
+        put?: never;
+        /** Create Communication Log */
+        post: operations["create_communication_log_leads__lead_id__communications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/markup-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Markup Profiles
+         * @description Plain company-scoped list — no inheritance concept, unlike
+         *     `list_catalog_items` above (design decision #1's closing note). No
+         *     explicit `company_id` filter needed: `markup_profiles`' ordinary
+         *     (non-bidirectional) `tenant_isolation` RLS policy already scopes every
+         *     row this query can see to the caller's active tenant, same pattern
+         *     `list_projects`/`list_leads` rely on.
+         */
+        get: operations["list_markup_profiles_markup_profiles_get"];
+        put?: never;
+        /**
+         * Create Markup Profile
+         * @description Plain company-scoped create, no inheritance concept at all — design
+         *     decision #1's closing note and `MarkupProfile`'s own model docstring:
+         *     `markup_profiles` has no `parent_profile_id` column, unlike
+         *     `cost_catalog_items`.
+         */
+        post: operations["create_markup_profile_markup_profiles_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/markup-profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Markup Profile
+         * @description 409 if any Estimate references this profile — same "real, in-use
+         *     reference blocks the delete" reasoning as delete_catalog_item above.
+         */
+        delete: operations["delete_markup_profile_markup_profiles__profile_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Markup Profile */
+        patch: operations["update_markup_profile_markup_profiles__profile_id__patch"];
+        trace?: never;
+    };
+    "/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Projects */
+        get: operations["list_projects_projects_get"];
+        put?: never;
+        /** Create Project */
+        post: operations["create_project_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project */
+        get: operations["get_project_projects__project_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Project */
+        patch: operations["patch_project_projects__project_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/change-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Change Orders
+         * @description Task 2.21. Not in the API spec's literal route table (only `POST
+         *     /projects/{id}/change-orders` is listed there) — added for the same
+         *     "spec is conceptual" reasoning applied repeatedly through this and the
+         *     Phase 1 plan (e.g. `list_documents`'/`list_daily_logs`' own docstrings,
+         *     app/routers/projects.py): without a list route, a PM has no way to see
+         *     a project's Change Order history at all.
+         *
+         *     `_get_project_or_404` first, then `paginate()` scoped to this project —
+         *     copies `list_documents`'s exact structure (imports, `Query` params,
+         *     the `paginate()` call itself with `created_at_col`/`id_col`).
+         *
+         *     Uses `_READ_ROLES` (admin, project_manager, accountant, client — see
+         *     that constant's own comment for `client`'s Task 2.22 addition and
+         *     scoping), not `_get_project_or_404`'s field_crew-scoping machinery:
+         *     field_crew has no read access to Change Orders at all per the RBAC
+         *     matrix's Project Management row (field_crew's only granted verb there is
+         *     "create Daily Logs"), so it's simply absent from `_READ_ROLES` and
+         *     blocked with a 403 at the `require_role` dependency layer before this
+         *     handler body ever runs.
+         *
+         *     `client`'s own scoping (Task 2.22, mirroring `list_estimates`'s
+         *     `status="sent"` scoping exactly): a client only ever sees `pending`
+         *     Change Orders on this project — the ones actually awaiting their
+         *     approve/reject action — never already-decided `approved`/`rejected`
+         *     ones.
+         */
+        get: operations["list_change_orders_projects__project_id__change_orders_get"];
+        put?: never;
+        /**
+         * Create Change Order
+         * @description Task 2.21. `_get_project_or_404` first, same ordering as every other
+         *     project-nested write route in this codebase (existence/tenant check
+         *     before any semantic validation of the payload) — a cross-tenant
+         *     project_id and a not-`active` project both fail, but the caller learns
+         *     "not found" before "wrong status", never the other way around, same
+         *     precedent `upload_document`'s docstring gives for its own ordering
+         *     (app/routers/projects.py).
+         *
+         *     Only legal against an `active` Project — US-3.6: "create a Change Order
+         *     against an ACTIVE Project" (not draft/pre_construction/suspended/
+         *     completed/archived). Rejected with 409, not 422: this isn't a malformed
+         *     request body, it's a real row (the Project) that exists and is visible
+         *     to the caller but is in the wrong state for this operation — the same
+         *     category of conflict `update_project_status`'s illegal-transition check
+         *     uses 409 for.
+         *
+         *     `company_id=project.company_id`, not `current.company_id`: a parent
+         *     company's session can legitimately act on a descendant branch's Project
+         *     without switching `X-Tenant-ID` to that branch first (RLS's
+         *     `get_all_descendant_ids()` grant already makes the descendant's rows
+         *     visible/writable). Using `current.company_id` here would silently stamp
+         *     this ChangeOrder with the PARENT's id instead of the Project's own,
+         *     producing a row whose `company_id` disagrees with its own parent
+         *     Project's `company_id` — a session later scoped directly to the
+         *     descendant branch would then find its own Project's ChangeOrder
+         *     invisible under RLS. `upload_document`/`create_daily_log`
+         *     (app/routers/projects.py) had the identical bug and are fixed
+         *     alongside this route, in a dedicated post-Phase-2 audit of this exact
+         *     pattern across every nested-resource-creation route in this codebase —
+         *     this docstring previously (incorrectly) cited those two routes'
+         *     `current.company_id` usage as an established precedent to follow; that
+         *     was itself the bug, not a precedent worth matching.
+         *
+         *     `status="pending"` always — `ChangeOrderCreateRequest` has no `status`
+         *     field (see its own docstring), so a caller cannot set it via payload.
+         *
+         *     No audit_log entry: docs/07-security-compliance.md Section 5's
+         *     audit-worthy-action list is "Change Order approval," not creation.
+         *     (Note: `create_estimate` does write an `estimate.created` audit entry —
+         *     so this is NOT a "creation is never audited" codebase-wide rule, just
+         *     what Section 5's own enumerated list actually asks for here.) Task
+         *     2.22's approve route is where an audit entry belongs for Change
+         *     Orders, exactly like `Estimate.approved`.
+         */
+        post: operations["create_change_order_projects__project_id__change_orders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/daily-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Daily Logs
+         * @description Task 1.16. The plan spec says "same read roles as project detail" —
+         *     read literally that would mean _GET_ROLES (which additionally includes
+         *     `client`). This deliberately uses `_LIST_ROLES` (client-EXCLUDED)
+         *     instead, for the same reason list_documents does immediately above:
+         *     `client`'s only documented read surface anywhere in the RBAC matrix or
+         *     API spec is the single sanitized `GET /projects/{id}` dashboard route
+         *     (design decision #8: "client only ever gets the single sanitized
+         *     dashboard route"), which itself now exposes `phase_count`/`task_count`/
+         *     `completed_task_count` as the client-facing substitute for granular
+         *     per-record detail. A `client` caller hitting a raw, unsanitized,
+         *     paginated list of daily log notes would both contradict design decision
+         *     #8 and go beyond US-3.5's explicit exclusion of "internal task detail"
+         *     from what the client sees. `_LIST_ROLES` = admin, project_manager,
+         *     accountant, field_crew — the matrix's Project Management row gives all
+         *     four some read access (accountant's row says "Read (financial fields
+         *     only)", which for Phase 1 collapses to plain read, same reasoning
+         *     _LIST_ROLES's own comment gives above).
+         *
+         *     `_get_project_or_404` applies field_crew's assigned-only scoping here
+         *     exactly as list_documents does: an unassigned field_crew caller gets a
+         *     404 before any daily_logs query runs.
+         */
+        get: operations["list_daily_logs_projects__project_id__daily_logs_get"];
+        put?: never;
+        /**
+         * Create Daily Log
+         * @description Task 1.16. `require_role("admin", "project_manager", "field_crew")`
+         *     per _DAILY_LOG_WRITE_ROLES above — the RBAC matrix's Project Management
+         *     row is the only place field_crew gets any write verb at all ("create
+         *     Daily Logs"), so this route intentionally does NOT reuse _WRITE_ROLES.
+         *
+         *     `_get_project_or_404` first, same ordering as every other project-nested
+         *     write route in this router (existence/tenant/field-crew-assigned-scope
+         *     check before touching the payload) — this doubles as field_crew's
+         *     project-level scoping: a field_crew caller with no assigned task on
+         *     `project_id` gets a 404 here before a DailyLog row is ever created,
+         *     exactly like upload_document's field_crew scoping. US-3.3 ("submit a
+         *     Daily Log ... for a Project") and every other field_crew scoping
+         *     decision in this plan point the same direction: assigned-project-only,
+         *     not "any project in the tenant."
+         *
+         *     `author_id=current.user.id` always — DailyLogCreateRequest has no
+         *     `author_id` field (see its docstring), so a caller cannot claim to be
+         *     someone else's author by payload manipulation; this line is the only
+         *     place author_id is ever set.
+         *
+         *     No update/delete route exists anywhere in this router for daily_logs,
+         *     and Task 1.10's migration additionally `REVOKE`s UPDATE/DELETE on this
+         *     table from `app_user` at the DB level (design decision #6) — immutable
+         *     once submitted, matching US-3.3's acceptance criterion, the same
+         *     two-layer discipline (no route + DB-level REVOKE) Task 1.7 established
+         *     for communication_logs.
+         *
+         *     `company_id=project.company_id`, not `current.company_id` — see
+         *     `upload_document`'s docstring above for the full rationale (a parent
+         *     company's session acting on a descendant branch's Project, without
+         *     switching `X-Tenant-ID`, must not stamp this child row with the
+         *     parent's own company_id).
+         */
+        post: operations["create_daily_log_projects__project_id__daily_logs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Documents
+         * @description Task 1.15. Not in the API spec's literal route table (only `POST
+         *     /projects/{id}/documents` is listed there) — added for the same reason
+         *     design decision #3 added `PATCH /projects/{id}`: the spec doc "describes
+         *     API contracts conceptually," and without a list route there is no way
+         *     to satisfy US-3.4's "the most recent version is shown by default with
+         *     prior versions accessible" at all.
+         *
+         *     `_LIST_ROLES` (admin, project_manager, accountant, field_crew) reused
+         *     as-is from list_projects above: the RBAC matrix's Project Management row
+         *     gives every one of those four roles some form of read access, and
+         *     `client` is deliberately excluded — the API spec never documents any
+         *     list-shaped route for `client` (design decision #8: client only ever
+         *     gets the single sanitized `GET /projects/{id}` dashboard route), same
+         *     reasoning list_projects's own docstring gives for excluding `client`
+         *     from that route.
+         *
+         *     `_get_project_or_404` handles field_crew's assigned-only scoping here
+         *     exactly as it does for phase/task creation: a field_crew caller whose
+         *     project isn't theirs (no assigned task on it) gets a 404 before this
+         *     function ever queries `documents`, so no separate per-document
+         *     field_crew filter is needed below — visibility is gated at the project
+         *     level, not the document level (documents have no assignee concept of
+         *     their own).
+         */
+        get: operations["list_documents_projects__project_id__documents_get"];
+        put?: never;
+        /**
+         * Upload Document
+         * @description Task 1.15. `require_role("admin", "project_manager")` per the API
+         *     spec table and the RBAC matrix (docs/07-security-compliance.md Section
+         *     2: Project Management is "Full CRUD" for Admin/PM only, matching
+         *     _WRITE_ROLES's existing rationale above).
+         *
+         *     `_get_project_or_404` first, same order every other project-nested
+         *     write route in this router/tasks.py uses (existence/tenant check
+         *     before any semantic validation of the payload) — a cross-tenant
+         *     project_id and an invalid file_name both fail, but the caller learns
+         *     "not found" before "bad filename", never the other way around, so a
+         *     cross-tenant probe can't be used to fish for filename-validation
+         *     feedback.
+         *
+         *     `company_id=project.company_id`, not `current.company_id`: a parent
+         *     company's session can legitimately act on a descendant branch's Project
+         *     without switching `X-Tenant-ID` to that branch first (RLS's
+         *     `get_all_descendant_ids()` grant already makes the descendant's rows
+         *     visible/writable). Using `current.company_id` here would silently stamp
+         *     this Document — and the filesystem path it's written to, both derived
+         *     from the same `company_id` value below — with the PARENT's id instead
+         *     of the Project's own, producing a row whose `company_id` disagrees with
+         *     its own parent Project's `company_id`. A session later scoped directly
+         *     to the descendant branch (rather than the parent) would then find its
+         *     own Project's Document invisible under RLS. Fixed as part of a
+         *     dedicated post-Phase-2 audit of this exact pattern across every
+         *     nested-resource-creation route in this codebase.
+         */
+        post: operations["upload_document_projects__project_id__documents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/documents/{document_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document
+         * @description Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
+         *     Same visibility rules as the document list: _get_project_or_404 covers
+         *     tenant/role/project scope, and the document must belong to the path's
+         *     project (a mismatched pair 404s — same id-pair discipline as every
+         *     nested resource in this codebase). storage_path is always relative to
+         *     settings.storage_root (document_storage.py's invariant), and file_name
+         *     was traversal-validated at upload, so joining them is safe here.
+         */
+        get: operations["download_document_projects__project_id__documents__document_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/expenses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Expenses */
+        get: operations["list_expenses_projects__project_id__expenses_get"];
+        put?: never;
+        /** Create Expense */
+        post: operations["create_expense_projects__project_id__expenses_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/invoices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Invoices */
+        get: operations["list_invoices_projects__project_id__invoices_get"];
+        put?: never;
+        /** Create Invoice */
+        post: operations["create_invoice_projects__project_id__invoices_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/phases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Phases
+         * @description Phases ordered by (sequence, id), each with its tasks nested,
+         *     ordered by (created_at, id). _get_project_or_404 covers existence,
+         *     tenant scope, and field_crew's assigned-projects-only visibility, same
+         *     as the create routes above.
+         */
+        get: operations["list_phases_projects__project_id__phases_get"];
+        put?: never;
+        /** Create Phase */
+        post: operations["create_phase_projects__project_id__phases_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/phases/{phase_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Phase
+         * @description `admin`/`project_manager` only, same gate as `update_phase` above.
+         *     This Phase's Tasks cascade with it at the DB level — migration
+         *     `0004_project_management_schema.py` declares `tasks.phase_id` with
+         *     `ondelete="CASCADE"`, so no explicit `delete(Task)` call is needed here
+         *     before deleting the Phase itself; Postgres removes the child rows as
+         *     part of the same statement (same pattern `delete_estimate`'s own
+         *     docstring establishes for `estimate_line_items`, `app/routers/estimates.py`).
+         */
+        delete: operations["delete_phase_projects__project_id__phases__phase_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Phase
+         * @description Rename/reorder a Phase — `admin`/`project_manager` only, matching
+         *     `create_phase`'s own role gate (field_crew can never reach this route).
+         *     `_get_project_or_404` first, same "existence/tenant before touching the
+         *     nested resource" ordering every other project-nested route in this
+         *     file/router uses.
+         */
+        patch: operations["update_phase_projects__project_id__phases__phase_id__patch"];
+        trace?: never;
+    };
+    "/projects/{project_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Project Status
+         * @description Task 1.13: the Project status state machine, entirely separate from
+         *     `patch_project` above (design decision #3 — Project splits field edits
+         *     and status transitions into two routes/schemas, unlike Lead's combined
+         *     `PATCH /leads/{id}`). Reuses `_get_project_or_404` for the existence/
+         *     tenant check; field_crew can never reach this route at all (`_WRITE_ROLES`
+         *     is admin/project_manager only), so the field_crew-scoping half of that
+         *     helper is inert here — it's reused purely to avoid duplicating the
+         *     existence/tenant-404 check, not because field_crew's assigned-only
+         *     visibility is relevant to this route.
+         *
+         *     The audit log entry below uses `company_id=project.company_id`, not
+         *     `current.company_id` — same rationale as `upload_document`'s/
+         *     `create_daily_log`'s own fix (this router, above): a parent company's
+         *     session can legitimately transition a descendant branch's Project
+         *     without switching `X-Tenant-ID` first (`_get_project_or_404` already
+         *     makes the descendant's Project reachable via RLS's
+         *     `get_all_descendant_ids()` grant). Using `current.company_id` here
+         *     would record the `project.status_changed` audit entry under the
+         *     PARENT's company instead of the Project's own, making it invisible to
+         *     a session later scoped directly to the descendant branch auditing its
+         *     own Project's history.
+         */
+        patch: operations["update_project_status_projects__project_id__status_patch"];
         trace?: never;
     };
     "/projects/{project_id}/subcontractor-assignments": {
@@ -2039,92 +2313,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/compliance/dashboard": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Compliance Dashboard
-         * @description Company-wide expiring/expired compliance document list, computed
-         *     live (no cached/materialized state) from `compliance_documents` joined
-         *     to `subcontractors` for the `subcontractor_name` display field.
-         *
-         *     A SINGLE query fetches every row where `expires_on <= today + 30 days`
-         *     — this covers both "expiring soon" and "already expired" documents at
-         *     once. The `status` field distinguishing the two for display is computed
-         *     in Python per-row by comparing `expires_on` to today, not via two
-         *     separate DB queries (one for each status) — there is no scenario where
-         *     running this as two queries would be more correct or more efficient,
-         *     only more code.
-         *
-         *     No explicit `company_id` filter on either side of the join: the
-         *     tenant_isolation RLS policy on both `compliance_documents` and
-         *     `subcontractors` already scopes every row this query can see to the
-         *     caller's active tenant, same pattern every other router in this
-         *     codebase relies on (see e.g. `_get_subcontractor_or_404`,
-         *     `app/routers/subcontractors.py`).
-         *
-         *     No pagination: a company-wide compliance dashboard is expected to be a
-         *     bounded, glanceable list. If this becomes a real scale problem later,
-         *     that's a future task, not something to pre-optimize for now.
-         */
-        get: operations["get_compliance_dashboard_compliance_dashboard_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/compliance/notifications": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Compliance Notifications
-         * @description Task 3.10. `require_role("admin")` only (`_NOTIFICATION_ROLES`), not
-         *     this router's `_READ_ROLES` — see that tuple's own comment above.
-         *
-         *     Paginated via the standard `paginate()` helper
-         *     (`created_at_col=ComplianceNotification.fired_at,
-         *     id_col=ComplianceNotification.id`, since this table has no `created_at`
-         *     of its own — `fired_at` plays that role, same rationale
-         *     `ComplianceNotification`'s own model docstring gives), scoped to a plain
-         *     `select(ComplianceNotification)` — no join in the paginated query itself,
-         *     since `paginate()`'s `result.scalars().all()` only works against a
-         *     single-entity `select()` (unlike the dashboard route's own manual
-         *     `select(ComplianceDocument, Subcontractor)` two-entity join, which
-         *     doesn't go through `paginate()` at all). The `compliance_documents`/
-         *     `subcontractors` display-context join happens in a SEPARATE, second
-         *     query below, scoped to just the `compliance_document_id`s present on
-         *     this page — the page is already bounded by `limit`, so this is a bounded
-         *     second round-trip, not an N+1.
-         *
-         *     `?unread_only=true` filters to `read_at IS NULL` before pagination is
-         *     applied, so the cursor/limit math is against the already-filtered set.
-         *
-         *     No explicit `company_id` filter anywhere: the tenant_isolation RLS
-         *     policy on `compliance_notifications` (and the two joined tables) already
-         *     scopes every row this query can see to the caller's active tenant, same
-         *     pattern every other router in this codebase relies on.
-         */
-        get: operations["list_compliance_notifications_compliance_notifications_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/compliance/notifications/{notification_id}/dismiss": {
+    "/projects/{project_id}/tasks": {
         parameters: {
             query?: never;
             header?: never;
@@ -2133,26 +2322,144 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Create Task */
+        post: operations["create_task_projects__project_id__tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/profitability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Profitability Report */
+        get: operations["get_profitability_report_reports_profitability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/subcontractors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         /**
-         * Dismiss Compliance Notification
-         * @description Task 3.10. `require_role("admin")` only, same `_NOTIFICATION_ROLES`
-         *     tuple the list route above uses.
-         *
-         *     Idempotent: sets `read_at = datetime.now(timezone.utc)` only if it's
-         *     currently `None`. Dismissing an already-dismissed notification is a 200
-         *     no-op — `read_at` is NOT bumped to a later timestamp on a repeat call —
-         *     rather than a 409, per the task spec.
-         *
-         *     `datetime.now(timezone.utc)`, not the model-layer `utcnow` helper
-         *     (`app/models/base.py`): that helper is used as a column `default=`/
-         *     `onupdate=` inside model DEFINITIONS (e.g.
-         *     `app/models/compliance_notification.py`'s own `fired_at` column), not
-         *     from router code setting a value explicitly — router code elsewhere in
-         *     this codebase (`app/routers/invitations.py`'s `accepted_at`,
-         *     `app/services/esignature.py`'s `signed_at`) always calls
-         *     `datetime.now(timezone.utc)` directly instead.
+         * List Subcontractors
+         * @description Plain company-scoped list, no status/role-based row-scoping —
+         *     unlike Estimates' `client` status-scoping, there is no `client`-role
+         *     access to this resource at all (`client` is absent from `_READ_ROLES`).
+         *     No explicit `company_id` filter needed: the tenant_isolation RLS policy
+         *     already scopes every row this query can see to the caller's active
+         *     tenant, same pattern `list_estimates`/`list_projects`/`list_leads` rely
+         *     on.
          */
-        post: operations["dismiss_compliance_notification_compliance_notifications__notification_id__dismiss_post"];
+        get: operations["list_subcontractors_subcontractors_get"];
+        put?: never;
+        /**
+         * Create Subcontractor
+         * @description `company_id=current.company_id` directly — a standalone top-level
+         *     resource with no parent entity's own `company_id` to defer to, matching
+         *     `create_project`'s/`create_lead`'s own precedent (not the nested-resource
+         *     pattern used for tables that derive `company_id` from a parent entity,
+         *     e.g. `EstimateLineItem.company_id` in `replace_estimate_line_items`).
+         */
+        post: operations["create_subcontractor_subcontractors_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/subcontractors/{subcontractor_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Subcontractor */
+        get: operations["get_subcontractor_subcontractors__subcontractor_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/subcontractors/{subcontractor_id}/compliance-documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Compliance Documents
+         * @description Task 3.5. `_get_subcontractor_or_404` first — a nonexistent/
+         *     cross-tenant `subcontractor_id` in the path must 404, not just return an
+         *     empty list (the RLS `compliance_documents` scan alone would silently
+         *     return zero rows for a cross-tenant id, which would be indistinguishable
+         *     from "this subcontractor genuinely has no compliance documents yet" —
+         *     the explicit existence check up front avoids that ambiguity, same
+         *     reasoning `list_documents`/other project-nested list routes already
+         *     apply via their own `_get_project_or_404` call).
+         *
+         *     Standard `paginate()` helper, `created_at_col=ComplianceDocument.created_at,
+         *     id_col=ComplianceDocument.id`, same as `list_subcontractors` above — this
+         *     table has a plain `created_at` column (`TimestampMixin`) and no
+         *     in-memory/inheritance-resolution complications, so there's no reason to
+         *     reach for `catalogs.py`'s bespoke pagination helpers.
+         */
+        get: operations["list_compliance_documents_subcontractors__subcontractor_id__compliance_documents_get"];
+        put?: never;
+        /**
+         * Upload Compliance Document
+         * @description Task 3.5. `require_role("admin")` only (`_WRITE_ROLES`) — same RBAC
+         *     row this router's module docstring already cites: Compliance is "Full
+         *     CRUD" for Admin only.
+         *
+         *     `_get_subcontractor_or_404` first, same ordering `upload_document`
+         *     (app/routers/projects.py) uses: existence/tenant check before any
+         *     semantic validation of the payload, so a cross-tenant/nonexistent
+         *     `subcontractor_id` always 404s before the caller learns anything about
+         *     whether `doc_type` was valid.
+         *
+         *     `doc_type` is validated against `VALID_DOC_TYPES`
+         *     (`app/models/compliance_document.py`) in Python, BEFORE the uploaded
+         *     file is ever written to disk — mirrors `capture_esignature`'s own Task
+         *     2.18 "validate before any side effect" fix
+         *     (`app/services/esignature.py`'s `document_type not in
+         *     VALID_DOCUMENT_TYPES` check): without this, a rejected `doc_type` would
+         *     still leave behind a real, orphaned file on disk with no corresponding
+         *     row. Raised as `HTTPException(422, ...)` rather than `ValueError`
+         *     because this is a router (not a low-level shared service function),
+         *     same 422 mapping `validate_file_name`'s `InvalidFileNameError` gets in
+         *     `upload_document`.
+         *
+         *     **ID-generation sequencing**: follows `capture_esignature`'s exact
+         *     pattern — `compliance_document_id = uuid.uuid4()` is generated
+         *     explicitly here BEFORE the file is written, that same id is passed into
+         *     `write_compliance_document_file(...)`, and the same id is then passed
+         *     explicitly into `ComplianceDocument(id=compliance_document_id, ...)`.
+         *     Deliberately NOT `upload_document`'s flush-then-read-the-id ordering
+         *     (that pattern works there because `write_document_file` doesn't need
+         *     the row's own id as a path component at all — `write_compliance_document_file`
+         *     does, since the compliance document's id is itself part of the storage
+         *     path).
+         */
+        post: operations["upload_compliance_document_subcontractors__subcontractor_id__compliance_documents_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2193,84 +2500,21 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/projects/{project_id}/invoices": {
+    "/tasks": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Invoices */
-        get: operations["list_invoices_projects__project_id__invoices_get"];
-        put?: never;
-        /** Create Invoice */
-        post: operations["create_invoice_projects__project_id__invoices_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/invoices/{invoice_id}/send": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Send Invoice */
-        post: operations["send_invoice_invoices__invoice_id__send_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/invoices/{invoice_id}/payments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Record Invoice Payment */
-        post: operations["record_invoice_payment_invoices__invoice_id__payments_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/invoices/{invoice_id}/void": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Void Invoice */
-        post: operations["void_invoice_invoices__invoice_id__void_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/invoices/{invoice_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Invoice */
-        get: operations["get_invoice_invoices__invoice_id__get"];
+        /**
+         * List My Tasks
+         * @description Cross-project list of the CURRENT USER's assigned tasks. `assignee`
+         *     accepts only the literal "me" — there is no legitimate frontend need to
+         *     list another user's assignments today (422 otherwise, YAGNI). Ordered
+         *     by due date (nulls last) then creation, capped at 200.
+         */
+        get: operations["list_my_tasks_tasks_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2279,42 +2523,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/bills": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Bills */
-        get: operations["list_bills_bills_get"];
-        put?: never;
-        /** Create Bill */
-        post: operations["create_bill_bills_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/bills/{bill_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Bill */
-        get: operations["get_bill_bills__bill_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/bills/{bill_id}/payments": {
+    "/tasks/{task_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -2323,64 +2532,55 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record Bill Payment */
-        post: operations["record_bill_payment_bills__bill_id__payments_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/bills/{bill_id}/void": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Void Bill */
-        post: operations["void_bill_bills__bill_id__void_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/projects/{project_id}/expenses": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Expenses */
-        get: operations["list_expenses_projects__project_id__expenses_get"];
-        put?: never;
-        /** Create Expense */
-        post: operations["create_expense_projects__project_id__expenses_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/reports/profitability": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Profitability Report */
-        get: operations["get_profitability_report_reports_profitability_get"];
-        put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Task
+         * @description `admin`/`project_manager` only — narrower than `patch_task`'s
+         *     admin/PM/field_crew set. field_crew's only grant on this row
+         *     (docs/07-security-compliance.md Section 2's RBAC matrix) is updating
+         *     `status` on a task assigned to them; deleting isn't part of that
+         *     grant, so `_WRITE_ROLES` (not `patch_task`'s three-role tuple) gates
+         *     this route. Reuses `_get_task_or_404` purely for the existence/tenant
+         *     404 — its field_crew-scoping branch is inert here, same "helper reused
+         *     for a role that can never reach this route" pattern `create_phase`'s
+         *     own docstring notes for `_get_project_or_404`.
+         */
+        delete: operations["delete_task_tasks__task_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Patch Task
+         * @description The genuinely new RBAC shape Task 1.14 calls out: role AND ownership
+         *     AND a field-level restriction, combined, not just a role gate.
+         *
+         *     - admin/project_manager: unrestricted — can set any field this schema
+         *       exposes (name, due_date, status, assignee_id) on any task in their
+         *       tenant.
+         *     - field_crew: can set `status` ONLY, and ONLY on a task assigned to
+         *       them (`assignee_id == current.user.id`).
+         *
+         *     Ownership is enforced by _get_task_or_404 (404 if the task isn't
+         *     theirs — they can't see it at all, so it doesn't "exist" from their
+         *     point of view, matching projects.py's _get_project_or_404 precedent).
+         *
+         *     The field-level restriction below is enforced with an explicit 403,
+         *     not a silent drop of disallowed fields. Alternative considered: quietly
+         *     ignore any field in the payload a field_crew caller isn't allowed to
+         *     touch (the same shape ProjectPatchRequest uses for `status`, which
+         *     doesn't exist on that schema at all, so extra fields are dropped by
+         *     Pydantic itself before the router ever sees them). Rejected here
+         *     because TaskUpdateRequest's `assignee_id` field is real and admin/PM
+         *     ARE allowed to set it — the restriction is role-conditional, not
+         *     schema-level, so silently ignoring it would mean a field_crew caller
+         *     who explicitly tried to reassign a task gets a 200 that looks
+         *     successful but did something other than what they asked. An explicit
+         *     403 makes the privilege boundary visible instead of silently
+         *     swallowing the attempt (same "professional honesty"/fail-loud
+         *     instinct behind this codebase's other explicit-rejection choices,
+         *     e.g. the illegal-status-transition 409s in leads.py/projects.py rather
+         *     than silently no-op'ing an illegal transition).
+         */
+        patch: operations["patch_task_tasks__task_id__patch"];
         trace?: never;
     };
     "/webhooks/stripe": {
@@ -2400,178 +2600,16 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/integrations/{provider}/connect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Connect */
-        get: operations["connect_integrations__provider__connect_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/integrations/{provider}/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Callback
-         * @description Task 4.9 (design spec Section 3): the OAuth redirect target.
-         *
-         *     No `CurrentUser` here — this is an external redirect from the
-         *     (fake, today) accounting provider back into our app, carrying no
-         *     bearer token, so `app/core/deps.py`'s `get_current_user` dependency
-         *     chain cannot run on this route at all (the same structural reality
-         *     `/invitations/{id}/accept` already established for this codebase).
-         *     Instead this route opens its own session and sets RLS tenant context
-         *     manually, exactly like every Dramatiq worker actor does for the same
-         *     "no request-scoped session to inherit" reason — see in particular
-         *     `app/tasks/estimate_pdf.py`'s `_generate_and_persist`, which is the
-         *     closest existing precedent: a standalone `SessionLocal()` session, one
-         *     explicit `set_current_tenant` call, then real work, then a single
-         *     `commit()`.
-         *
-         *     Reuses `app.db.session_scope`/`set_current_tenant` directly rather than
-         *     duplicating a second engine/sessionmaker in this file or inlining the
-         *     raw `SELECT set_config(...)` statement: `set_current_tenant` is a plain
-         *     function of `(session, company_id)` with no dependency on
-         *     `TenantMiddleware` or any other request-scoped state (confirmed by
-         *     reading `app/core/middleware.py` — `TenantMiddleware` only stashes the
-         *     raw bearer token/tenant header into contextvars, it never touches a
-         *     session or calls `set_current_tenant` itself). `accept_invitation`
-         *     (`app/routers/invitations.py`) is the closest existing precedent for
-         *     this exact shape — a route with no `CurrentUser` at all, using
-         *     `async with session_scope() as session: async with session.begin():` —
-         *     reused verbatim here rather than the plan's own literal reference code
-         *     (a bare, un-guarded `session.begin()`/`session.commit()`), because
-         *     `session.begin()` used as a context manager gives an automatic
-         *     rollback-on-exception guarantee `accept_invitation` already relies on;
-         *     a bare awaited `begin()` does not make that guarantee explicit, and
-         *     this is the single highest-stakes unauthenticated write route in this
-         *     feature to leave it implicit on.
-         *
-         *     Uses `session_scope()` (`app.db`, the `app_user`-role DSN
-         *     `get_current_user`'s own dependency chain uses via `settings.
-         *     database_url`), not the owner-role DSN cross-tenant worker actors like
-         *     `check_compliance_expiry` use — this route must go through RLS like any
-         *     other tenant-scoped write, it does not need cross-tenant visibility the
-         *     way a scheduled job scanning every company does.
-         *
-         *     Every write in this session must go through RLS scoped to the company
-         *     the signed `state` decoded — never trust `company_id` from anywhere
-         *     else in this request, since there is no `CurrentUser` to cross-check it
-         *     against.
-         */
-        get: operations["callback_integrations__provider__callback_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/integrations/{provider}/sync-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Sync Status
-         * @description Task 4.10 (design spec Section 3): read-only, cursor-paginated sync
-         *     status listing. Same `_ROLES` (admin/accountant) RBAC gate as
-         *     `connect` above.
-         *
-         *     The `IntegrationConnection` lookup below DOES filter explicitly on
-         *     `company_id == current.company_id`, unlike `leads.py`'s `GET /leads`
-         *     (which relies on RLS alone) — `leads` is a LIST endpoint, where the
-         *     parent/child roll-up `get_all_descendant_ids()` RLS policy returning
-         *     multiple companies' rows is the intended behavior. This route instead
-         *     does a `scalar_one_or_none()` lookup keyed only on `provider`, which
-         *     has no such tolerance: `integration_connections` has a
-         *     `UNIQUE(company_id, provider)` constraint, not a globally unique one,
-         *     so a parent company and a child branch that each independently connect
-         *     the same provider are two distinct, RLS-visible rows to a parent
-         *     admin — `provider` alone can't disambiguate them, and `scalar_one_or_
-         *     none()` would raise `MultipleResultsFound` (an unhandled 500) instead
-         *     of correctly resolving to "this company's own connection." Matches
-         *     `subscriptions.py`'s own precedent for this exact "hierarchy + need
-         *     exactly one row" shape (an explicit company filter alongside RLS, not
-         *     RLS alone) — though unlike `subscriptions` (root-company-scoped by
-         *     design), `integration_connections` rows are scoped to whichever
-         *     specific company connected (see `connect`/`callback` above, both of
-         *     which use `current.company_id`/the signed state's own `company_id`
-         *     directly, never a root-company resolution), so the filter here is the
-         *     caller's own `company_id`, not `get_root_company_id(...)`.
-         *
-         *     `IntegrationSyncRecord` rows, by contrast, need no explicit
-         *     `company_id` filter of their own: they're looked up by `connection_id
-         *     == connection.id`, and `connection.id` is a global UUID primary key
-         *     that (once resolved to a specific row above) unambiguously identifies
-         *     one connection — filtering by that FK is sufficient on its own,
-         *     independent of RLS breadth.
-         */
-        get: operations["sync_status_integrations__provider__sync_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/dashboard/summary": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Dashboard Summary */
-        get: operations["dashboard_summary_dashboard_summary_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Health */
-        get: operations["health_health_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** AgingEntry */
         AgingEntry: {
+            /** Bucket */
+            bucket: string;
+            /** Due Date */
+            due_date: string | null;
             /**
              * Id
              * Format: uuid
@@ -2579,10 +2617,6 @@ export interface components {
             id: string;
             /** Outstanding Balance */
             outstanding_balance: string;
-            /** Due Date */
-            due_date: string | null;
-            /** Bucket */
-            bucket: string;
         };
         /** AuthorizationUrlResponse */
         AuthorizationUrlResponse: {
@@ -2591,54 +2625,54 @@ export interface components {
         };
         /** BillCreateRequest */
         BillCreateRequest: {
+            /** Amount */
+            amount: number | string;
+            /** Bill Number */
+            bill_number?: string | null;
+            /** Due Date */
+            due_date?: string | null;
             /** Project Id */
             project_id?: string | null;
             /** Subcontractor Id */
             subcontractor_id?: string | null;
             /** Vendor Name */
             vendor_name?: string | null;
-            /** Amount */
-            amount: number | string;
-            /** Due Date */
-            due_date?: string | null;
-            /** Bill Number */
-            bill_number?: string | null;
         };
         /** BillDetailResponse */
         BillDetailResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Amount */
+            amount: string;
+            /** Bill Number */
+            bill_number: string | null;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Project Id */
-            project_id: string | null;
-            /** Subcontractor Id */
-            subcontractor_id: string | null;
-            /** Vendor Name */
-            vendor_name: string | null;
-            /** Bill Number */
-            bill_number: string | null;
-            /** Amount */
-            amount: string;
-            /** Status */
-            status: string;
-            /** Due Date */
-            due_date: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Outstanding Balance */
             outstanding_balance: string;
             /** Payments */
             payments: components["schemas"]["BillPaymentResponse"][];
+            /** Project Id */
+            project_id: string | null;
+            /** Status */
+            status: string;
+            /** Subcontractor Id */
+            subcontractor_id: string | null;
+            /** Vendor Name */
+            vendor_name: string | null;
         };
         /** BillListResponse */
         BillListResponse: {
@@ -2659,18 +2693,23 @@ export interface components {
         };
         /** BillPaymentResponse */
         BillPaymentResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Amount */
+            amount: string;
             /**
              * Bill Id
              * Format: uuid
              */
             bill_id: string;
-            /** Amount */
-            amount: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /**
              * Paid Date
              * Format: date
@@ -2681,69 +2720,64 @@ export interface components {
              * Format: uuid
              */
             recorded_by: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /** BillResponse */
         BillResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Amount */
+            amount: string;
+            /** Bill Number */
+            bill_number: string | null;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Project Id */
-            project_id: string | null;
-            /** Subcontractor Id */
-            subcontractor_id: string | null;
-            /** Vendor Name */
-            vendor_name: string | null;
-            /** Bill Number */
-            bill_number: string | null;
-            /** Amount */
-            amount: string;
-            /** Status */
-            status: string;
-            /** Due Date */
-            due_date: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Outstanding Balance */
             outstanding_balance: string;
+            /** Project Id */
+            project_id: string | null;
+            /** Status */
+            status: string;
+            /** Subcontractor Id */
+            subcontractor_id: string | null;
+            /** Vendor Name */
+            vendor_name: string | null;
         };
         /** Body_approve_change_order_change_orders__change_order_id__approve_post */
         Body_approve_change_order_change_orders__change_order_id__approve_post: {
-            /** Signer Name */
-            signer_name: string;
-            /** Signer Email */
-            signer_email: string;
             /**
              * Signature Artifact
              * Format: binary
              */
             signature_artifact: string;
+            /** Signer Email */
+            signer_email: string;
+            /** Signer Name */
+            signer_name: string;
         };
         /** Body_approve_estimate_estimates__estimate_id__approve_post */
         Body_approve_estimate_estimates__estimate_id__approve_post: {
-            /** Signer Name */
-            signer_name: string;
-            /** Signer Email */
-            signer_email: string;
             /**
              * Signature Artifact
              * Format: binary
              */
             signature_artifact: string;
+            /** Signer Email */
+            signer_email: string;
+            /** Signer Name */
+            signer_name: string;
         };
         /** Body_upload_branding_logo_companies_branding_logo_post */
         Body_upload_branding_logo_companies_branding_logo_post: {
@@ -2770,13 +2804,13 @@ export interface components {
         };
         /** Body_upload_document_projects__project_id__documents_post */
         Body_upload_document_projects__project_id__documents_post: {
-            /** File Name */
-            file_name: string;
             /**
              * File
              * Format: binary
              */
             file: string;
+            /** File Name */
+            file_name: string;
         };
         /**
          * CategorySubtotal
@@ -2815,10 +2849,10 @@ export interface components {
          *     enforce.
          */
         ChangeOrderCreateRequest: {
-            /** Description */
-            description: string;
             /** Cost Delta */
             cost_delta: number | string;
+            /** Description */
+            description: string;
             /**
              * Schedule Impact Days
              * @default 0
@@ -2866,6 +2900,22 @@ export interface components {
          */
         ChangeOrderResponse: {
             /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Cost Delta */
+            cost_delta: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Description */
+            description: string;
+            /** Esignature Id */
+            esignature_id: string | null;
+            /**
              * Id
              * Format: uuid
              */
@@ -2875,28 +2925,12 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /** Description */
-            description: string;
-            /** Cost Delta */
-            cost_delta: string;
+            /** Project Name */
+            project_name?: string | null;
             /** Schedule Impact Days */
             schedule_impact_days: number;
             /** Status */
             status: string;
-            /** Esignature Id */
-            esignature_id: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Project Name */
-            project_name?: string | null;
         };
         /** ChangePasswordRequest */
         ChangePasswordRequest: {
@@ -2909,10 +2943,10 @@ export interface components {
         };
         /** CommunicationLogCreateRequest */
         CommunicationLogCreateRequest: {
-            /** Channel */
-            channel: string;
             /** Body */
             body: string;
+            /** Channel */
+            channel: string;
         };
         /**
          * CommunicationLogListResponse
@@ -2930,6 +2964,25 @@ export interface components {
         /** CommunicationLogResponse */
         CommunicationLogResponse: {
             /**
+             * Author Id
+             * Format: uuid
+             */
+            author_id: string;
+            /** Body */
+            body: string;
+            /** Channel */
+            channel: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
              * Id
              * Format: uuid
              */
@@ -2939,25 +2992,6 @@ export interface components {
              * Format: uuid
              */
             lead_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /**
-             * Author Id
-             * Format: uuid
-             */
-            author_id: string;
-            /** Channel */
-            channel: string;
-            /** Body */
-            body: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /** CompanyBrandingPutRequest */
         CompanyBrandingPutRequest: {
@@ -2971,12 +3005,12 @@ export interface components {
         };
         /** CompanyBrandingResponse */
         CompanyBrandingResponse: {
-            /** Logo Storage Path */
-            logo_storage_path: string | null;
             /** Accent Color */
             accent_color: string;
             /** Footer Text */
             footer_text: string;
+            /** Logo Storage Path */
+            logo_storage_path: string | null;
         };
         /**
          * CompanyMemberListResponse
@@ -2994,36 +3028,36 @@ export interface components {
          *     the value callers need is exactly what tasks.assignee_id stores.
          */
         CompanyMemberResponse: {
+            /** Email */
+            email: string;
+            /** Full Name */
+            full_name: string;
+            /** Role */
+            role: string;
             /**
              * User Id
              * Format: uuid
              */
             user_id: string;
-            /** Full Name */
-            full_name: string;
-            /** Email */
-            email: string;
-            /** Role */
-            role: string;
         };
         /** CompanyResponse */
         CompanyResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Parent Id */
-            parent_id: string | null;
-            /** Name */
-            name: string;
-            /** Is Active */
-            is_active: boolean;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id: string | null;
         };
         /**
          * ComplianceDashboardEntry
@@ -3038,13 +3072,6 @@ export interface components {
              * Format: uuid
              */
             compliance_document_id: string;
-            /**
-             * Subcontractor Id
-             * Format: uuid
-             */
-            subcontractor_id: string;
-            /** Subcontractor Name */
-            subcontractor_name: string;
             /** Doc Type */
             doc_type: string;
             /**
@@ -3054,6 +3081,13 @@ export interface components {
             expires_on: string;
             /** Status */
             status: string;
+            /**
+             * Subcontractor Id
+             * Format: uuid
+             */
+            subcontractor_id: string;
+            /** Subcontractor Name */
+            subcontractor_name: string;
         };
         /**
          * ComplianceDashboardResponse
@@ -3089,34 +3123,34 @@ export interface components {
          */
         ComplianceDocumentResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Subcontractor Id
-             * Format: uuid
-             */
-            subcontractor_id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
             /** Doc Type */
             doc_type: string;
-            /** Storage Path */
-            storage_path: string;
             /**
              * Expires On
              * Format: date
              */
             expires_on: string;
             /**
-             * Created At
-             * Format: date-time
+             * Id
+             * Format: uuid
              */
-            created_at: string;
+            id: string;
+            /** Storage Path */
+            storage_path: string;
+            /**
+             * Subcontractor Id
+             * Format: uuid
+             */
+            subcontractor_id: string;
         };
         /**
          * ComplianceNotificationEntry
@@ -3125,17 +3159,10 @@ export interface components {
          */
         ComplianceNotificationEntry: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Compliance Document Id
              * Format: uuid
              */
             compliance_document_id: string;
-            /** Subcontractor Name */
-            subcontractor_name: string;
             /** Doc Type */
             doc_type: string;
             /**
@@ -3143,15 +3170,22 @@ export interface components {
              * Format: date
              */
             expires_on: string;
-            /** Threshold */
-            threshold: string;
             /**
              * Fired At
              * Format: date-time
              */
             fired_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Read At */
             read_at: string | null;
+            /** Subcontractor Name */
+            subcontractor_name: string;
+            /** Threshold */
+            threshold: string;
         };
         /** ComplianceNotificationListResponse */
         ComplianceNotificationListResponse: {
@@ -3184,12 +3218,12 @@ export interface components {
          *     not a bulk-create response envelope.
          */
         CostCatalogItemBulkResultEntry: {
+            /** Detail */
+            detail?: string | null;
             /** Index */
             index: number;
             /** Status */
             status: string;
-            /** Detail */
-            detail?: string | null;
         };
         /**
          * CostCatalogItemCreateRequest
@@ -3268,22 +3302,24 @@ export interface components {
          *     risk of the router forgetting to pass it.
          */
         CostCatalogItemResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Category */
+            category: string;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Parent Catalog Item Id */
-            parent_catalog_item_id: string | null;
-            /** Category */
-            category: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Override */
+            readonly is_override: boolean;
             /** Name */
             name: string;
+            /** Parent Catalog Item Id */
+            parent_catalog_item_id: string | null;
             /** Unit */
             unit: string;
             /** Unit Rate */
@@ -3293,8 +3329,6 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
-            /** Is Override */
-            readonly is_override: boolean;
         };
         /** CreateChildCompanyRequest */
         CreateChildCompanyRequest: {
@@ -3320,10 +3354,10 @@ export interface components {
              * Format: date
              */
             log_date: string;
-            /** Weather */
-            weather?: string | null;
             /** Notes */
             notes?: string | null;
+            /** Weather */
+            weather?: string | null;
         };
         /**
          * DailyLogListResponse
@@ -3347,39 +3381,39 @@ export interface components {
          */
         DailyLogResponse: {
             /**
-             * Id
+             * Author Id
              * Format: uuid
              */
-            id: string;
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
+            author_id: string;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
             /**
-             * Author Id
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
              * Format: uuid
              */
-            author_id: string;
+            id: string;
             /**
              * Log Date
              * Format: date
              */
             log_date: string;
-            /** Weather */
-            weather: string | null;
             /** Notes */
             notes: string | null;
             /**
-             * Created At
-             * Format: date-time
+             * Project Id
+             * Format: uuid
              */
-            created_at: string;
+            project_id: string;
+            /** Weather */
+            weather: string | null;
         };
         /**
          * DashboardSummaryResponse
@@ -3388,10 +3422,10 @@ export interface components {
          *     cursor-paginated with no total field.
          */
         DashboardSummaryResponse: {
-            /** Open Leads */
-            open_leads: number;
             /** Active Projects */
             active_projects: number;
+            /** Open Leads */
+            open_leads: number;
             /** Tasks Due This Week */
             tasks_due_this_week: number;
         };
@@ -3420,6 +3454,18 @@ export interface components {
          */
         DocumentResponse: {
             /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** File Name */
+            file_name: string;
+            /**
              * Id
              * Format: uuid
              */
@@ -3429,27 +3475,15 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /** File Name */
-            file_name: string;
             /** Storage Path */
             storage_path: string;
-            /** Version */
-            version: number;
             /**
              * Uploaded By
              * Format: uuid
              */
             uploaded_by: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+            /** Version */
+            version: number;
         };
         /**
          * EsignatureResponse
@@ -3462,30 +3496,30 @@ export interface components {
          */
         EsignatureResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Signer Name */
-            signer_name: string;
-            /** Signer Email */
-            signer_email: string;
+            /** Document Type */
+            document_type: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Ip Address */
+            ip_address: string;
+            /** Signature Artifact Path */
+            signature_artifact_path: string;
             /**
              * Signed At
              * Format: date-time
              */
             signed_at: string;
-            /** Ip Address */
-            ip_address: string;
-            /** Signature Artifact Path */
-            signature_artifact_path: string;
-            /** Document Type */
-            document_type: string;
+            /** Signer Email */
+            signer_email: string;
+            /** Signer Name */
+            signer_name: string;
         };
         /**
          * EstimateCalculationResponse
@@ -3510,57 +3544,57 @@ export interface components {
          *     view on top.
          */
         EstimateCalculationResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Category Breakdown */
+            category_breakdown: components["schemas"]["CategorySubtotal"][];
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Project Id */
-            project_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Esignature Id */
+            esignature_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Snapshotted */
+            is_snapshotted: boolean;
             /** Lead Id */
             lead_id: string | null;
+            /** Line Items */
+            line_items: components["schemas"]["EstimateLineItemResponse"][];
             /**
              * Markup Profile Id
              * Format: uuid
              */
             markup_profile_id: string;
+            /** Parent Name */
+            parent_name?: string | null;
+            /** Pdf Generated At */
+            pdf_generated_at: string | null;
+            /** Pdf Status */
+            pdf_status: string;
+            /** Pdf Storage Path */
+            pdf_storage_path: string | null;
+            /** Project Id */
+            project_id: string | null;
             /** Status */
             status: string;
             /** Subtotal */
             subtotal: string | null;
             /** Total */
             total: string | null;
-            /** Is Snapshotted */
-            is_snapshotted: boolean;
-            /** Esignature Id */
-            esignature_id: string | null;
-            /** Pdf Status */
-            pdf_status: string;
-            /** Pdf Storage Path */
-            pdf_storage_path: string | null;
-            /** Pdf Generated At */
-            pdf_generated_at: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
             /**
              * Updated At
              * Format: date-time
              */
             updated_at: string;
-            /** Parent Name */
-            parent_name?: string | null;
-            /** Line Items */
-            line_items: components["schemas"]["EstimateLineItemResponse"][];
-            /** Category Breakdown */
-            category_breakdown: components["schemas"]["CategorySubtotal"][];
         };
         /**
          * EstimateCreateRequest
@@ -3581,8 +3615,6 @@ export interface components {
          *     validation split (`app/schemas/project.py`, `app/schemas/lead.py`).
          */
         EstimateCreateRequest: {
-            /** Project Id */
-            project_id?: string | null;
             /** Lead Id */
             lead_id?: string | null;
             /**
@@ -3590,6 +3622,8 @@ export interface components {
              * Format: uuid
              */
             markup_profile_id: string;
+            /** Project Id */
+            project_id?: string | null;
         };
         /**
          * EstimateDetailResponse
@@ -3622,54 +3656,54 @@ export interface components {
          */
         EstimateDetailResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Project Id */
-            project_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Esignature Id */
+            esignature_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Snapshotted */
+            is_snapshotted: boolean;
             /** Lead Id */
             lead_id: string | null;
+            /** Line Items */
+            line_items: components["schemas"]["EstimateLineItemResponse"][];
             /**
              * Markup Profile Id
              * Format: uuid
              */
             markup_profile_id: string;
+            /** Parent Name */
+            parent_name?: string | null;
+            /** Pdf Generated At */
+            pdf_generated_at: string | null;
+            /** Pdf Status */
+            pdf_status: string;
+            /** Pdf Storage Path */
+            pdf_storage_path: string | null;
+            /** Project Id */
+            project_id: string | null;
             /** Status */
             status: string;
             /** Subtotal */
             subtotal: string | null;
             /** Total */
             total: string | null;
-            /** Is Snapshotted */
-            is_snapshotted: boolean;
-            /** Esignature Id */
-            esignature_id: string | null;
-            /** Pdf Status */
-            pdf_status: string;
-            /** Pdf Storage Path */
-            pdf_storage_path: string | null;
-            /** Pdf Generated At */
-            pdf_generated_at: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
             /**
              * Updated At
              * Format: date-time
              */
             updated_at: string;
-            /** Parent Name */
-            parent_name?: string | null;
-            /** Line Items */
-            line_items: components["schemas"]["EstimateLineItemResponse"][];
         };
         /**
          * EstimateLineItemInput
@@ -3709,16 +3743,6 @@ export interface components {
          */
         EstimateLineItemResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Estimate Id
-             * Format: uuid
-             */
-            estimate_id: string;
-            /**
              * Company Id
              * Format: uuid
              */
@@ -3728,12 +3752,22 @@ export interface components {
              * Format: uuid
              */
             cost_catalog_item_id: string;
+            /**
+             * Estimate Id
+             * Format: uuid
+             */
+            estimate_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Line Total */
+            line_total: string;
             /** Quantity */
             quantity: string;
             /** Unit Rate Snapshot */
             unit_rate_snapshot: string;
-            /** Line Total */
-            line_total: string;
         };
         /**
          * EstimateLineItemsReplaceRequest
@@ -3816,17 +3850,24 @@ export interface components {
          */
         EstimateResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Project Id */
-            project_id: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Esignature Id */
+            esignature_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Snapshotted */
+            is_snapshotted: boolean;
             /** Lead Id */
             lead_id: string | null;
             /**
@@ -3834,41 +3875,34 @@ export interface components {
              * Format: uuid
              */
             markup_profile_id: string;
+            /** Parent Name */
+            parent_name?: string | null;
+            /** Pdf Generated At */
+            pdf_generated_at: string | null;
+            /** Pdf Status */
+            pdf_status: string;
+            /** Pdf Storage Path */
+            pdf_storage_path: string | null;
+            /** Project Id */
+            project_id: string | null;
             /** Status */
             status: string;
             /** Subtotal */
             subtotal: string | null;
             /** Total */
             total: string | null;
-            /** Is Snapshotted */
-            is_snapshotted: boolean;
-            /** Esignature Id */
-            esignature_id: string | null;
-            /** Pdf Status */
-            pdf_status: string;
-            /** Pdf Storage Path */
-            pdf_storage_path: string | null;
-            /** Pdf Generated At */
-            pdf_generated_at: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
             /**
              * Updated At
              * Format: date-time
              */
             updated_at: string;
-            /** Parent Name */
-            parent_name?: string | null;
         };
         /** ExpenseCreateRequest */
         ExpenseCreateRequest: {
-            /** Description */
-            description: string;
             /** Amount */
             amount: number | string;
+            /** Description */
+            description: string;
             /**
              * Incurred On
              * Format: date
@@ -3884,16 +3918,8 @@ export interface components {
         };
         /** ExpenseResponse */
         ExpenseResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
+            /** Amount */
+            amount: string;
             /**
              * Company Id
              * Format: uuid
@@ -3901,13 +3927,21 @@ export interface components {
             company_id: string;
             /** Description */
             description: string;
-            /** Amount */
-            amount: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /**
              * Incurred On
              * Format: date
              */
             incurred_on: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -3917,17 +3951,17 @@ export interface components {
         /** IntegrationConnectionResponse */
         IntegrationConnectionResponse: {
             /**
+             * Connected At
+             * Format: date-time
+             */
+            connected_at: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
             /** Provider */
             provider: string;
-            /**
-             * Connected At
-             * Format: date-time
-             */
-            connected_at: string;
         };
         /** InvitationAcceptRequest */
         InvitationAcceptRequest: {
@@ -3948,11 +3982,8 @@ export interface components {
         };
         /** InvitationResponse */
         InvitationResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Accepted At */
+            accepted_at: string | null;
             /**
              * Company Id
              * Format: uuid
@@ -3963,15 +3994,18 @@ export interface components {
              * Format: email
              */
             email: string;
-            /** Role */
-            role: string;
             /**
              * Expires At
              * Format: date-time
              */
             expires_at: string;
-            /** Accepted At */
-            accepted_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Role */
+            role: string;
         };
         /** InvoiceCreateRequest */
         InvoiceCreateRequest: {
@@ -3982,40 +4016,40 @@ export interface components {
         };
         /** InvoiceDetailResponse */
         InvoiceDetailResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
+            /** Amount */
+            amount: string;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Estimate Id */
-            estimate_id: string | null;
-            /** Invoice Number */
-            invoice_number: string;
-            /** Amount */
-            amount: string;
-            /** Status */
-            status: string;
-            /** Due Date */
-            due_date: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /** Estimate Id */
+            estimate_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invoice Number */
+            invoice_number: string;
             /** Outstanding Balance */
             outstanding_balance: string;
             /** Payments */
             payments: components["schemas"]["InvoicePaymentResponse"][];
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Status */
+            status: string;
         };
         /** InvoiceListResponse */
         InvoiceListResponse: {
@@ -4036,6 +4070,13 @@ export interface components {
         };
         /** InvoicePaymentResponse */
         InvoicePaymentResponse: {
+            /** Amount */
+            amount: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
             /**
              * Id
              * Format: uuid
@@ -4046,8 +4087,6 @@ export interface components {
              * Format: uuid
              */
             invoice_id: string;
-            /** Amount */
-            amount: string;
             /**
              * Paid Date
              * Format: date
@@ -4058,46 +4097,41 @@ export interface components {
              * Format: uuid
              */
             recorded_by: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /** InvoiceResponse */
         InvoiceResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Project Id
-             * Format: uuid
-             */
-            project_id: string;
+            /** Amount */
+            amount: string;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Estimate Id */
-            estimate_id: string | null;
-            /** Invoice Number */
-            invoice_number: string;
-            /** Amount */
-            amount: string;
-            /** Status */
-            status: string;
-            /** Due Date */
-            due_date: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /** Estimate Id */
+            estimate_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Invoice Number */
+            invoice_number: string;
             /** Outstanding Balance */
             outstanding_balance: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Status */
+            status: string;
         };
         /** InvoiceSendRequest */
         InvoiceSendRequest: {
@@ -4108,21 +4142,21 @@ export interface components {
         LeadCreateRequest: {
             /** Contact Name */
             contact_name: string;
-            /** Project Name */
-            project_name: string;
             /**
              * Email
              * Format: email
              */
             email: string;
-            /** Phone */
-            phone?: string | null;
-            /** Project Type */
-            project_type: string;
             /** Estimated Value */
             estimated_value?: number | string | null;
             /** Notes */
             notes?: string | null;
+            /** Phone */
+            phone?: string | null;
+            /** Project Name */
+            project_name: string;
+            /** Project Type */
+            project_type: string;
         };
         /**
          * LeadListResponse
@@ -4138,39 +4172,39 @@ export interface components {
         /** LeadResponse */
         LeadResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
             /** Contact Name */
             contact_name: string;
-            /** Project Name */
-            project_name: string;
-            /**
-             * Email
-             * Format: email
-             */
-            email: string;
-            /** Phone */
-            phone: string | null;
-            /** Status */
-            status: string;
-            /** Estimated Value */
-            estimated_value: string | null;
-            /** Project Type */
-            project_type: string;
-            /** Notes */
-            notes: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Estimated Value */
+            estimated_value: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Notes */
+            notes: string | null;
+            /** Phone */
+            phone: string | null;
+            /** Project Name */
+            project_name: string;
+            /** Project Type */
+            project_type: string;
+            /** Status */
+            status: string;
             /**
              * Updated At
              * Format: date-time
@@ -4203,18 +4237,18 @@ export interface components {
         LeadUpdateRequest: {
             /** Contact Name */
             contact_name?: string | null;
-            /** Project Name */
-            project_name?: string | null;
             /** Email */
             email?: string | null;
-            /** Phone */
-            phone?: string | null;
-            /** Project Type */
-            project_type?: string | null;
             /** Estimated Value */
             estimated_value?: number | string | null;
             /** Notes */
             notes?: string | null;
+            /** Phone */
+            phone?: string | null;
+            /** Project Name */
+            project_name?: string | null;
+            /** Project Type */
+            project_type?: string | null;
             /** Status */
             status?: string | null;
         };
@@ -4289,15 +4323,15 @@ export interface components {
          */
         MarkupProfileResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Name */
             name: string;
             /** Overhead Pct */
@@ -4319,10 +4353,10 @@ export interface components {
         };
         /** MfaEnrollResponse */
         MfaEnrollResponse: {
-            /** Secret */
-            secret: string;
             /** Otpauth Uri */
             otpauth_uri: string;
+            /** Secret */
+            secret: string;
         };
         /**
          * MyTaskListResponse
@@ -4340,34 +4374,32 @@ export interface components {
          *     Tasks view renders "task · project · due date" rows).
          */
         MyTaskResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Phase Id
-             * Format: uuid
-             */
-            phase_id: string;
+            /** Assignee Id */
+            assignee_id: string | null;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Name */
-            name: string;
-            /** Assignee Id */
-            assignee_id: string | null;
-            /** Due Date */
-            due_date: string | null;
-            /** Status */
-            status: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Phase Id
+             * Format: uuid
+             */
+            phase_id: string;
             /**
              * Project Id
              * Format: uuid
@@ -4375,6 +4407,8 @@ export interface components {
             project_id: string;
             /** Project Name */
             project_name: string;
+            /** Status */
+            status: string;
         };
         /**
          * PhaseCreateRequest
@@ -4408,22 +4442,22 @@ export interface components {
          */
         PhaseResponse: {
             /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Name */
+            name: string;
             /**
              * Project Id
              * Format: uuid
              */
             project_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /** Name */
-            name: string;
             /** Sequence */
             sequence: number;
         };
@@ -4447,22 +4481,22 @@ export interface components {
          */
         PhaseWithTasksResponse: {
             /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Name */
+            name: string;
             /**
              * Project Id
              * Format: uuid
              */
             project_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /** Name */
-            name: string;
             /** Sequence */
             sequence: number;
             /** Tasks */
@@ -4475,12 +4509,12 @@ export interface components {
         };
         /** ProfitabilityReportResponse */
         ProfitabilityReportResponse: {
-            /** Projects */
-            projects: components["schemas"]["ProjectProfitability"][];
-            /** Ar Aging */
-            ar_aging: components["schemas"]["AgingEntry"][];
             /** Ap Aging */
             ap_aging: components["schemas"]["AgingEntry"][];
+            /** Ar Aging */
+            ar_aging: components["schemas"]["AgingEntry"][];
+            /** Projects */
+            projects: components["schemas"]["ProjectProfitability"][];
             /** Tax Liability Estimate */
             tax_liability_estimate: string;
         };
@@ -4536,6 +4570,8 @@ export interface components {
          *         )
          */
         ProjectClientDashboardResponse: {
+            /** Completed Task Count */
+            completed_task_count: number;
             /**
              * Id
              * Format: uuid
@@ -4543,18 +4579,16 @@ export interface components {
             id: string;
             /** Name */
             name: string;
-            /** Status */
-            status: string;
-            /** Site Address */
-            site_address: string;
-            /** Projected Start Date */
-            projected_start_date: string | null;
             /** Phase Count */
             phase_count: number;
+            /** Projected Start Date */
+            projected_start_date: string | null;
+            /** Site Address */
+            site_address: string;
+            /** Status */
+            status: string;
             /** Task Count */
             task_count: number;
-            /** Completed Task Count */
-            completed_task_count: number;
         };
         /**
          * ProjectCreateRequest
@@ -4562,14 +4596,14 @@ export interface components {
          *     `LEAD_WON` auto-draft path — Task 1.18 wires that one separately).
          */
         ProjectCreateRequest: {
-            /** Name */
-            name: string;
-            /** Site Address */
-            site_address: string;
             /** Lead Id */
             lead_id?: string | null;
+            /** Name */
+            name: string;
             /** Projected Start Date */
             projected_start_date?: string | null;
+            /** Site Address */
+            site_address: string;
         };
         /**
          * ProjectListResponse
@@ -4608,24 +4642,24 @@ export interface components {
         ProjectPatchRequest: {
             /** Name */
             name?: string | null;
-            /** Site Address */
-            site_address?: string | null;
             /** Projected Start Date */
             projected_start_date?: string | null;
+            /** Site Address */
+            site_address?: string | null;
         };
         /** ProjectProfitability */
         ProjectProfitability: {
+            /** Actual Cost */
+            actual_cost: string;
+            /** Billed Revenue */
+            billed_revenue: string;
+            /** Profitability */
+            profitability: string;
             /**
              * Project Id
              * Format: uuid
              */
             project_id: string;
-            /** Billed Revenue */
-            billed_revenue: string;
-            /** Actual Cost */
-            actual_cost: string;
-            /** Profitability */
-            profitability: string;
         };
         /**
          * ProjectResponse
@@ -4634,30 +4668,30 @@ export interface components {
          */
         ProjectResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Lead Id */
-            lead_id: string | null;
-            /** Name */
-            name: string;
-            /** Site Address */
-            site_address: string;
-            /** Status */
-            status: string;
-            /** Projected Start Date */
-            projected_start_date: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Lead Id */
+            lead_id: string | null;
+            /** Name */
+            name: string;
+            /** Projected Start Date */
+            projected_start_date: string | null;
+            /** Site Address */
+            site_address: string;
+            /** Status */
+            status: string;
             /**
              * Updated At
              * Format: date-time
@@ -4683,10 +4717,10 @@ export interface components {
          *     division of responsibility as Lead's state machine (Task 1.5).
          */
         ProjectStatusUpdateRequest: {
-            /** Status */
-            status: string;
             /** Reason */
             reason?: string | null;
+            /** Status */
+            status: string;
         };
         /** RefreshRequest */
         RefreshRequest: {
@@ -4695,17 +4729,17 @@ export interface components {
         };
         /** RegisterRequest */
         RegisterRequest: {
-            /** Company Name */
-            company_name: string;
-            /** Admin Full Name */
-            admin_full_name: string;
             /**
              * Admin Email
              * Format: email
              */
             admin_email: string;
+            /** Admin Full Name */
+            admin_full_name: string;
             /** Admin Password */
             admin_password: string;
+            /** Company Name */
+            company_name: string;
         };
         /** RegisterResponse */
         RegisterResponse: {
@@ -4715,15 +4749,15 @@ export interface components {
              */
             company_id: string;
             /**
-             * User Id
-             * Format: uuid
-             */
-            user_id: string;
-            /**
              * Email
              * Format: email
              */
             email: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
         };
         /**
          * SubcontractorAssignmentCreateRequest
@@ -4753,13 +4787,13 @@ export interface components {
          *     (`app/routers/projects.py`, Task 2.23) establishes.
          */
         SubcontractorAssignmentCreateRequest: {
+            /** Override Reason */
+            override_reason?: string | null;
             /**
              * Subcontractor Id
              * Format: uuid
              */
             subcontractor_id: string;
-            /** Override Reason */
-            override_reason?: string | null;
         };
         /**
          * SubcontractorAssignmentListResponse
@@ -4784,10 +4818,27 @@ export interface components {
          */
         SubcontractorAssignmentResponse: {
             /**
+             * Assigned By
+             * Format: uuid
+             */
+            assigned_by: string;
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Override Reason */
+            override_reason: string | null;
             /**
              * Project Id
              * Format: uuid
@@ -4798,23 +4849,6 @@ export interface components {
              * Format: uuid
              */
             subcontractor_id: string;
-            /**
-             * Company Id
-             * Format: uuid
-             */
-            company_id: string;
-            /**
-             * Assigned By
-             * Format: uuid
-             */
-            assigned_by: string;
-            /** Override Reason */
-            override_reason: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /**
          * SubcontractorCreateRequest
@@ -4837,12 +4871,12 @@ export interface components {
          *     as an unhandled `DataError` (500), not a clean 422.
          */
         SubcontractorCreateRequest: {
+            /** Contact Email */
+            contact_email?: string | null;
             /** Name */
             name: string;
             /** Trade */
             trade?: string | null;
-            /** Contact Email */
-            contact_email?: string | null;
         };
         /**
          * SubcontractorListResponse
@@ -4865,19 +4899,10 @@ export interface components {
          */
         SubcontractorResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Name */
-            name: string;
-            /** Trade */
-            trade: string | null;
             /** Contact Email */
             contact_email: string | null;
             /**
@@ -4885,66 +4910,75 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
-        };
-        /** SubscriptionResponse */
-        SubscriptionResponse: {
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Name */
+            name: string;
+            /** Trade */
+            trade: string | null;
+        };
+        /** SubscriptionResponse */
+        SubscriptionResponse: {
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Tier */
-            tier: string;
-            /** Status */
-            status: string;
-            /** Included Seats */
-            included_seats: number;
             /** Current Period End */
             current_period_end: string | null;
-        };
-        /** SyncRecordResponse */
-        SyncRecordResponse: {
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Entity Type */
-            entity_type: string;
+            /** Included Seats */
+            included_seats: number;
+            /** Status */
+            status: string;
+            /** Tier */
+            tier: string;
+        };
+        /** SyncRecordResponse */
+        SyncRecordResponse: {
+            /** Attempt Count */
+            attempt_count: number;
             /**
              * Entity Id
              * Format: uuid
              */
             entity_id: string;
-            /** Status */
-            status: string;
-            /** Attempt Count */
-            attempt_count: number;
-            /** Last Error */
-            last_error: string | null;
-            /** Last Attempted At */
-            last_attempted_at: string | null;
+            /** Entity Type */
+            entity_type: string;
             /** External Record Id */
             external_record_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Last Attempted At */
+            last_attempted_at: string | null;
+            /** Last Error */
+            last_error: string | null;
+            /** Status */
+            status: string;
         };
         /** SyncStatusResponse */
         SyncStatusResponse: {
-            /** Provider */
-            provider: string;
             /**
              * Connected At
              * Format: date-time
              */
             connected_at: string;
-            /** Records */
-            records: components["schemas"]["SyncRecordResponse"][];
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Provider */
+            provider: string;
+            /** Records */
+            records: components["schemas"]["SyncRecordResponse"][];
         };
         /**
          * TaskCreateRequest
@@ -4955,12 +4989,12 @@ export interface components {
          *     can validate on its own without a DB read.
          */
         TaskCreateRequest: {
-            /** Name */
-            name: string;
-            /** Due Date */
-            due_date?: string | null;
             /** Assignee Id */
             assignee_id?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+            /** Name */
+            name: string;
             /**
              * Phase Id
              * Format: uuid
@@ -4975,34 +5009,34 @@ export interface components {
          *     timestamp for this table.
          */
         TaskResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Phase Id
-             * Format: uuid
-             */
-            phase_id: string;
+            /** Assignee Id */
+            assignee_id: string | null;
             /**
              * Company Id
              * Format: uuid
              */
             company_id: string;
-            /** Name */
-            name: string;
-            /** Assignee Id */
-            assignee_id: string | null;
-            /** Due Date */
-            due_date: string | null;
-            /** Status */
-            status: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Due Date */
+            due_date: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Phase Id
+             * Format: uuid
+             */
+            phase_id: string;
+            /** Status */
+            status: string;
         };
         /**
          * TaskUpdateRequest
@@ -5030,26 +5064,19 @@ export interface components {
          *     whatever this schema happens to expose).
          */
         TaskUpdateRequest: {
-            /** Name */
-            name?: string | null;
-            /** Due Date */
-            due_date?: string | null;
-            /** Status */
-            status?: string | null;
             /** Assignee Id */
             assignee_id?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Status */
+            status?: string | null;
         };
         /** TokenResponse */
         TokenResponse: {
             /** Access Token */
             access_token: string;
-            /** Refresh Token */
-            refresh_token: string;
-            /**
-             * Token Type
-             * @default bearer
-             */
-            token_type: string;
             /**
              * Default Company Id
              * Format: uuid
@@ -5060,8 +5087,15 @@ export interface components {
              * @default false
              */
             mfa_enrollment_required: boolean;
+            /** Refresh Token */
+            refresh_token: string;
             /** Role */
             role: string;
+            /**
+             * Token Type
+             * @default bearer
+             */
+            token_type: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -5081,7 +5115,7 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    register_auth_register_post: {
+    change_password_auth_change_password_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5090,18 +5124,16 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RegisterRequest"];
+                "application/json": components["schemas"]["ChangePasswordRequest"];
             };
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["RegisterResponse"];
-                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -5147,7 +5179,7 @@ export interface operations {
             };
         };
     };
-    refresh_auth_refresh_post: {
+    logout_auth_logout_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5157,39 +5189,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RefreshRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TokenResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    change_password_auth_change_password_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChangePasswordRequest"];
             };
         };
         responses: {
@@ -5207,26 +5206,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mfa_enroll_auth_mfa_enroll_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MfaEnrollResponse"];
                 };
             };
         };
@@ -5293,7 +5272,27 @@ export interface operations {
             };
         };
     };
-    logout_auth_logout_post: {
+    mfa_enroll_auth_mfa_enroll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaEnrollResponse"];
+                };
+            };
+        };
+    };
+    refresh_auth_refresh_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5307,11 +5306,573 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bills_bills_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_bill_bills_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BillCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bill_bills__bill_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_bill_payment_bills__bill_id__payments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BillPaymentCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillPaymentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    void_bill_bills__bill_id__void_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                bill_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_catalog_items_catalogs_items_get: {
+        parameters: {
+            query?: {
+                category?: string | null;
+                search?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_catalog_item_catalogs_items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bulk_create_catalog_items_catalogs_items_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemBulkCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemBulkResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_catalog_item_catalogs_items__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_catalog_item_catalogs_items__item_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemPatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_catalog_item_override_catalogs_items__parent_catalog_item_id__override_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                parent_catalog_item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostCatalogItemCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCatalogItemResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_all_change_orders_change_orders_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_change_order_change_orders__change_order_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                change_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_change_order_change_orders__change_order_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                change_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_approve_change_order_change_orders__change_order_id__approve_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_change_order_change_orders__change_order_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                change_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeOrderRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_change_order_for_signature_change_orders__change_order_id__send_for_signature_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                change_order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -5496,6 +6057,684 @@ export interface operations {
             };
         };
     };
+    list_company_users_companies__company_id__users_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyMemberListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_compliance_dashboard_compliance_dashboard_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceDashboardResponse"];
+                };
+            };
+        };
+    };
+    list_compliance_notifications_compliance_notifications_get: {
+        parameters: {
+            query?: {
+                unread_only?: boolean;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceNotificationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_compliance_notification_compliance_notifications__notification_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notification_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceNotificationEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dashboard_summary_dashboard_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardSummaryResponse"];
+                };
+            };
+        };
+    };
+    get_esignature_esignatures__esignature_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                esignature_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EsignatureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_estimates_estimates_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_estimate_estimates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimateCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_estimate_estimates__estimate_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_estimate_estimates__estimate_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_estimate_estimates__estimate_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimatePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_estimate_estimates__estimate_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_approve_estimate_estimates__estimate_id__approve_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    calculate_estimate_totals_estimates__estimate_id__calculate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateCalculationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_estimate_pdf_estimates__estimate_id__export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_estimate_line_items_estimates__estimate_id__lines_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimateLineItemsReplaceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_estimate_pdf_estimates__estimate_id__pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_estimate_estimates__estimate_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimateRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_estimate_for_signature_estimates__estimate_id__send_for_signature_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                estimate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EstimateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    callback_integrations__provider__callback_get: {
+        parameters: {
+            query: {
+                code: string;
+                state: string;
+            };
+            header?: never;
+            path: {
+                provider: "quickbooks" | "freshbooks";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrationConnectionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    connect_integrations__provider__connect_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: "quickbooks" | "freshbooks";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizationUrlResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sync_status_integrations__provider__sync_status_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                provider: "quickbooks" | "freshbooks";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_invitation_invitations_post: {
         parameters: {
             query?: never;
@@ -5551,6 +6790,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvitationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_invoice_invoices__invoice_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_invoice_payment_invoices__invoice_id__payments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvoicePaymentCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoicePaymentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_invoice_invoices__invoice_id__send_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvoiceSendRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    void_invoice_invoices__invoice_id__void_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5765,6 +7136,135 @@ export interface operations {
             };
         };
     };
+    list_markup_profiles_markup_profiles_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkupProfileListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_markup_profile_markup_profiles_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkupProfileCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkupProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_markup_profile_markup_profiles__profile_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_markup_profile_markup_profiles__profile_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkupProfilePatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkupProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_projects_projects_get: {
         parameters: {
             query?: {
@@ -5897,7 +7397,41 @@ export interface operations {
             };
         };
     };
-    update_project_status_projects__project_id__status_patch: {
+    list_change_orders_projects__project_id__change_orders_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_change_order_projects__project_id__change_orders_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -5908,9 +7442,43 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ProjectStatusUpdateRequest"];
+                "application/json": components["schemas"]["ChangeOrderCreateRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_daily_logs_projects__project_id__daily_logs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -5918,7 +7486,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProjectResponse"];
+                    "application/json": components["schemas"]["DailyLogListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_daily_log_projects__project_id__daily_logs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DailyLogCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyLogResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6033,7 +7636,7 @@ export interface operations {
             };
         };
     };
-    list_daily_logs_projects__project_id__daily_logs_get: {
+    list_expenses_projects__project_id__expenses_get: {
         parameters: {
             query?: {
                 limit?: number;
@@ -6053,7 +7656,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DailyLogListResponse"];
+                    "application/json": components["schemas"]["ExpenseListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6067,7 +7670,7 @@ export interface operations {
             };
         };
     };
-    create_daily_log_projects__project_id__daily_logs_post: {
+    create_expense_projects__project_id__expenses_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -6078,7 +7681,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DailyLogCreateRequest"];
+                "application/json": components["schemas"]["ExpenseCreateRequest"];
             };
         };
         responses: {
@@ -6088,7 +7691,76 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DailyLogResponse"];
+                    "application/json": components["schemas"]["ExpenseResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invoices_projects__project_id__invoices_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invoice_projects__project_id__invoices_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvoiceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvoiceResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6168,41 +7840,6 @@ export interface operations {
             };
         };
     };
-    create_task_projects__project_id__tasks_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TaskCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TaskResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     delete_phase_projects__project_id__phases__phase_id__delete: {
         parameters: {
             query?: never;
@@ -6269,83 +7906,127 @@ export interface operations {
             };
         };
     };
-    list_my_tasks_tasks_get: {
-        parameters: {
-            query: {
-                assignee: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MyTaskListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_task_tasks__task_id__delete: {
+    update_project_status_projects__project_id__status_patch: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    patch_task_tasks__task_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
+                project_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TaskUpdateRequest"];
+                "application/json": components["schemas"]["ProjectStatusUpdateRequest"];
             };
         };
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_subcontractor_assignments_projects__project_id__subcontractor_assignments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubcontractorAssignmentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_subcontractor_assignment_projects__project_id__subcontractor_assignments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubcontractorAssignmentCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubcontractorAssignmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_task_projects__project_id__tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6364,13 +8045,11 @@ export interface operations {
             };
         };
     };
-    list_catalog_items_catalogs_items_get: {
+    get_profitability_report_reports_profitability_get: {
         parameters: {
-            query?: {
-                category?: string | null;
-                search?: string | null;
-                limit?: number;
-                cursor?: string | null;
+            query: {
+                start_date: string;
+                end_date: string;
             };
             header?: never;
             path?: never;
@@ -6384,956 +8063,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CostCatalogItemListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_catalog_item_catalogs_items_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostCatalogItemCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CostCatalogItemResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_catalog_item_override_catalogs_items__parent_catalog_item_id__override_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                parent_catalog_item_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostCatalogItemCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CostCatalogItemResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_catalog_item_catalogs_items__item_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                item_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_catalog_item_catalogs_items__item_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                item_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostCatalogItemPatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CostCatalogItemResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    bulk_create_catalog_items_catalogs_items_bulk_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CostCatalogItemBulkCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CostCatalogItemBulkResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_markup_profiles_markup_profiles_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarkupProfileListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_markup_profile_markup_profiles_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MarkupProfileCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarkupProfileResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_markup_profile_markup_profiles__profile_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                profile_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_markup_profile_markup_profiles__profile_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                profile_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MarkupProfilePatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarkupProfileResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_estimates_estimates_get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_estimate_estimates_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EstimateCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_estimate_estimates__estimate_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateDetailResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_estimate_estimates__estimate_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_estimate_estimates__estimate_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EstimatePatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    replace_estimate_line_items_estimates__estimate_id__lines_put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EstimateLineItemsReplaceRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateDetailResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    calculate_estimate_totals_estimates__estimate_id__calculate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateCalculationResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    export_estimate_pdf_estimates__estimate_id__export_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    download_estimate_pdf_estimates__estimate_id__pdf_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    send_estimate_for_signature_estimates__estimate_id__send_for_signature_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    approve_estimate_estimates__estimate_id__approve_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": components["schemas"]["Body_approve_estimate_estimates__estimate_id__approve_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_estimate_estimates__estimate_id__reject_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                estimate_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EstimateRejectRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EstimateResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_esignature_esignatures__esignature_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                esignature_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EsignatureResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_change_order_change_orders__change_order_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                change_order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_all_change_orders_change_orders_get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_change_orders_projects__project_id__change_orders_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_change_order_projects__project_id__change_orders_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChangeOrderCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    send_change_order_for_signature_change_orders__change_order_id__send_for_signature_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                change_order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    approve_change_order_change_orders__change_order_id__approve_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                change_order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": components["schemas"]["Body_approve_change_order_change_orders__change_order_id__approve_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_change_order_change_orders__change_order_id__reject_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                change_order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChangeOrderRejectRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChangeOrderResponse"];
+                    "application/json": components["schemas"]["ProfitabilityReportResponse"];
                 };
             };
             /** @description Validation Error */
@@ -7512,159 +8242,6 @@ export interface operations {
             };
         };
     };
-    list_subcontractor_assignments_projects__project_id__subcontractor_assignments_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SubcontractorAssignmentListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_subcontractor_assignment_projects__project_id__subcontractor_assignments_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubcontractorAssignmentCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SubcontractorAssignmentResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_compliance_dashboard_compliance_dashboard_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ComplianceDashboardResponse"];
-                };
-            };
-        };
-    };
-    list_compliance_notifications_compliance_notifications_get: {
-        parameters: {
-            query?: {
-                unread_only?: boolean;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ComplianceNotificationListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    dismiss_compliance_notification_compliance_notifications__notification_id__dismiss_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                notification_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ComplianceNotificationEntry"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_my_subscription_subscriptions_me_get: {
         parameters: {
             query?: never;
@@ -7705,444 +8282,10 @@ export interface operations {
             };
         };
     };
-    list_invoices_projects__project_id__invoices_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoiceListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_invoice_projects__project_id__invoices_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InvoiceCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoiceResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    send_invoice_invoices__invoice_id__send_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                invoice_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InvoiceSendRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoiceResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    record_invoice_payment_invoices__invoice_id__payments_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                invoice_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["InvoicePaymentCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoicePaymentResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    void_invoice_invoices__invoice_id__void_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                invoice_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoiceResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_invoice_invoices__invoice_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                invoice_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvoiceDetailResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_bills_bills_get: {
-        parameters: {
-            query?: {
-                project_id?: string | null;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BillListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_bill_bills_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BillCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BillResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_bill_bills__bill_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                bill_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BillDetailResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    record_bill_payment_bills__bill_id__payments_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                bill_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BillPaymentCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BillPaymentResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    void_bill_bills__bill_id__void_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                bill_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BillResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_expenses_projects__project_id__expenses_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExpenseListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_expense_projects__project_id__expenses_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                project_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ExpenseCreateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExpenseResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_profitability_report_reports_profitability_get: {
+    list_my_tasks_tasks_get: {
         parameters: {
             query: {
-                start_date: string;
-                end_date: string;
+                assignee: string;
             };
             header?: never;
             path?: never;
@@ -8156,7 +8299,71 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProfitabilityReportResponse"];
+                    "application/json": components["schemas"]["MyTaskListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_task_tasks__task_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patch_task_tasks__task_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskResponse"];
                 };
             };
             /** @description Validation Error */
@@ -8187,148 +8394,6 @@ export interface operations {
                 content: {
                     "application/json": {
                         [key: string]: boolean;
-                    };
-                };
-            };
-        };
-    };
-    connect_integrations__provider__connect_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                provider: "quickbooks" | "freshbooks";
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthorizationUrlResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    callback_integrations__provider__callback_get: {
-        parameters: {
-            query: {
-                code: string;
-                state: string;
-            };
-            header?: never;
-            path: {
-                provider: "quickbooks" | "freshbooks";
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IntegrationConnectionResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    sync_status_integrations__provider__sync_status_get: {
-        parameters: {
-            query?: {
-                status?: string | null;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path: {
-                provider: "quickbooks" | "freshbooks";
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SyncStatusResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    dashboard_summary_dashboard_summary_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DashboardSummaryResponse"];
-                };
-            };
-        };
-    };
-    health_health_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
                     };
                 };
             };

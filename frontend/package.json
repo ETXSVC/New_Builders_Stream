@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "generate:api-types": "openapi-typescript http://localhost:8000/openapi.json -o lib/api/types.ts",
+    "generate:api-types": "openapi-typescript ../backend/openapi.json -o lib/api/types.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
