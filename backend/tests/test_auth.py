@@ -169,3 +169,29 @@ async def test_login_and_refresh_return_role(client):
     refresh = await client.post("/auth/refresh", json={"refresh_token": body["refresh_token"]})
     assert refresh.status_code == 200
     assert refresh.json()["role"] == "admin"
+
+
+async def test_register_succeeds_when_redis_is_down(client, monkeypatch):
+    """The limiter fails OPEN on a Redis outage (WARNING-logged): failing
+    closed would turn a Redis outage into a total signup outage — see
+    check_rate_limit's docstring for the trade-off."""
+    monkeypatch.setattr(settings, "register_rate_limit_enabled", True)
+    # Point the limiter at a port nothing listens on, with a fresh client
+    # bound to this test's loop; reset again afterwards so the poisoned
+    # client can't leak into later tests (the event-loop hazard
+    # _reset_redis_client_for_tests documents).
+    monkeypatch.setattr(settings, "redis_url", "redis://localhost:1/0")
+    _reset_redis_client_for_tests()
+    try:
+        response = await client.post(
+            "/auth/register",
+            json={
+                "company_name": "Redis Down Co",
+                "admin_full_name": "Fail Open",
+                "admin_email": "fail-open@acme.test",
+                "admin_password": "supersecret123",
+            },
+        )
+        assert response.status_code == 201, response.text
+    finally:
+        _reset_redis_client_for_tests()

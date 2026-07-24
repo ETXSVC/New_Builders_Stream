@@ -1,13 +1,35 @@
 from pathlib import Path
+from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
+
+# Known committed dev/test secret values, rejected at boot in production.
+# Kept as explicit literals (not patterns alone) so every value that has
+# ever appeared in this repo's .env.example, tests, or CI workflows is
+# individually named — a new dev default must be added here.
+_DEV_JWT_SECRETS = frozenset(
+    {"dev-only-secret-change-me", "test-secret", "e2e-ci-secret", "ci-test-secret"}
+)
+_DEV_FERNET_KEYS = frozenset(
+    {
+        "NHiunJoW7aQN87dHDT9X8r60R79fXf8esa7fKZpW4Bo=",
+        "Rewy1h1FRZkZ2sxynenqVW39Vu1r573swS_UOr1uiUk=",
+    }
+)
+_FAKE_WEBHOOK_SECRET = "fake_webhook_secret_for_tests"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_ENV_FILE, extra="ignore")
 
+    # Deployment environment. "production" is the only value that changes
+    # behavior: dev-default secrets refuse to boot (validator below) and
+    # the OpenAPI/docs endpoints are disabled (app/main.py). The default
+    # keeps every local/CI/test path working with zero configuration.
+    app_env: Literal["development", "test", "production"] = "development"
     database_url: str
     migrations_database_url: str
     test_database_url: str
@@ -67,6 +89,68 @@ class Settings(BaseSettings):
     register_rate_limit_enabled: bool = True
     register_rate_limit_max_attempts: int = 5
     register_rate_limit_window_seconds: int = 3600
+    # Verifies POST /webhooks/stripe signatures (today via FakeStripeClient
+    # — see app/services/billing.py). Config-ized so a deployment can use a
+    # non-public value even while the fake client stays; the production
+    # validator below refuses the committed default.
+    stripe_webhook_secret: str = "fake_webhook_secret_for_tests"
+    # Root logger level for app/core/logging.py's configure_logging().
+    log_level: str = "INFO"
+    # Upload byte caps enforced by app/core/uploads.read_upload_limited on
+    # every multipart route (except the branding logo, which keeps its own
+    # pre-existing 2 MiB cap in document_storage.py). Settings fields, not
+    # module constants, so tests can shrink them without multi-MB payloads.
+    max_document_upload_bytes: int = 25 * 1024 * 1024
+    max_signature_upload_bytes: int = 1 * 1024 * 1024
+
+    @model_validator(mode="after")
+    def _refuse_dev_defaults_in_production(self) -> "Settings":
+        """Fail-fast at boot when app_env=production carries any known
+        dev/test secret. Collects EVERY violation into one error so the
+        operator fixes the .env once, not one reboot per secret."""
+        if self.app_env != "production":
+            return self
+
+        problems: list[str] = []
+        if self.jwt_secret in _DEV_JWT_SECRETS or len(self.jwt_secret) < 32:
+            problems.append(
+                "JWT_SECRET is a known dev value or shorter than 32 characters "
+                "(generate one: openssl rand -hex 32)"
+            )
+        if (
+            self.integration_token_encryption_key.startswith("change-me")
+            or self.integration_token_encryption_key in _DEV_FERNET_KEYS
+        ):
+            problems.append(
+                "INTEGRATION_TOKEN_ENCRYPTION_KEY is a committed dev value "
+                '(generate one: python -c "from cryptography.fernet import Fernet; '
+                'print(Fernet.generate_key().decode())")'
+            )
+        if self.stripe_webhook_secret == _FAKE_WEBHOOK_SECRET:
+            problems.append(
+                "STRIPE_WEBHOOK_SECRET is the public fake default "
+                "(generate one: openssl rand -hex 32)"
+            )
+        for field_name in ("database_url", "migrations_database_url"):
+            url = getattr(self, field_name)
+            if ":devpassword@" in url or ":app_password@" in url:
+                problems.append(
+                    f"{field_name.upper()} uses a password committed in .env.example "
+                    "(set real POSTGRES_PASSWORD/APP_DB_PASSWORD and run "
+                    "ALTER ROLE app_user PASSWORD — see docs/11-production-deployment.md)"
+                )
+        if self.frontend_base_url.startswith("http://localhost"):
+            problems.append(
+                "FRONTEND_BASE_URL still points at localhost — OAuth redirects and "
+                "invitation-email links would send users to their own machine"
+            )
+
+        if problems:
+            details = "\n".join(f"  - {p}" for p in problems)
+            raise ValueError(
+                f"APP_ENV=production refused to boot with dev-default configuration:\n{details}"
+            )
+        return self
 
 
 # Required (no-default) fields are populated from the environment/.env by

@@ -3,6 +3,8 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select, tuple_
 
+from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor, paginate
 from app.core.tier_gating import require_module
@@ -404,7 +406,9 @@ async def approve_change_order(
     change_order = await _get_change_order_or_404(current, change_order_id)
     _require_change_order_pending(change_order)
 
-    signature_artifact_bytes = await signature_artifact.read()
+    signature_artifact_bytes = await read_upload_limited(
+        signature_artifact, settings.max_signature_upload_bytes
+    )
     ip_address = request.client.host if request.client else "unknown"
 
     esignature = await capture_esignature(

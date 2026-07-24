@@ -9,6 +9,8 @@ feature set, it applies to any company regardless of tier.
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 
+from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.models import CompanyBranding
 from app.schemas.company_branding import CompanyBrandingPutRequest, CompanyBrandingResponse
@@ -60,7 +62,7 @@ async def upload_branding_logo(
     _ro: None = Depends(block_if_read_only),
 ) -> CompanyBrandingResponse:
     branding = await _get_or_create_branding(current)
-    content = await file.read()
+    content = await read_upload_limited(file, settings.max_document_upload_bytes)
 
     try:
         relative_path = write_company_logo_file(

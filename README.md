@@ -20,6 +20,8 @@ The full document set lives in [`docs/`](docs/) and a combined, presentation-rea
 | [08-pricing-subscription-model.md](docs/08-pricing-subscription-model.md) | Tiered pricing structure and Stripe billing model |
 | [09-roadmap-implementation-plan.md](docs/09-roadmap-implementation-plan.md) | Phased build plan (Phase 0–5), MVP launch bar |
 | [10-test-strategy.md](docs/10-test-strategy.md) | Test pyramid, tenant-isolation release gate, test cases |
+| [11-production-deployment.md](docs/11-production-deployment.md) | Production runbook: server `.env`, first deploy, smoke tests, backups, split topology |
+| [12-project-review.md](docs/12-project-review.md) | Full-codebase review (2026-07-24): findings, strengths, prioritized follow-ups |
 
 Start with the [PRD](docs/01-prd.md) for the "why," then [Technical Architecture](docs/03-technical-architecture.md) for the "how." For working in the code, [`CLAUDE.md`](CLAUDE.md) is the maintained architecture/commands reference. Per-feature design specs and implementation plans live under [`docs/superpowers/`](docs/superpowers/).
 
@@ -38,7 +40,7 @@ Implemented against the [roadmap](docs/09-roadmap-implementation-plan.md), on `m
 | Frontend (all of the above) | ✅ Done | Next.js App Router product UI: CRM, projects, estimation + client e-signature, billing, compliance, integrations, invitation accept |
 | 5 — Offline/PWA, AI takeoff, multi-currency | ⬜ Not scheduled | Per roadmap |
 
-Backend test suite (`main`): 880+ passing tests, including dedicated tenant-isolation/RLS regression suites and a tier-gating completeness gate. Three CI workflows gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — pytest against real Postgres 16 + Redis 7, ruff lint, OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
+Backend test suite (`main`): 900+ passing tests, including dedicated tenant-isolation/RLS regression suites and a tier-gating completeness gate. Three CI workflows (four jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, plus a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
 
 **Remaining gaps** (deliberate, tracked):
 - **Real external-service clients:** Stripe billing, QuickBooks/FreshBooks sync, and SMTP email all run behind Protocol interfaces with config-selected fake implementations. The wiring, webhooks, tier gating, idempotency, and tests are in place; production use needs real credentials and SDK-backed clients dropped in behind the existing interfaces.
@@ -67,6 +69,8 @@ docker compose exec backend alembic upgrade head
 ```
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
+
+**Production**: `docker-compose.prod.yml` is the hardened single-box stack (Caddy TLS termination, internal-only DB/Redis, auto-migrations, restart policies, nightly backups); `deploy/split/` holds three standalone stacks (backend API, middleware worker tier, frontend) for deploying each tier on its own machine with independent lifecycles. The full guide — server `.env` requirements, first-deploy smoke-test checklist, split-topology wiring — is [docs/11-production-deployment.md](docs/11-production-deployment.md).
 
 ## Open Questions
 

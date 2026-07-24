@@ -1,0 +1,13 @@
+node_modules/
+.next/
+test-results/
+playwright-report/
+e2e/
+# .env* is critical, not cosmetic: `COPY . .` in the builder stage would
+# otherwise pull a developer's gitignored .env.local, and Next INLINES any
+# NEXT_PUBLIC_* present at BUILD time — permanently baking
+# http://localhost:8000 into the image and making the runtime
+# NEXT_PUBLIC_API_URL from compose a no-op (every BFF fetch would
+# ECONNREFUSED in production).
+.env
+.env.*

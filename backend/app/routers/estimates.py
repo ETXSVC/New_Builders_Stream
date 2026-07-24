@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from sqlalchemy import delete, select
 
 from app.config import settings
+from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.money import CENTS
@@ -534,7 +535,13 @@ async def replace_estimate_line_items(
         line_total = (quantity * unit_rate_snapshot).quantize(CENTS, rounding=ROUND_HALF_UP)
         line_item = EstimateLineItem(
             estimate_id=estimate.id,
-            company_id=current.company_id,
+            # estimate.company_id, not current.company_id — same
+            # parent-acting-on-descendant bug class fixed across the nested
+            # -create routes: a parent-branch session may legitimately edit
+            # a child branch's estimate (RLS's get_all_descendant_ids
+            # grant), and stamping the PARENT here would make the child's
+            # own session see its estimate with zero line items.
+            company_id=estimate.company_id,
             cost_catalog_item_id=cost_catalog_item_id,
             quantity=quantity,
             unit_rate_snapshot=unit_rate_snapshot,
@@ -820,12 +827,20 @@ async def approve_estimate(
     estimate = await _get_estimate_or_404(current, estimate_id)
     _require_estimate_sent(estimate)
 
-    signature_artifact_bytes = await signature_artifact.read()
+    signature_artifact_bytes = await read_upload_limited(
+        signature_artifact, settings.max_signature_upload_bytes
+    )
     ip_address = request.client.host if request.client else "unknown"
 
     esignature = await capture_esignature(
         current.session,
-        company_id=current.company_id,
+        # estimate.company_id, matching this route's own publish() call
+        # below and change_orders.py's equivalent: stamping the acting
+        # company would leave the signed estimate pointing at an
+        # esignature row invisible under RLS to the branch that owns the
+        # document — breaking the ESIGN evidence chain exactly where it
+        # matters most.
+        company_id=estimate.company_id,
         signer_name=signer_name,
         signer_email=signer_email,
         ip_address=ip_address,

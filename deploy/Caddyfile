@@ -1,0 +1,36 @@
+# Production reverse proxy. SITE_ADDRESS comes from the compose service's
+# environment (set it in .env, e.g. app.example.com). Caddy obtains and
+# renews the Let's Encrypt certificate automatically for any real domain.
+#
+# Two deliberate properties, documented so they aren't "fixed" casually:
+#
+# 1. Only the frontend is routed. The Next.js BFF proxies every product
+#    request server-side, and while Stripe runs against the fake client
+#    there is no legitimate external caller of the backend at all — not
+#    routing it removes the forged-webhook surface entirely. When real
+#    Stripe arrives, add:
+#        handle /webhooks/stripe* {
+#            reverse_proxy backend:8000
+#        }
+#
+# 2. No trusted_proxies directive. Caddy's default DISCARDS any
+#    client-supplied X-Forwarded-For and sets its own — that spoof-safety
+#    is what makes the forwarded IP trustworthy for the register rate
+#    limiter and the legally-significant e-signature capture. Only add
+#    trusted_proxies if you place another load balancer IN FRONT of Caddy.
+
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# TLS-only header — deliberately set here, not in next.config.ts: HSTS
+	# is meaningless without TLS and harmful if emitted over dev HTTP.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# Outer belt for upload abuse; the application-layer caps
+	# (app/core/uploads.py) are the real per-route limits.
+	request_body {
+		max_size 30MB
+	}
+
+	reverse_proxy frontend:3000
+}

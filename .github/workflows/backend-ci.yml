@@ -7,6 +7,55 @@ on:
     branches: [main]
 
 jobs:
+  # Fast, service-free validation of the production deployment artifacts:
+  # compose file resolves with a stub env, backup scripts parse. (Building
+  # the images in CI would need registry pulls; the on-box smoke-test
+  # checklist in docs/11-production-deployment.md covers that.)
+  deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production compose file
+        env:
+          SITE_ADDRESS: ci.example.com
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        # The stub .env satisfies the services' `env_file: .env` reference —
+        # compose requires the file to exist even for `config`; the
+        # interpolation variables come from `env:` above.
+        run: |
+          touch .env
+          docker compose -f docker-compose.prod.yml config -q
+      - name: Validate dev compose file
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        run: docker compose -f docker-compose.yml config -q
+      - name: Validate split-topology compose files
+        env:
+          API_ADDRESS: api.ci.example.com
+          SITE_ADDRESS: app.ci.example.com
+          FRONTEND_SERVER_IP: 203.0.113.10
+          NEXT_PUBLIC_API_URL: https://api.ci.example.com
+          DOCUMENTS_DIR: /tmp/ci-documents
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        # The external network + stub .env files must exist for `config`.
+        run: |
+          docker network create builders-net || true
+          touch deploy/split/.env
+          docker compose -f deploy/split/backend.compose.yml config -q
+          docker compose -f deploy/split/middleware.compose.yml config -q
+          docker compose -f deploy/split/frontend.compose.yml config -q
+      - name: Backup scripts parse
+        run: |
+          bash -n deploy/backup/backup.sh
+          bash -n deploy/backup/restore.sh
+          bash -n deploy/backup/restore-drill.sh
+
   test:
     runs-on: ubuntu-latest
 

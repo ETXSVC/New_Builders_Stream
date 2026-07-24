@@ -18,6 +18,7 @@ value (config-gated), not to any of its callers.
 """
 from __future__ import annotations
 
+from app.config import settings
 from app.services.stripe_client import FakeStripeClient, StripeClient
 
 TIER_INCLUDED_SEATS: dict[str, int] = {"starter": 3, "pro": 10, "enterprise": 25}
@@ -26,7 +27,11 @@ TIER_INCLUDED_SEATS: dict[str, int] = {"starter": 3, "pro": 10, "enterprise": 25
 # FakeStripeClient instance, so a test that reports seat usage and then
 # asserts on `reported_usage` sees calls made anywhere in that same test's
 # request/task chain, not just within a single dependency resolution.
-_stripe_client: StripeClient = FakeStripeClient()
+# webhook_secret from Settings so a deployment can use a non-public value
+# even while the fake client stays (the production config validator refuses
+# the committed default). Tests that instantiate FakeStripeClient() directly
+# keep the dataclass's own default.
+_stripe_client: StripeClient = FakeStripeClient(webhook_secret=settings.stripe_webhook_secret)
 
 
 def get_stripe_client() -> StripeClient:

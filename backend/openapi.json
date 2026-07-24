@@ -7075,6 +7075,7 @@
     },
     "/health": {
       "get": {
+        "description": "Static liveness: is the process serving requests at all. Dependency\nstate deliberately excluded \u2014 that's /ready's job (see\napp/core/readiness.py for the split's rationale).",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -9428,6 +9429,23 @@
           "phases",
           "tasks"
         ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Readiness: can this process do useful work right now. Probes report\nper-dependency status so a failing healthcheck names the dependency.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ready"
       }
     },
     "/reports/profitability": {

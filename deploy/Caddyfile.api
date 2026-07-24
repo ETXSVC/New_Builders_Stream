@@ -1,0 +1,37 @@
+# API-side reverse proxy for the SPLIT topology (deploy/split/
+# backend.compose.yml). Terminates TLS at api.<domain> in front of the
+# FastAPI backend.
+#
+# Two load-bearing pieces:
+#
+# 1. remote_ip allowlist — the frontend server is the ONLY legitimate
+#    caller of this API (the Next.js BFF proxies every product request
+#    server-side; browsers never hit the API directly). Allowlisting its
+#    IP preserves the single-box topology's "backend has no public
+#    surface" property even when split across machines. Add Stripe's IP
+#    ranges if/when real webhooks arrive alongside a /webhooks/stripe
+#    route. (remote_ip matches the DIRECT TCP peer — exactly what we want
+#    to pin here.)
+#
+# 2. Global trusted_proxies — WITHOUT it, Caddy would discard the
+#    X-Forwarded-For the frontend BFF sets (carrying the real end-client
+#    IP) and replace it with the frontend SERVER's address — silently
+#    breaking the register rate limiter's per-client keying and, worse,
+#    recording the wrong IP as ESIGN legal evidence. Trusting exactly the
+#    frontend server's IP lets its (spoof-safe, Caddy-set) forwarded
+#    chain pass through intact.
+
+{
+	servers {
+		trusted_proxies static {$FRONTEND_SERVER_IP}
+	}
+}
+
+{$API_ADDRESS} {
+	@frontend remote_ip {$FRONTEND_SERVER_IP}
+	handle @frontend {
+		reverse_proxy backend:8000
+	}
+	# Anything not from the frontend server: flat 403, no detail.
+	respond 403
+}

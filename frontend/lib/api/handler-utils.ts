@@ -21,3 +21,12 @@ export function errorResponse(err: unknown, fallback: string): NextResponse {
   }
   return NextResponse.json({ detail: fallback }, { status: 502 });
 }
+
+// First-hop client IP from the reverse proxy's X-Forwarded-For. Caddy (the
+// production proxy) discards any client-supplied XFF and sets its own, so
+// the first entry is the true client address and spoof-safe. Returns
+// undefined when no proxy is in front (bare `npm run dev`), in which case
+// callers omit the forwarded header entirely.
+export function clientIpFrom(request: NextRequest): string | undefined {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || undefined;
+}
