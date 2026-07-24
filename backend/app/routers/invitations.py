@@ -5,12 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.security import hash_password
 from app.db import session_scope, set_current_tenant, set_invitation_probe
-from app.models import CompanyUser, Invitation, User
+from app.models import Company, CompanyUser, Invitation, User
 from app.schemas.invitation import InvitationAcceptRequest, InvitationCreateRequest, InvitationResponse
 from app.services.audit import write_audit_log
+from app.tasks.send_invitation_email import send_invitation_email
 
 router = APIRouter(prefix="/invitations", tags=["invitations"])
 
@@ -41,6 +43,24 @@ async def create_invitation(
         entity_id=invitation.id,
         metadata={"email": payload.email, "role": payload.role},
     )
+    # Email delivery: enqueued to the Dramatiq worker rather than sent
+    # inline — a slow/unreachable SMTP server must not stall or fail the
+    # request, and the worker's retry/backoff covers transient failures.
+    # The payload carries everything the email needs (see the actor's own
+    # docstring for why it deliberately does no DB reads). The accept URL
+    # reuses frontend_base_url the same way the integrations OAuth
+    # callback's redirect does. company name comes from the acting tenant's
+    # own row (RLS-visible by construction).
+    company_name = await current.session.scalar(
+        select(Company.name).where(Company.id == current.company_id)
+    )
+    send_invitation_email.send(
+        to_email=payload.email,
+        company_name=company_name or "your team",
+        role=payload.role,
+        accept_url=f"{settings.frontend_base_url}/accept-invitation?id={invitation.id}",
+    )
+
     # No explicit commit here — get_current_user (design decision #8) commits
     # current.session once, after this handler returns.
 

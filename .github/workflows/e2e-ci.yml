@@ -98,7 +98,7 @@ jobs:
           # The Dramatiq worker, same module list as docker-compose.yml's
           # `worker` service — without it, background jobs (the estimation
           # spec's PDF export) enqueue but never run.
-          nohup dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync --processes 1 --threads 2 > /tmp/worker.log 2>&1 &
+          nohup dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email --processes 1 --threads 2 > /tmp/worker.log 2>&1 &
 
       - name: Install frontend and browser
         working-directory: frontend
