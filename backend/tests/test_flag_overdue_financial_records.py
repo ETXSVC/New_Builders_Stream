@@ -2,7 +2,6 @@
 directly, same pattern tests/test_seat_usage_task.py uses for
 _report_seat_usage."""
 import uuid
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import text

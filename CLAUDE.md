@@ -65,7 +65,7 @@ npm run dev             # next dev
 npm run build
 npm run lint             # eslint .
 npm run test:e2e         # playwright test
-npm run generate:api-types  # regenerate lib/api/types.ts from the live backend's OpenAPI schema — never hand-edit that file
+npm run generate:api-types  # regenerate lib/api/types.ts from the committed backend/openapi.json snapshot — never hand-edit that file
 ```
 
 CI: `.github/workflows/backend-ci.yml` runs `pytest -v` against real
@@ -186,9 +186,11 @@ back to match the docs:
 
 Next.js App Router with route groups: `app/(app)/` (authenticated product
 UI) and `app/(marketing)/` (public pages). TypeScript API types in
-`lib/api/types.ts` are generated from the backend's live OpenAPI schema via
-`npm run generate:api-types` — never hand-edit that file; regenerate it
-instead. `marketing-site/` (static HTML/CSS/JS) and `marketing/` (copy docs)
+`lib/api/types.ts` are generated from the committed `backend/openapi.json`
+snapshot via `npm run generate:api-types` — never hand-edit either file;
+after a backend route/schema change, regenerate the snapshot
+(`backend/scripts/export_openapi.py`) and then the types (CI's schema-diff
+gate fails if the snapshot drifts from the code). `marketing-site/` (static HTML/CSS/JS) and `marketing/` (copy docs)
 are a separate, pre-existing marketing site, unrelated to the Next.js app.
 
 ## Tests

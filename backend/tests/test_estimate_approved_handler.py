@@ -33,7 +33,6 @@ import uuid
 from decimal import Decimal
 
 import asyncpg
-import pytest
 
 from app.core.event_handlers import register_event_handlers
 from tests.conftest import TEST_DATABASE_URL, set_subscription_tier

@@ -1,7 +1,5 @@
-from decimal import Decimal
 
 import asyncpg
-import pytest
 
 from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 

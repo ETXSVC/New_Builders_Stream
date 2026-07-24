@@ -8,6 +8,7 @@ from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
 from app.models.project import VALID_STATUSES
@@ -386,6 +387,22 @@ async def update_project_status(
             entity_type="project",
             entity_id=project.id,
             metadata={"from": previous_status, "to": requested_status, "reason": payload.reason},
+        )
+
+    # PROJECT_COMPLETED (docs/03-technical-architecture.md's event-bus
+    # table: published by Project Management, consumed by Billing). Uses
+    # project.company_id, not current.company_id — same parent-acting-on-
+    # descendant rationale as the audit entry above. Unlike ESTIMATE_
+    # APPROVED's publish (see estimate_approved_handler's docstring),
+    # actor_id is forwarded so the handler's audit row can record who
+    # completed the project.
+    if status_changing and requested_status == "completed":
+        await publish(
+            "PROJECT_COMPLETED",
+            session=current.session,
+            project_id=project.id,
+            company_id=project.company_id,
+            actor_id=current.user.id,
         )
 
     return ProjectResponse.model_validate(project)

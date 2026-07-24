@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.core.deps import CurrentUser, block_if_read_only, get_current_user, require_role
+from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.security import hash_password
 from app.db import session_scope, set_current_tenant, set_invitation_probe
 from app.models import CompanyUser, Invitation, User

@@ -4,7 +4,6 @@ Dramatiq-driven retry. Tests the undecorated function directly, same
 pattern tests/test_flag_overdue_financial_records.py uses for
 _flag_overdue_financial_records."""
 import uuid
-from decimal import Decimal
 
 import pytest
 from sqlalchemy import text

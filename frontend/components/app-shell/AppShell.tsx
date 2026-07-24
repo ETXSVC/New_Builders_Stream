@@ -7,7 +7,7 @@ import { Nav } from "@/components/app-shell/Nav";
 
 // Pre-auth screens that live inside the (app) route group (they need its
 // Tailwind globals and AuthProvider) but must not show the app chrome.
-const PRE_AUTH_PATHS = ["/login", "/register"];
+const PRE_AUTH_PATHS = ["/login", "/register", "/accept-invitation"];
 
 // Mounts the shared Nav above every authenticated app screen. Rendered by
 // the (app) layout so role-landing pages (field_crew → /my-tasks, client →

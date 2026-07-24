@@ -52,6 +52,33 @@ jobs:
         working-directory: backend
         run: pip install -e ".[dev]"
 
+      - name: Lint (ruff)
+        working-directory: backend
+        run: ruff check .
+
+      # Guards the committed OpenAPI snapshot (backend/openapi.json) that
+      # frontend/lib/api/types.ts is generated from: a route/schema change
+      # that isn't accompanied by a regenerated snapshot fails here instead
+      # of drifting silently. Building the schema only imports the app —
+      # no DB/Redis connection is made — so dummy env values suffice for
+      # the Settings fields that have no defaults.
+      - name: OpenAPI schema diff
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://dummy:dummy@localhost:5432/dummy
+          MIGRATIONS_DATABASE_URL: postgresql+asyncpg://dummy:dummy@localhost:5432/dummy
+          TEST_DATABASE_URL: postgresql+asyncpg://dummy:dummy@localhost:5432/dummy
+          JWT_SECRET: schema-diff-dummy
+          INTEGRATION_TOKEN_ENCRYPTION_KEY: schema-diff-dummy
+        run: |
+          python scripts/export_openapi.py > /tmp/openapi.json
+          if ! diff -u openapi.json /tmp/openapi.json; then
+            echo "::error::backend/openapi.json is out of date with the code."
+            echo "Regenerate it with:  cd backend && python scripts/export_openapi.py > openapi.json"
+            echo "Then regenerate the frontend types:  cd frontend && npm run generate:api-types"
+            exit 1
+          fi
+
       - name: Run test suite (includes tenant-isolation and RLS regression gates)
         working-directory: backend
         env:

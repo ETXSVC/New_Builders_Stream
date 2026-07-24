@@ -1,0 +1,147 @@
+# End-to-end suite against the real stack (Playwright, per the Test
+# Strategy's E2E layer). A dedicated workflow rather than a bolt-on to
+# frontend-ci: this job needs Postgres+Redis services, a Python toolchain,
+# migrations, and two long-running servers — keeping it separate leaves the
+# fast lint/build job attributable and quick, and a red X here is
+# unambiguously a stack/e2e failure.
+name: E2E CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: devpassword
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend
+        working-directory: backend
+        run: pip install -e ".[dev]"
+
+      - name: Create database and run migrations
+        working-directory: backend
+        env:
+          PGPASSWORD: devpassword
+          # Migrations run as the postgres OWNER role (they create the
+          # app_user role, grants, and RLS policies themselves — see
+          # migration 0001).
+          MIGRATIONS_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          JWT_SECRET: e2e-ci-secret
+          INTEGRATION_TOKEN_ENCRYPTION_KEY: e2e-placeholder
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE builders_stream"
+          alembic upgrade head
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          # The app itself runs as the RLS-restricted app_user runtime role
+          # (created by migration 0001) — running it as the postgres owner
+          # would silently bypass RLS and mask tenant-isolation bugs.
+          DATABASE_URL: postgresql+asyncpg://app_user:app_password@localhost:5432/builders_stream
+          MIGRATIONS_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          JWT_SECRET: e2e-ci-secret
+          REDIS_URL: redis://localhost:6379/0
+          STORAGE_ROOT: /tmp/e2e-documents
+          # The e2e suite registers a fresh company per spec file from one
+          # IP — more than the per-IP register rate limit (5/hour) allows.
+          REGISTER_RATE_LIMIT_ENABLED: "false"
+        run: |
+          mkdir -p /tmp/e2e-documents
+          # A real Fernet key (the integrations OAuth callback encrypts
+          # tokens with it at runtime); generated fresh per run, never a
+          # committed secret.
+          export INTEGRATION_TOKEN_ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend.log 2>&1 &
+          # The Dramatiq worker, same module list as docker-compose.yml's
+          # `worker` service — without it, background jobs (the estimation
+          # spec's PDF export) enqueue but never run.
+          nohup dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync --processes 1 --threads 2 > /tmp/worker.log 2>&1 &
+
+      - name: Install frontend and browser
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Build and start frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+        run: |
+          npm run build
+          nohup npm run start > /tmp/frontend.log 2>&1 &
+
+      - name: Wait for both servers
+        run: |
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/health > /dev/null 2>&1 && backend_up=1 && break
+            sleep 2
+          done
+          [ "${backend_up:-}" = "1" ] || { echo "::error::backend never became healthy"; tail -50 /tmp/backend.log; exit 1; }
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:3000 > /dev/null 2>&1 && frontend_up=1 && break
+            sleep 2
+          done
+          [ "${frontend_up:-}" = "1" ] || { echo "::error::frontend never became healthy"; tail -50 /tmp/frontend.log; exit 1; }
+
+      - name: Run Playwright suite
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:3000
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            /tmp/backend.log
+            /tmp/worker.log
+            /tmp/frontend.log
+          retention-days: 7
