@@ -21,7 +21,12 @@ jobs:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: ci
-        run: docker compose -f docker-compose.prod.yml config -q
+        # The stub .env satisfies the services' `env_file: .env` reference —
+        # compose requires the file to exist even for `config`; the
+        # interpolation variables come from `env:` above.
+        run: |
+          touch .env
+          docker compose -f docker-compose.prod.yml config -q
       - name: Validate dev compose file
         env:
           POSTGRES_USER: ci
