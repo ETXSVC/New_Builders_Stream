@@ -2586,31 +2586,6 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
-      "IntegrationConnectionResponse": {
-        "properties": {
-          "connected_at": {
-            "format": "date-time",
-            "title": "Connected At",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "provider",
-          "connected_at"
-        ],
-        "title": "IntegrationConnectionResponse",
-        "type": "object"
-      },
       "InvitationAcceptRequest": {
         "properties": {
           "full_name": {
@@ -7120,7 +7095,7 @@
     },
     "/integrations/{provider}/callback": {
       "get": {
-        "description": "Task 4.9 (design spec Section 3): the OAuth redirect target.\n\nNo `CurrentUser` here \u2014 this is an external redirect from the\n(fake, today) accounting provider back into our app, carrying no\nbearer token, so `app/core/deps.py`'s `get_current_user` dependency\nchain cannot run on this route at all (the same structural reality\n`/invitations/{id}/accept` already established for this codebase).\nInstead this route opens its own session and sets RLS tenant context\nmanually, exactly like every Dramatiq worker actor does for the same\n\"no request-scoped session to inherit\" reason \u2014 see in particular\n`app/tasks/estimate_pdf.py`'s `_generate_and_persist`, which is the\nclosest existing precedent: a standalone `SessionLocal()` session, one\nexplicit `set_current_tenant` call, then real work, then a single\n`commit()`.\n\nReuses `app.db.session_scope`/`set_current_tenant` directly rather than\nduplicating a second engine/sessionmaker in this file or inlining the\nraw `SELECT set_config(...)` statement: `set_current_tenant` is a plain\nfunction of `(session, company_id)` with no dependency on\n`TenantMiddleware` or any other request-scoped state (confirmed by\nreading `app/core/middleware.py` \u2014 `TenantMiddleware` only stashes the\nraw bearer token/tenant header into contextvars, it never touches a\nsession or calls `set_current_tenant` itself). `accept_invitation`\n(`app/routers/invitations.py`) is the closest existing precedent for\nthis exact shape \u2014 a route with no `CurrentUser` at all, using\n`async with session_scope() as session: async with session.begin():` \u2014\nreused verbatim here rather than the plan's own literal reference code\n(a bare, un-guarded `session.begin()`/`session.commit()`), because\n`session.begin()` used as a context manager gives an automatic\nrollback-on-exception guarantee `accept_invitation` already relies on;\na bare awaited `begin()` does not make that guarantee explicit, and\nthis is the single highest-stakes unauthenticated write route in this\nfeature to leave it implicit on.\n\nUses `session_scope()` (`app.db`, the `app_user`-role DSN\n`get_current_user`'s own dependency chain uses via `settings.\ndatabase_url`), not the owner-role DSN cross-tenant worker actors like\n`check_compliance_expiry` use \u2014 this route must go through RLS like any\nother tenant-scoped write, it does not need cross-tenant visibility the\nway a scheduled job scanning every company does.\n\nEvery write in this session must go through RLS scoped to the company\nthe signed `state` decoded \u2014 never trust `company_id` from anywhere\nelse in this request, since there is no `CurrentUser` to cross-check it\nagainst.",
+        "description": "Task 4.9 (design spec Section 3): the OAuth redirect target.\n\nOn success this 303-redirects the BROWSER back into the frontend at\n`{frontend_base_url}/integrations?connected={provider}` rather than\nreturning the connection as JSON \u2014 the caller here is a person\nmid-OAuth-dance, not an API client, and landing them on a raw JSON\npage was a known UX gap flagged (and deferred) when the integrations\nfrontend was built. Error paths deliberately KEEP their HTTP error\nresponses (400 invalid state, 403 tier): they're exceptional,\nsecurity-relevant outcomes where a plain error beats silently\nbouncing the user onward, and programmatic tests assert on them.\n\nNo `CurrentUser` here \u2014 this is an external redirect from the\n(fake, today) accounting provider back into our app, carrying no\nbearer token, so `app/core/deps.py`'s `get_current_user` dependency\nchain cannot run on this route at all (the same structural reality\n`/invitations/{id}/accept` already established for this codebase).\nInstead this route opens its own session and sets RLS tenant context\nmanually, exactly like every Dramatiq worker actor does for the same\n\"no request-scoped session to inherit\" reason \u2014 see in particular\n`app/tasks/estimate_pdf.py`'s `_generate_and_persist`, which is the\nclosest existing precedent: a standalone `SessionLocal()` session, one\nexplicit `set_current_tenant` call, then real work, then a single\n`commit()`.\n\nReuses `app.db.session_scope`/`set_current_tenant` directly rather than\nduplicating a second engine/sessionmaker in this file or inlining the\nraw `SELECT set_config(...)` statement: `set_current_tenant` is a plain\nfunction of `(session, company_id)` with no dependency on\n`TenantMiddleware` or any other request-scoped state (confirmed by\nreading `app/core/middleware.py` \u2014 `TenantMiddleware` only stashes the\nraw bearer token/tenant header into contextvars, it never touches a\nsession or calls `set_current_tenant` itself). `accept_invitation`\n(`app/routers/invitations.py`) is the closest existing precedent for\nthis exact shape \u2014 a route with no `CurrentUser` at all, using\n`async with session_scope() as session: async with session.begin():` \u2014\nreused verbatim here rather than the plan's own literal reference code\n(a bare, un-guarded `session.begin()`/`session.commit()`), because\n`session.begin()` used as a context manager gives an automatic\nrollback-on-exception guarantee `accept_invitation` already relies on;\na bare awaited `begin()` does not make that guarantee explicit, and\nthis is the single highest-stakes unauthenticated write route in this\nfeature to leave it implicit on.\n\nUses `session_scope()` (`app.db`, the `app_user`-role DSN\n`get_current_user`'s own dependency chain uses via `settings.\ndatabase_url`), not the owner-role DSN cross-tenant worker actors like\n`check_compliance_expiry` use \u2014 this route must go through RLS like any\nother tenant-scoped write, it does not need cross-tenant visibility the\nway a scheduled job scanning every company does.\n\nEvery write in this session must go through RLS scoped to the company\nthe signed `state` decoded \u2014 never trust `company_id` from anywhere\nelse in this request, since there is no `CurrentUser` to cross-check it\nagainst.",
         "operationId": "callback_integrations__provider__callback_get",
         "parameters": [
           {
@@ -7156,14 +7131,7 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IntegrationConnectionResponse"
-                }
-              }
-            },
+          "303": {
             "description": "Successful Response"
           },
           "422": {

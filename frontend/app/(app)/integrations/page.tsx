@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -30,10 +31,30 @@ export default function IntegrationsPage() {
   return (
     <main className="p-6 flex flex-col gap-6 max-w-3xl">
       <h1 className="text-xl font-semibold">Integrations</h1>
+      {/* The backend's OAuth callback 303s back here with ?connected=<provider>
+          after a successful connect — surface that as a success notice.
+          useSearchParams requires a Suspense boundary in the App Router. */}
+      <React.Suspense fallback={null}>
+        <ConnectedNotice />
+      </React.Suspense>
       {PROVIDERS.map((provider) => (
         <ProviderCard key={provider.key} providerKey={provider.key} label={provider.label} />
       ))}
     </main>
+  );
+}
+
+function ConnectedNotice() {
+  const connected = useSearchParams().get("connected");
+  const provider = PROVIDERS.find((p) => p.key === connected);
+  if (!provider) return null;
+  return (
+    <p
+      role="status"
+      className="rounded-lg border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-900"
+    >
+      {provider.label} connected successfully.
+    </p>
   );
 }
 

@@ -229,7 +229,7 @@ async def test_approving_an_estimate_enqueues_a_sync_for_the_deposit_invoice(cli
     client_role = await _invite_and_login_as(client, admin, "client", "deposit-client-3@example.test")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connect = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
-    assert connect.status_code == 200, connect.text
+    assert connect.status_code == 303, connect.text
 
     project = await _create_project(client, admin["headers"])
     markup_profile_id = await _create_markup_profile(client, admin["headers"])

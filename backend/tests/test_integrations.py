@@ -73,9 +73,10 @@ async def test_callback_with_a_validly_signed_state_creates_the_connection(clien
     response = await client.get(
         f"/integrations/quickbooks/callback?code=fake-code&state={state}"
     )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["provider"] == "quickbooks"
+    # The callback is a browser redirect target: success is a 303 back into
+    # the frontend's integrations page, not a JSON body.
+    assert response.status_code == 303, response.text
+    assert response.headers["location"].endswith("/integrations?connected=quickbooks")
 
     conn = await asyncpg.connect(ADMIN_CONN_DSN)
     try:
@@ -145,7 +146,7 @@ async def test_reconnecting_the_same_provider_replaces_the_old_tokens(client):
 
     state_2 = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     second = await client.get(f"/integrations/quickbooks/callback?code=code-2&state={state_2}")
-    assert second.status_code == 200, second.text
+    assert second.status_code == 303, second.text
 
     conn = await asyncpg.connect(ADMIN_CONN_DSN)
     try:
@@ -160,10 +161,21 @@ async def test_reconnecting_the_same_provider_replaces_the_old_tokens(client):
 
 
 async def _connect(client, headers, company_id, provider="quickbooks"):
+    """Success is now a 303 browser redirect with no body — callers that
+    need the connection row (its id) get it from the DB directly."""
     state = sign_oauth_state(company_id=company_id, provider=provider)
     response = await client.get(f"/integrations/{provider}/callback?code=fake-code&state={state}")
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert response.status_code == 303, response.text
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        row = await conn.fetchrow(
+            "SELECT id FROM integration_connections WHERE company_id = $1 AND provider = $2",
+            company_id,
+            provider,
+        )
+    finally:
+        await conn.close()
+    return {"id": str(row["id"])}
 
 
 async def test_sync_status_404s_for_a_provider_with_no_connection(client):

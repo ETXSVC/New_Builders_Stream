@@ -401,7 +401,7 @@ async def test_pro_company_can_still_read_sync_status_for_an_existing_connection
     await set_subscription_tier(admin["company_id"], "enterprise")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
-    assert connected.status_code == 200, connected.text
+    assert connected.status_code == 303, connected.text
 
     # Downgrade: the read route stays open (spec Decision 3).
     await set_subscription_tier(admin["company_id"], "pro")
@@ -519,7 +519,7 @@ async def test_below_tier_company_with_a_leftover_connection_enqueues_no_sync(cl
     await set_subscription_tier(admin["company_id"], "enterprise")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
-    assert connected.status_code == 200, connected.text
+    assert connected.status_code == 303, connected.text
 
     # Downgrade AFTER connecting - the leftover connection row survives, but
     # must stop producing sync messages (spec Decision 4).
