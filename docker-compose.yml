@@ -26,7 +26,9 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      target: dev
     env_file: .env
     depends_on:
       postgres:
@@ -53,7 +55,9 @@ services:
     # `current.session` from an enqueuing request; it opens its own
     # `AsyncSession` and calls `set_current_tenant()`/`set_current_user()`
     # explicitly per job.
-    build: ./backend
+    build:
+      context: ./backend
+      target: dev
     env_file: .env
     environment:
       # Task 3.9 live-verification finding: `MIGRATIONS_DATABASE_URL` in
@@ -115,7 +119,9 @@ services:
     # message a day for `worker` (which DOES import
     # `app.tasks.compliance_expiry`, see that service's `command` above) to
     # pick up and execute.
-    build: ./backend
+    build:
+      context: ./backend
+      target: dev
     env_file: .env
     # Kept for defensive startup ordering even though this process itself
     # never queries postgres or redis directly (see the comment block
@@ -135,7 +141,9 @@ services:
     command: python -m app.scheduler
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      target: dev
     depends_on:
       - backend
     ports:
