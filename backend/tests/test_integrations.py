@@ -1,6 +1,11 @@
 """Task 4.7 (design spec Section 3): GET /integrations/{provider}/connect."""
 import uuid
 
+import asyncpg
+
+from app.services.integration_oauth_state import sign_oauth_state
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+
 
 async def _register_and_login(client, company_name, email):
     register = await client.post(
@@ -57,11 +62,6 @@ async def test_project_manager_cannot_connect(client):
     response = await client.get("/integrations/quickbooks/connect", headers=pm_headers)
     assert response.status_code == 403
 
-
-import asyncpg
-
-from app.services.integration_oauth_state import sign_oauth_state
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 

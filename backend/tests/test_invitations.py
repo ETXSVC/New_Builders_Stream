@@ -161,6 +161,7 @@ async def test_non_admin_cannot_create_invitations(client):
         f"/invitations/{invite.json()['id']}/accept",
         json={"full_name": "Field Crew", "password": "anothersecret123"},
     )
+    assert accept.status_code == 200, accept.text
     login = await client.post(
         "/auth/login", json={"email": "fieldcrew@acme.test", "password": "anothersecret123"}
     )
