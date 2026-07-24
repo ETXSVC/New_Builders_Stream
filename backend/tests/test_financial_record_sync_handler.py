@@ -3,9 +3,13 @@ enqueues one sync_financial_record message per active connection, does no
 sync work itself."""
 import uuid
 
+import asyncpg
+
 from app.core.event_handlers import register_event_handlers
 from app.core.events import publish
-from tests.conftest import set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+
+ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register_and_login(client, company_name, email):
@@ -57,8 +61,17 @@ async def test_one_active_connection_enqueues_one_message(client, monkeypatch, d
     admin = await _register_and_login(client, "Sync Co 2", "sync-2@example.test")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connect_response = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
-    assert connect_response.status_code == 200, connect_response.text
-    connection_id = connect_response.json()["id"]
+    assert connect_response.status_code == 303, connect_response.text
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        connection_id = str(
+            await conn.fetchval(
+                "SELECT id FROM integration_connections WHERE company_id = $1 AND provider = 'quickbooks'",
+                admin["company_id"],
+            )
+        )
+    finally:
+        await conn.close()
 
     from app.tasks.accounting_sync import sync_financial_record
 

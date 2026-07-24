@@ -1425,6 +1425,16 @@ export interface paths {
          * Callback
          * @description Task 4.9 (design spec Section 3): the OAuth redirect target.
          *
+         *     On success this 303-redirects the BROWSER back into the frontend at
+         *     `{frontend_base_url}/integrations?connected={provider}` rather than
+         *     returning the connection as JSON — the caller here is a person
+         *     mid-OAuth-dance, not an API client, and landing them on a raw JSON
+         *     page was a known UX gap flagged (and deferred) when the integrations
+         *     frontend was built. Error paths deliberately KEEP their HTTP error
+         *     responses (400 invalid state, 403 tier): they're exceptional,
+         *     security-relevant outcomes where a plain error beats silently
+         *     bouncing the user onward, and programmatic tests assert on them.
+         *
          *     No `CurrentUser` here — this is an external redirect from the
          *     (fake, today) accounting provider back into our app, carrying no
          *     bearer token, so `app/core/deps.py`'s `get_current_user` dependency
@@ -3947,21 +3957,6 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
-        };
-        /** IntegrationConnectionResponse */
-        IntegrationConnectionResponse: {
-            /**
-             * Connected At
-             * Format: date-time
-             */
-            connected_at: string;
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Provider */
-            provider: string;
         };
         /** InvitationAcceptRequest */
         InvitationAcceptRequest: {
@@ -6650,13 +6645,11 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            303: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["IntegrationConnectionResponse"];
-                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

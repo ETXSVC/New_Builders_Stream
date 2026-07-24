@@ -8,10 +8,12 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import CurrentUser, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module, tier_allows
@@ -19,7 +21,6 @@ from app.db import session_scope, set_current_tenant
 from app.models import IntegrationConnection, IntegrationSyncRecord
 from app.schemas.integration import (
     AuthorizationUrlResponse,
-    IntegrationConnectionResponse,
     SyncRecordResponse,
     SyncStatusResponse,
 )
@@ -103,13 +104,23 @@ async def _upsert_connection(
     return result.scalar_one()
 
 
-@router.get("/{provider}/callback", response_model=IntegrationConnectionResponse)
+@router.get("/{provider}/callback", response_class=RedirectResponse, status_code=status.HTTP_303_SEE_OTHER)
 async def callback(
     provider: Provider,
     code: str = Query(...),
     state: str = Query(...),
-) -> IntegrationConnectionResponse:
+) -> RedirectResponse:
     """Task 4.9 (design spec Section 3): the OAuth redirect target.
+
+    On success this 303-redirects the BROWSER back into the frontend at
+    `{frontend_base_url}/integrations?connected={provider}` rather than
+    returning the connection as JSON — the caller here is a person
+    mid-OAuth-dance, not an API client, and landing them on a raw JSON
+    page was a known UX gap flagged (and deferred) when the integrations
+    frontend was built. Error paths deliberately KEEP their HTTP error
+    responses (400 invalid state, 403 tier): they're exceptional,
+    security-relevant outcomes where a plain error beats silently
+    bouncing the user onward, and programmatic tests assert on them.
 
     No `CurrentUser` here — this is an external redirect from the
     (fake, today) accounting provider back into our app, carrying no
@@ -201,7 +212,10 @@ async def callback(
                 metadata={"provider": provider},
             )
 
-    return IntegrationConnectionResponse.model_validate(connection)
+    return RedirectResponse(
+        f"{settings.frontend_base_url}/integrations?connected={provider}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/{provider}/sync-status", response_model=SyncStatusResponse)

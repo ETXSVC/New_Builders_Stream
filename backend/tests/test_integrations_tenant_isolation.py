@@ -60,10 +60,21 @@ async def _create_child_with_membership(client, parent, name, role="admin"):
 
 
 async def _connect(client, headers, company_id, provider="quickbooks"):
+    """Success is now a 303 browser redirect with no body — the connection
+    row's id comes from the DB directly."""
     state = sign_oauth_state(company_id=company_id, provider=provider)
     response = await client.get(f"/integrations/{provider}/callback?code=fake&state={state}")
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert response.status_code == 303, response.text
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        row = await conn.fetchrow(
+            "SELECT id FROM integration_connections WHERE company_id = $1 AND provider = $2",
+            uuid.UUID(company_id),
+            provider,
+        )
+    finally:
+        await conn.close()
+    return {"id": str(row["id"])}
 
 
 async def test_genuinely_unrelated_tenant_header_spoofing_via_x_tenant_id_is_blocked_for_connect(client):

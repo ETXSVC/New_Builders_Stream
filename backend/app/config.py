@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # explicit override; tests set STORAGE_ROOT to a host-writable temp
     # directory the same way conftest.py overrides DATABASE_URL.
     storage_root: str = "/data/documents"
+    # The browser-facing origin of the Next.js app, used only by routes
+    # that redirect a BROWSER back into the frontend (today: the
+    # integrations OAuth callback). Default matches `npm run dev` outside
+    # Docker; docker-compose maps the frontend to host port 3001, so the
+    # Compose .env overrides this to http://localhost:3001.
+    frontend_base_url: str = "http://localhost:3000"
     # Task 4.3: Fernet key (44-char urlsafe-base64, generate with
     # `Fernet.generate_key()`) for encrypting integration_connections'
     # access_token_encrypted/refresh_token_encrypted columns at the
