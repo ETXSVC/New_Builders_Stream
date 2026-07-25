@@ -3,7 +3,14 @@ name = "builders-stream-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115,<0.116",
+    # 0.140 rather than 0.115: the 0.115 line pulled starlette 0.46.x, which
+    # carries nine PYSEC advisories with no fix inside that range. 0.140
+    # accepts starlette 1.x, which has none. Note for future bumps: 0.140
+    # stopped flattening include_router() routes into `app.routes` (it
+    # stores an `_IncludedRouter` wrapper per router instead) — see
+    # `iter_api_routes` in tests/test_tier_gating.py, which is the only
+    # thing in this repo that walks routes directly.
+    "fastapi>=0.140,<0.141",
     "uvicorn[standard]>=0.32,<0.33",
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "asyncpg>=0.30,<0.31",
@@ -51,7 +58,10 @@ dependencies = [
     # application layer before storage, never stored in plaintext"). Already
     # present transitively via argon2-cffi/pyjwt in this project's venv, but
     # this is the first code that imports it directly.
-    "cryptography>=43.0,<44.0",
+    # >=49: the 43.x line carries five PYSEC advisories, the earliest fixed
+    # in 44.0.1. Used for Fernet integration-token encryption here and,
+    # transitively, by argon2-cffi and pyjwt.
+    "cryptography>=49.0,<50.0",
 ]
 
 [project.optional-dependencies]
