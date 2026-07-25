@@ -17,7 +17,7 @@ dependencies = [
     # Required by FastAPI's Form()/File() (Task 1.15's multipart/form-data
     # document upload) — FastAPI doesn't vendor multipart parsing itself.
     "python-multipart>=0.0.12,<0.1",
-    "jinja2>=3.1,<4.0",
+    "jinja2>=3.1.6,<4.0",
     # Task 2.13 (PDF export): the plan document names WeasyPrint, but
     # WeasyPrint requires the GTK3/Pango/Cairo native runtime, which has no
     # simple pip-installable path on Windows as of WeasyPrint 69 (the
