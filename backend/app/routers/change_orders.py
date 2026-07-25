@@ -17,6 +17,11 @@ from app.schemas.change_order import (
     ChangeOrderResponse,
 )
 from app.services.audit import write_audit_log
+from app.services.client_scope import (
+    client_project_scope,
+    require_client_access_to_project,
+    require_signer_is_caller,
+)
 from app.services.esignature import capture_esignature
 
 # Task 2.21: Change Orders. Deliberately its OWN file rather than more
@@ -80,6 +85,15 @@ async def _get_change_order_or_404(current: CurrentUser, change_order_id: uuid.U
     change_order = result.scalar_one_or_none()
     if change_order is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Change Order not found")
+    # Membership check for `client` callers (migration 0019). Every by-id
+    # Change Order route — including `approve`/`reject` — funnels through
+    # here, so a client can only ever act on a Change Order for a project
+    # they belong to. Before this, `require_role("client")` plus the
+    # pending-status check was the whole gate, and any client of the
+    # company could e-sign any other client's variation order.
+    await require_client_access_to_project(
+        current, change_order.project_id, entity="Change Order"
+    )
     return change_order
 
 
@@ -129,7 +143,14 @@ async def list_all_change_orders(
     query = select(ChangeOrder, Project.name).join(Project, ChangeOrder.project_id == Project.id)
 
     if current.role == "client":
-        query = query.where(ChangeOrder.status == "pending")
+        # Status AND identity — see list_estimates' equivalent. This route
+        # is the client's cross-project discovery surface, so an unscoped
+        # version handed every client a directory of every other client's
+        # variation orders and their cost deltas.
+        query = query.where(
+            ChangeOrder.status == "pending",
+            client_project_scope(current, ChangeOrder.project_id),
+        )
     if status_filter is not None:
         query = query.where(ChangeOrder.status == status_filter)
 
@@ -296,6 +317,10 @@ async def list_change_orders(
     ones.
     """
     project = await _get_project_or_404(current, project_id)
+    # A client asking about a project they aren't on gets the same 404 the
+    # project itself would give them — no "empty list" signal confirming the
+    # project exists.
+    await require_client_access_to_project(current, project.id)
 
     query = select(ChangeOrder).where(ChangeOrder.project_id == project.id)
 
@@ -405,6 +430,7 @@ async def approve_change_order(
     """
     change_order = await _get_change_order_or_404(current, change_order_id)
     _require_change_order_pending(change_order)
+    require_signer_is_caller(current, signer_email)
 
     signature_artifact_bytes = await read_upload_limited(
         signature_artifact, settings.max_signature_upload_bytes
@@ -416,6 +442,7 @@ async def approve_change_order(
         company_id=change_order.company_id,
         signer_name=signer_name,
         signer_email=signer_email,
+        signed_by_user_id=current.user.id,
         ip_address=ip_address,
         document_type="change_order",
         signature_artifact_bytes=signature_artifact_bytes,

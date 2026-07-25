@@ -50,6 +50,17 @@ async def _get_esignature_or_404(current: CurrentUser, esignature_id: uuid.UUID)
     esignature = result.scalar_one_or_none()
     if esignature is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Esignature not found")
+    # A client may read their OWN signature record and no other. This is the
+    # narrowest of the client scopes and doesn't need the membership tables:
+    # `signed_by_user_id` (migration 0019) says exactly who signed, so
+    # "mine" is a direct comparison.
+    #
+    # Rows signed before 0019 have a NULL here and are therefore invisible
+    # to every client — deliberate. Those are precisely the records whose
+    # attribution was never verified, and guessing an owner for them would
+    # manufacture the evidence link this change exists to establish.
+    if current.role == "client" and esignature.signed_by_user_id != current.user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Esignature not found")
     return esignature
 
 
@@ -58,19 +69,21 @@ async def get_esignature(
     esignature_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_READ_ROLES)),
 ) -> EsignatureResponse:
-    """Resolved judgment call #2: `client` gets BLANKET company-scoped read
-    access here (RLS-backed), NOT a per-row filter scoped to "signatures
-    this specific client signed." `Esignature` has no signer-to-user
-    linkage column at all — only `signer_name`/`signer_email` (captured,
-    free-text strings at signing time, not necessarily matching the exact
-    case/format of a `users` row) — so there is no schema-level way to
-    filter "this client's own" signatures from "any signature in this
-    tenant." This mirrors design decision #3's identical resolution for
-    `estimates`: `GET /estimates/{id}` (`app/routers/estimates.py`,
-    `_get_estimate_or_404`) applies no signer-linkage filter for `client`
-    either — blanket, tenant-scoped access, not a per-row restriction, is
-    this codebase's established answer to this exact ambiguity wherever it
-    has come up before.
+    """`client` sees only signatures they themselves produced; staff roles
+    keep blanket company-scoped (RLS-backed) read.
+
+    This reverses resolved judgment call #2, which granted `client` blanket
+    tenant-wide read here. The reasoning then was schema-level and honest:
+    `Esignature` had no signer-to-user linkage column at all — only the
+    free-text `signer_name`/`signer_email` captured at signing time — so
+    "this client's own signatures" was not expressible. The consequence was
+    that every client of a company could read every other client's executed
+    contracts.
+
+    Migration 0019 adds `signed_by_user_id`, which makes it expressible,
+    so the filter is now applied in `_get_esignature_or_404`. See
+    `app/services/client_scope.py` for the same reversal applied to
+    estimates, change orders and invoices.
     """
     esignature = await _get_esignature_or_404(current, esignature_id)
     return EsignatureResponse.model_validate(esignature)

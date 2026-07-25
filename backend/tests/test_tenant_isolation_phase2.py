@@ -65,7 +65,12 @@ What IS new here, matching this task's three-part spec:
 """
 import asyncpg
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import (
+    TEST_APP_DATABASE_URL,
+    TEST_DATABASE_URL,
+    grant_client_access,
+    set_subscription_tier,
+)
 
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
@@ -1004,9 +1009,15 @@ async def test_esignature_header_spoofing_via_x_tenant_id_is_blocked(client):
     b = await _register_and_login(client, "Company B", "spoof-esig-b@acme.test")
     client_b = await _invite_and_login_as(client, b, "client", "spoof-esig-b-client@acme.test")
     project_b = await _create_project(client, b["headers"])
+    await grant_client_access(
+        client, b, project_id=project_b["id"], email="spoof-esig-b-client@acme.test"
+    )
     await _advance_project_to_active(client, b["headers"], project_b["id"])
     change_order_b = await _create_change_order(client, b["headers"], project_b["id"])
-    approve = await _approve_change_order(client, client_b["headers"], change_order_b["id"])
+    approve = await _approve_change_order(
+        client, client_b["headers"], change_order_b["id"],
+        signer_email="spoof-esig-b-client@acme.test",
+    )
     assert approve.status_code == 200, approve.text
     esignature_id = approve.json()["esignature_id"]
 
@@ -1332,6 +1343,12 @@ async def test_approving_change_order_under_child_branch_uses_change_order_compa
     client_role = await _invite_and_login_as(
         client, parent, "client", "parent-co-approve-client@acme.test"
     )
+    # Granted by the PARENT admin against the CHILD's project — the
+    # membership row carries the child's company_id, and RLS's descendant
+    # grant is what lets the parent-scoped client see it.
+    await grant_client_access(
+        client, parent, project_id=project["id"], email="parent-co-approve-client@acme.test"
+    )
 
     approve = await client.post(
         f"/change-orders/{change_order['id']}/approve",
@@ -1385,6 +1402,12 @@ async def test_rejecting_change_order_under_child_branch_uses_change_order_compa
 
     client_role = await _invite_and_login_as(
         client, parent, "client", "parent-co-reject-client@acme.test"
+    )
+    # Granted by the PARENT admin against the CHILD's project — the
+    # membership row carries the child's company_id, and RLS's descendant
+    # grant is what lets the parent-scoped client see it.
+    await grant_client_access(
+        client, parent, project_id=project["id"], email="parent-co-reject-client@acme.test"
     )
 
     reject = await client.post(

@@ -1,8 +1,13 @@
+import time
+
+import jwt
+import pyotp
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.models import Subscription
+from app.routers.auth import _email_rate_limit_key
 from app.services.rate_limit import _get_redis_client, _reset_redis_client_for_tests
 from tests.conftest import TEST_DATABASE_URL
 
@@ -195,3 +200,151 @@ async def test_register_succeeds_when_redis_is_down(client, monkeypatch):
         assert response.status_code == 201, response.text
     finally:
         _reset_redis_client_for_tests()
+
+
+# =============================================================================
+# Login + TOTP throttling
+#
+# /auth/register was rate limited from the start; /auth/login was not, which
+# left unlimited password guessing against a known address — and unlimited
+# TOTP guessing behind it, since the replay guard only blocks reuse of a
+# code, never a fresh guess.
+# =============================================================================
+
+
+async def _register_for_login_tests(client, email):
+    response = await client.post(
+        "/auth/register",
+        json={
+            "company_name": f"Login RL {email}",
+            "admin_full_name": "Rate Limited",
+            "admin_email": email,
+            "admin_password": "supersecret123",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
+async def test_login_rate_limited_per_email_after_max_attempts(client, monkeypatch):
+    """Many hosts grinding ONE account is what the per-email counter sees
+    and the per-IP counter cannot. Wrong-password attempts must count, or
+    the limiter would only ever throttle successful logins."""
+    monkeypatch.setattr(settings, "login_rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "login_rate_limit_email_max_attempts", 2)
+    monkeypatch.setattr(settings, "login_rate_limit_email_window_seconds", 60)
+    # High enough not to fire first and mask the per-email result.
+    monkeypatch.setattr(settings, "login_rate_limit_ip_max_attempts", 1000)
+
+    _reset_redis_client_for_tests()
+    redis_client = _get_redis_client()
+    email = "login-rl-email@acme.test"
+    email_key = _email_rate_limit_key("ratelimit:login:email", email)
+    await redis_client.delete(email_key, "ratelimit:login:ip:127.0.0.1")
+
+    await _register_for_login_tests(client, email)
+
+    for _ in range(2):
+        attempt = await client.post(
+            "/auth/login", json={"email": email, "password": "wrong-password"}
+        )
+        assert attempt.status_code == 401, attempt.text
+
+    # The correct password must NOT get through once the window is spent —
+    # otherwise the limiter would be trivially bypassed by the one guess
+    # that matters.
+    blocked = await client.post(
+        "/auth/login", json={"email": email, "password": "supersecret123"}
+    )
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.json()["detail"] == "Too many login attempts. Please try again later."
+
+    await redis_client.delete(email_key, "ratelimit:login:ip:127.0.0.1")
+
+
+async def test_login_rate_limited_per_ip_across_different_emails(client, monkeypatch):
+    """One host spraying MANY accounts is invisible to the per-email
+    counter — each address gets its own budget — so the per-IP counter has
+    to catch it."""
+    monkeypatch.setattr(settings, "login_rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "login_rate_limit_ip_max_attempts", 2)
+    monkeypatch.setattr(settings, "login_rate_limit_ip_window_seconds", 60)
+    monkeypatch.setattr(settings, "login_rate_limit_email_max_attempts", 1000)
+
+    _reset_redis_client_for_tests()
+    redis_client = _get_redis_client()
+    ip_key = "ratelimit:login:ip:127.0.0.1"
+    await redis_client.delete(ip_key)
+
+    for i in range(2):
+        attempt = await client.post(
+            "/auth/login", json={"email": f"spray-{i}@acme.test", "password": "whatever"}
+        )
+        assert attempt.status_code == 401, attempt.text
+
+    blocked = await client.post(
+        "/auth/login", json={"email": "spray-3@acme.test", "password": "whatever"}
+    )
+    assert blocked.status_code == 429, blocked.text
+
+    await redis_client.delete(ip_key)
+
+
+async def test_login_rate_limit_key_does_not_store_the_plaintext_email(client):
+    """Redis is an operational cache — keys surface in MONITOR, KEYS,
+    slowlogs and debug dumps — so the per-address counter must not turn it
+    into a roster of every address that has attempted a login."""
+    key = _email_rate_limit_key("ratelimit:login:email", "Someone@Example.test")
+
+    assert "someone@example.test" not in key.lower()
+    assert key.startswith("ratelimit:login:email:")
+    # Case- and whitespace-insensitive, so one address is one counter.
+    assert key == _email_rate_limit_key("ratelimit:login:email", "  SOMEONE@example.TEST ")
+
+
+async def test_totp_verification_is_rate_limited(client, monkeypatch):
+    """A 6-digit code is a 1-in-a-million guess and the replay guard only
+    blocks REUSE, so without a limiter an attacker holding the password
+    could grind the entire code space."""
+    monkeypatch.setattr(settings, "totp_rate_limit_max_attempts", 2)
+    monkeypatch.setattr(settings, "totp_rate_limit_window_seconds", 60)
+
+    _reset_redis_client_for_tests()
+    redis_client = _get_redis_client()
+
+    email = "totp-rl@acme.test"
+    await _register_for_login_tests(client, email)
+    login = await client.post(
+        "/auth/login", json={"email": email, "password": "supersecret123"}
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    enroll = await client.post("/auth/mfa/enroll", headers=headers)
+    assert enroll.status_code == 200, enroll.text
+    secret = enroll.json()["secret"]
+    # Activate with the PREVIOUS step, so the replay guard doesn't burn the
+    # current one — see test_mfa_totp.py's helper for the full rationale.
+    previous_step_code = pyotp.TOTP(secret).at(int(time.time()) - 30)
+    activate = await client.post(
+        "/auth/mfa/activate", json={"totp_code": previous_step_code}, headers=headers
+    )
+    assert activate.status_code == 204, activate.text
+
+    user_id = jwt.decode(
+        login.json()["access_token"], settings.jwt_secret, algorithms=["HS256"]
+    )["sub"]
+    await redis_client.delete(f"ratelimit:totp:{user_id}")
+
+    for _ in range(2):
+        attempt = await client.post(
+            "/auth/login",
+            json={"email": email, "password": "supersecret123", "totp_code": "000000"},
+        )
+        assert attempt.status_code == 401, attempt.text
+
+    blocked = await client.post(
+        "/auth/login",
+        json={"email": email, "password": "supersecret123", "totp_code": pyotp.TOTP(secret).now()},
+    )
+    assert blocked.status_code == 429, blocked.text
+
+    await redis_client.delete(f"ratelimit:totp:{user_id}")

@@ -44,6 +44,11 @@ class EsignatureResponse(BaseModel):
     company_id: uuid.UUID
     signer_name: str
     signer_email: str
+    # The account that produced the signature (migration 0019). Exposed
+    # because it is the part of this record that makes it evidence: the
+    # typed name/email are what the signer wrote, this is who they were.
+    # NULL only on rows signed before 0019.
+    signed_by_user_id: uuid.UUID | None
     signed_at: datetime
     ip_address: str
     signature_artifact_path: str

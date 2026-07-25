@@ -11,8 +11,13 @@ from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import ChangeOrder, DailyLog, Document, Phase, Project, Task
+from app.models import ChangeOrder, DailyLog, Document, Phase, Project, ProjectClient, Task
 from app.models.project import VALID_STATUSES
+from app.schemas.client_access import (
+    ClientAccessGrantRequest,
+    ClientAccessListResponse,
+    ClientAccessResponse,
+)
 from app.schemas.daily_log import DailyLogCreateRequest, DailyLogListResponse, DailyLogResponse
 from app.schemas.document import DocumentListResponse, DocumentResponse
 from app.schemas.project import (
@@ -25,6 +30,12 @@ from app.schemas.project import (
     ProjectStatusUpdateRequest,
 )
 from app.services.audit import write_audit_log
+from app.services.client_access import (
+    grant_client_access,
+    list_client_access,
+    revoke_client_access,
+)
+from app.services.client_scope import require_client_access_to_project
 from app.services.document_storage import InvalidFileNameError, validate_file_name, write_document_file
 from app.services.project_transitions import is_legal_transition
 
@@ -112,6 +123,15 @@ async def _get_project_or_404(current: CurrentUser, project_id: uuid.UUID) -> Pr
     project = result.scalar_one_or_none()
     if project is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+
+    # `client`'s equivalent of field_crew's assigned-only scope above
+    # (migration 0019). `GET /projects/{id}` doubles as the client dashboard
+    # (design decision #8), and before this a client could read the
+    # dashboard of any project in the company by id. A separate round trip
+    # rather than folded into the query: the membership tables are a
+    # different shape from field_crew's task-assignment EXISTS, and
+    # `client_scope` keeps that rule in one place for every router.
+    await require_client_access_to_project(current, project.id)
 
     return project
 
@@ -514,6 +534,81 @@ async def upload_document(
     # transitions), so none is written here.
 
     return DocumentResponse.model_validate(document)
+
+
+# --- Client access (migration 0019) ---------------------------------------
+#
+# The membership rows `app/services/client_scope.py` reads. Admin/PM only
+# (_WRITE_ROLES): deciding which customer may see a job's pricing and sign
+# its contract is the same grade of decision as editing the job itself.
+# Deliberately NOT available to `client` — a client cannot add themselves,
+# or anyone else, to a project.
+
+
+@router.get("/{project_id}/clients", response_model=ClientAccessListResponse)
+async def list_project_clients(
+    project_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+) -> ClientAccessListResponse:
+    project = await _get_project_or_404(current, project_id)
+    return ClientAccessListResponse(
+        items=await list_client_access(current, model=ProjectClient, parent_id=project.id)
+    )
+
+
+@router.post(
+    "/{project_id}/clients",
+    response_model=ClientAccessResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_project_client_access(
+    project_id: uuid.UUID,
+    payload: ClientAccessGrantRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> ClientAccessResponse:
+    project = await _get_project_or_404(current, project_id)
+    granted = await grant_client_access(
+        current,
+        model=ProjectClient,
+        parent_id=project.id,
+        parent_company_id=project.company_id,
+        user_id=payload.user_id,
+    )
+    await write_audit_log(
+        current.session,
+        company_id=project.company_id,
+        actor_id=current.user.id,
+        action="project.client_access_granted",
+        entity_type="project",
+        entity_id=project.id,
+    )
+    return granted
+
+
+@router.delete("/{project_id}/clients/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_project_client_access(
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> None:
+    project = await _get_project_or_404(current, project_id)
+    await revoke_client_access(
+        current, model=ProjectClient, parent_id=project.id, user_id=user_id
+    )
+    # Audited, unlike most deletes in this codebase: revoking a client's
+    # access to a project they may have signed a contract on is exactly the
+    # kind of state change docs/07-security-compliance.md Section 5 wants a
+    # trail for.
+    await write_audit_log(
+        current.session,
+        company_id=project.company_id,
+        actor_id=current.user.id,
+        action="project.client_access_revoked",
+        entity_type="project",
+        entity_id=project.id,
+    )
 
 
 @router.get("/{project_id}/documents", response_model=DocumentListResponse)

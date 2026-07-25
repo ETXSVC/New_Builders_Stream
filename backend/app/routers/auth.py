@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -179,8 +180,72 @@ async def _default_membership(session, user_id) -> CompanyUser | None:
     return result.scalars().first()
 
 
+def _email_rate_limit_key(prefix: str, email: str) -> str:
+    """A Redis key derived from an email, without storing the email.
+
+    Redis here is an operational cache with a different (lower) handling
+    bar than the database: keys show up in `MONITOR`, `KEYS`, slowlogs and
+    any dump taken for debugging. A per-address login counter is useful and
+    a plaintext roster of every address that has ever attempted a login is
+    not, so the address is hashed and only the digest is stored.
+
+    SHA-256 with no salt on purpose: the key has to be reproducible across
+    processes and restarts from the address alone, which rules out a random
+    salt, and this is not a password hash — the goal is "don't hold the
+    plaintext", not "resist an offline crack of a low-entropy input".
+    """
+    digest = hashlib.sha256(email.strip().casefold().encode()).hexdigest()
+    return f"{prefix}:{digest}"
+
+
+async def _enforce_login_rate_limits(request: Request, email: str) -> None:
+    """Throttle by source IP *and* by target email; either can reject.
+
+    Checked BEFORE the password is verified, which is what makes it a
+    throttle rather than a report: an attacker gets a 429 having learned
+    nothing about the address, and the (deliberately expensive) Argon2
+    verification is never reached, so the endpoint can't be used as a CPU
+    amplifier either.
+
+    The counters are not reset on a successful login. A fixed window is
+    coarse by design here — resetting on success would let an attacker who
+    happens to hold one valid credential in a spray clear the counter for
+    the whole window.
+    """
+    if not settings.login_rate_limit_enabled:
+        return
+
+    # request.client.host is the real client because uvicorn runs with
+    # --proxy-headers and the BFF forwards X-Forwarded-For (see
+    # frontend/lib/api/client.ts). Without that chain every request would
+    # collapse onto the proxy's single address and this would be one global
+    # counter.
+    client_ip = request.client.host if request.client else "unknown"
+
+    checks = (
+        (
+            f"ratelimit:login:ip:{client_ip}",
+            settings.login_rate_limit_ip_max_attempts,
+            settings.login_rate_limit_ip_window_seconds,
+        ),
+        (
+            _email_rate_limit_key("ratelimit:login:email", email),
+            settings.login_rate_limit_email_max_attempts,
+            settings.login_rate_limit_email_window_seconds,
+        ),
+    )
+    for key, max_attempts, window_seconds in checks:
+        if not await check_rate_limit(key, max_attempts, window_seconds):
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                "Too many login attempts. Please try again later.",
+            )
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, response: Response) -> TokenResponse:
+async def login(payload: LoginRequest, request: Request, response: Response) -> TokenResponse:
+    await _enforce_login_rate_limits(request, payload.email)
+
     async with session_scope() as session:
         result = await session.execute(select(User).where(User.email == payload.email))
         user = result.scalar_one_or_none()
@@ -207,6 +272,25 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
         if user.mfa_activated_at is not None:
             if payload.totp_code is None:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+            # Keyed per user id, not per IP: the attacker here already holds
+            # the password, so they are grinding one specific account and
+            # can rotate source addresses freely. The replay guard
+            # (`totp_last_used_step`) blocks REUSE of a code, which does
+            # nothing against fresh guesses across the 1e6 code space.
+            #
+            # Checked before verify_totp_code so a rejected attempt still
+            # counts — otherwise the limit would only ever throttle
+            # successes.
+            allowed = await check_rate_limit(
+                f"ratelimit:totp:{user.id}",
+                settings.totp_rate_limit_max_attempts,
+                settings.totp_rate_limit_window_seconds,
+            )
+            if not allowed:
+                raise HTTPException(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many verification attempts. Please try again later.",
+                )
             if not verify_totp_code(user, payload.totp_code):
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
 

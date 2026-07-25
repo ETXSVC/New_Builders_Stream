@@ -944,19 +944,21 @@ export interface paths {
         };
         /**
          * Get Esignature
-         * @description Resolved judgment call #2: `client` gets BLANKET company-scoped read
-         *     access here (RLS-backed), NOT a per-row filter scoped to "signatures
-         *     this specific client signed." `Esignature` has no signer-to-user
-         *     linkage column at all — only `signer_name`/`signer_email` (captured,
-         *     free-text strings at signing time, not necessarily matching the exact
-         *     case/format of a `users` row) — so there is no schema-level way to
-         *     filter "this client's own" signatures from "any signature in this
-         *     tenant." This mirrors design decision #3's identical resolution for
-         *     `estimates`: `GET /estimates/{id}` (`app/routers/estimates.py`,
-         *     `_get_estimate_or_404`) applies no signer-linkage filter for `client`
-         *     either — blanket, tenant-scoped access, not a per-row restriction, is
-         *     this codebase's established answer to this exact ambiguity wherever it
-         *     has come up before.
+         * @description `client` sees only signatures they themselves produced; staff roles
+         *     keep blanket company-scoped (RLS-backed) read.
+         *
+         *     This reverses resolved judgment call #2, which granted `client` blanket
+         *     tenant-wide read here. The reasoning then was schema-level and honest:
+         *     `Esignature` had no signer-to-user linkage column at all — only the
+         *     free-text `signer_name`/`signer_email` captured at signing time — so
+         *     "this client's own signatures" was not expressible. The consequence was
+         *     that every client of a company could read every other client's executed
+         *     contracts.
+         *
+         *     Migration 0019 adds `signed_by_user_id`, which makes it expressible,
+         *     so the filter is now applied in `_get_esignature_or_404`. See
+         *     `app/services/client_scope.py` for the same reversal applied to
+         *     estimates, change orders and invoices.
          */
         get: operations["get_esignature_esignatures__esignature_id__get"];
         put?: never;
@@ -1699,6 +1701,41 @@ export interface paths {
         patch: operations["update_lead_leads__lead_id__patch"];
         trace?: never;
     };
+    "/leads/{lead_id}/clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lead Clients */
+        get: operations["list_lead_clients_leads__lead_id__clients_get"];
+        put?: never;
+        /** Grant Lead Client Access */
+        post: operations["grant_lead_client_access_leads__lead_id__clients_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/leads/{lead_id}/clients/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Lead Client Access */
+        delete: operations["revoke_lead_client_access_leads__lead_id__clients__user_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/leads/{lead_id}/communications": {
         parameters: {
             query?: never;
@@ -1892,6 +1929,41 @@ export interface paths {
          */
         post: operations["create_change_order_projects__project_id__change_orders_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/clients": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Project Clients */
+        get: operations["list_project_clients_projects__project_id__clients_get"];
+        put?: never;
+        /** Grant Project Client Access */
+        post: operations["grant_project_client_access_projects__project_id__clients_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/projects/{project_id}/clients/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Project Client Access */
+        delete: operations["revoke_project_client_access_projects__project_id__clients__user_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2977,6 +3049,51 @@ export interface components {
             /** Totp Code */
             totp_code?: string | null;
         };
+        /**
+         * ClientAccessGrantRequest
+         * @description `user_id`, not an email: the grant targets an existing account in
+         *     this company, and resolving by email here would let a caller probe
+         *     which addresses have accounts. Admins get the ids from
+         *     `GET /companies/members`.
+         */
+        ClientAccessGrantRequest: {
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /**
+         * ClientAccessListResponse
+         * @description No cursor: the number of clients on one project or lead is bounded by
+         *     how many people signed the contract — a handful, not a growing list.
+         */
+        ClientAccessListResponse: {
+            /** Items */
+            items: components["schemas"]["ClientAccessResponse"][];
+        };
+        /** ClientAccessResponse */
+        ClientAccessResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Email */
+            email: string;
+            /** Full Name */
+            full_name: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
         /** CommunicationLogCreateRequest */
         CommunicationLogCreateRequest: {
             /** Body */
@@ -3552,6 +3669,8 @@ export interface components {
              * Format: date-time
              */
             signed_at: string;
+            /** Signed By User Id */
+            signed_by_user_id: string | null;
             /** Signer Email */
             signer_email: string;
             /** Signer Name */
@@ -7086,6 +7205,102 @@ export interface operations {
             };
         };
     };
+    list_lead_clients_leads__lead_id__clients_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lead_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientAccessListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_lead_client_access_leads__lead_id__clients_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lead_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientAccessGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientAccessResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_lead_client_access_leads__lead_id__clients__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                lead_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_communication_logs_leads__lead_id__communications_get: {
         parameters: {
             query?: {
@@ -7473,6 +7688,102 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ChangeOrderResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_project_clients_projects__project_id__clients_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientAccessListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_project_client_access_projects__project_id__clients_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClientAccessGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClientAccessResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_project_client_access_projects__project_id__clients__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

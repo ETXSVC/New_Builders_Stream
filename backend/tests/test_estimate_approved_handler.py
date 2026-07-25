@@ -35,7 +35,7 @@ from decimal import Decimal
 import asyncpg
 
 from app.core.event_handlers import register_event_handlers
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, grant_client_access, set_subscription_tier
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -82,7 +82,12 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `email` is needed because migration 0019 rejects a signer_email that
+    # isn't the signing account's own.
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "email": email,
+    }
 
 
 async def _create_project(client, headers, name="Deposit Project"):
@@ -114,8 +119,16 @@ async def _create_catalog_item(client, headers):
 
 
 async def _create_and_approve_estimate(
-    client, admin_headers, client_headers, project_id, markup_profile_id, catalog_item_id, *, quantity
+    client, admin, client_role, project_id, markup_profile_id, catalog_item_id, *, quantity
 ):
+    """Takes the whole `admin`/`client_role` login dicts, not just their
+    headers: migration 0019 needs both the project-membership grant (a
+    client sees nothing on a project they aren't on) and the client's own
+    email (the signature block must match the signing account)."""
+    admin_headers = admin["headers"]
+    client_headers = client_role["headers"]
+    await grant_client_access(client, admin, project_id=project_id, email=client_role["email"])
+
     create = await client.post(
         "/estimates",
         json={"project_id": project_id, "markup_profile_id": markup_profile_id},
@@ -143,7 +156,7 @@ async def _create_and_approve_estimate(
     files = {"signature_artifact": ("sig.png", b"fake-png-bytes", "image/png")}
     approve = await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": "Client Signer", "signer_email": "client@example.test"},
+        data={"signer_name": "Client Signer", "signer_email": client_role["email"]},
         files=files,
         headers=client_headers,
     )
@@ -186,8 +199,8 @@ async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(cli
 
     estimate_id, total = await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,
@@ -240,8 +253,8 @@ async def test_approving_an_estimate_enqueues_a_sync_for_the_deposit_invoice(cli
 
     estimate_id, _total = await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,
@@ -292,6 +305,11 @@ async def test_approving_an_estimate_against_a_bare_lead_does_not_create_an_invo
     admin = await _register_and_login(client, "Deposit Co 2", "deposit-2@example.test")
     client_role = await _invite_and_login_as(client, admin, "client", "deposit-client-2@example.test")
     lead = await _create_lead(client, admin["headers"])
+    # A lead-backed estimate has no project, so `lead_clients` is the only
+    # membership that can reach it (migration 0019).
+    await grant_client_access(
+        client, admin, lead_id=lead["id"], email="deposit-client-2@example.test"
+    )
     await _advance_lead_to_estimating(client, admin["headers"], lead["id"])
     markup_profile_id = await _create_markup_profile(client, admin["headers"])
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
@@ -321,7 +339,7 @@ async def test_approving_an_estimate_against_a_bare_lead_does_not_create_an_invo
     files = {"signature_artifact": ("sig.png", b"fake-png-bytes", "image/png")}
     approve = await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": "Client Signer", "signer_email": "client2@example.test"},
+        data={"signer_name": "Client Signer", "signer_email": client_role["email"]},
         files=files,
         headers=client_role["headers"],
     )

@@ -759,6 +759,81 @@
         "title": "ChangePasswordRequest",
         "type": "object"
       },
+      "ClientAccessGrantRequest": {
+        "description": "`user_id`, not an email: the grant targets an existing account in\nthis company, and resolving by email here would let a caller probe\nwhich addresses have accounts. Admins get the ids from\n`GET /companies/members`.",
+        "properties": {
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "ClientAccessGrantRequest",
+        "type": "object"
+      },
+      "ClientAccessListResponse": {
+        "description": "No cursor: the number of clients on one project or lead is bounded by\nhow many people signed the contract \u2014 a handful, not a growing list.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClientAccessResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ClientAccessListResponse",
+        "type": "object"
+      },
+      "ClientAccessResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "email",
+          "full_name",
+          "created_at"
+        ],
+        "title": "ClientAccessResponse",
+        "type": "object"
+      },
       "CommunicationLogCreateRequest": {
         "properties": {
           "body": {
@@ -1767,6 +1842,18 @@
             "title": "Signed At",
             "type": "string"
           },
+          "signed_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signed By User Id"
+          },
           "signer_email": {
             "title": "Signer Email",
             "type": "string"
@@ -1781,6 +1868,7 @@
           "company_id",
           "signer_name",
           "signer_email",
+          "signed_by_user_id",
           "signed_at",
           "ip_address",
           "signature_artifact_path",
@@ -6447,7 +6535,7 @@
     },
     "/esignatures/{esignature_id}": {
       "get": {
-        "description": "Resolved judgment call #2: `client` gets BLANKET company-scoped read\naccess here (RLS-backed), NOT a per-row filter scoped to \"signatures\nthis specific client signed.\" `Esignature` has no signer-to-user\nlinkage column at all \u2014 only `signer_name`/`signer_email` (captured,\nfree-text strings at signing time, not necessarily matching the exact\ncase/format of a `users` row) \u2014 so there is no schema-level way to\nfilter \"this client's own\" signatures from \"any signature in this\ntenant.\" This mirrors design decision #3's identical resolution for\n`estimates`: `GET /estimates/{id}` (`app/routers/estimates.py`,\n`_get_estimate_or_404`) applies no signer-linkage filter for `client`\neither \u2014 blanket, tenant-scoped access, not a per-row restriction, is\nthis codebase's established answer to this exact ambiguity wherever it\nhas come up before.",
+        "description": "`client` sees only signatures they themselves produced; staff roles\nkeep blanket company-scoped (RLS-backed) read.\n\nThis reverses resolved judgment call #2, which granted `client` blanket\ntenant-wide read here. The reasoning then was schema-level and honest:\n`Esignature` had no signer-to-user linkage column at all \u2014 only the\nfree-text `signer_name`/`signer_email` captured at signing time \u2014 so\n\"this client's own signatures\" was not expressible. The consequence was\nthat every client of a company could read every other client's executed\ncontracts.\n\nMigration 0019 adds `signed_by_user_id`, which makes it expressible,\nso the filter is now applied in `_get_esignature_or_404`. See\n`app/services/client_scope.py` for the same reversal applied to\nestimates, change orders and invoices.",
         "operationId": "get_esignature_esignatures__esignature_id__get",
         "parameters": [
           {
@@ -7785,6 +7873,146 @@
         ]
       }
     },
+    "/leads/{lead_id}/clients": {
+      "get": {
+        "operationId": "list_lead_clients_leads__lead_id__clients_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lead_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lead Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccessListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Lead Clients",
+        "tags": [
+          "leads"
+        ]
+      },
+      "post": {
+        "operationId": "grant_lead_client_access_leads__lead_id__clients_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lead_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lead Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientAccessGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Lead Client Access",
+        "tags": [
+          "leads"
+        ]
+      }
+    },
+    "/leads/{lead_id}/clients/{user_id}": {
+      "delete": {
+        "operationId": "revoke_lead_client_access_leads__lead_id__clients__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lead_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lead Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Lead Client Access",
+        "tags": [
+          "leads"
+        ]
+      }
+    },
     "/leads/{lead_id}/communications": {
       "get": {
         "operationId": "list_communication_logs_leads__lead_id__communications_get",
@@ -8444,6 +8672,146 @@
         "summary": "Create Change Order",
         "tags": [
           "change_orders"
+        ]
+      }
+    },
+    "/projects/{project_id}/clients": {
+      "get": {
+        "operationId": "list_project_clients_projects__project_id__clients_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccessListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Project Clients",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "operationId": "grant_project_client_access_projects__project_id__clients_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientAccessGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Project Client Access",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/projects/{project_id}/clients/{user_id}": {
+      "delete": {
+        "operationId": "revoke_project_client_access_projects__project_id__clients__user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Project Client Access",
+        "tags": [
+          "projects"
         ]
       }
     },

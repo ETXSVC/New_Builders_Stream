@@ -23,7 +23,7 @@ import uuid
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, grant_client_access
 from tests.test_estimates import (
     _add_membership_directly,
     _create_child_with_membership,
@@ -141,6 +141,15 @@ async def test_esignature_is_stamped_with_the_estimates_company(client):
         json={"email": "stamp-2-client@example.test", "password": "anothersecret123"},
     )
     client_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    # Migration 0019: granted by the PARENT admin against the CHILD's
+    # project. The membership row carries the child's company_id (the parent
+    # record's — the same stamping rule this file exists to pin down), and
+    # RLS's descendant grant is what makes it readable from the parent
+    # context the signer is acting in.
+    await grant_client_access(
+        client, parent, project_id=project.json()["id"], email="stamp-2-client@example.test"
+    )
 
     approve = await client.post(
         f"/estimates/{estimate_id}/approve",

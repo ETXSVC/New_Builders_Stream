@@ -6,8 +6,13 @@ from sqlalchemy import select
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.events import publish
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
-from app.models import CommunicationLog, Lead
+from app.models import CommunicationLog, Lead, LeadClient
 from app.models.lead import VALID_STATUSES
+from app.schemas.client_access import (
+    ClientAccessGrantRequest,
+    ClientAccessListResponse,
+    ClientAccessResponse,
+)
 from app.schemas.communication_log import (
     CommunicationLogCreateRequest,
     CommunicationLogListResponse,
@@ -15,6 +20,11 @@ from app.schemas.communication_log import (
 )
 from app.schemas.lead import LeadCreateRequest, LeadListResponse, LeadResponse, LeadUpdateRequest
 from app.services.audit import write_audit_log
+from app.services.client_access import (
+    grant_client_access,
+    list_client_access,
+    revoke_client_access,
+)
 from app.services.lead_transitions import is_legal_transition
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -268,4 +278,77 @@ async def list_communication_logs(
     return CommunicationLogListResponse(
         items=[CommunicationLogResponse.model_validate(row) for row in rows],
         next_cursor=next_cursor,
+    )
+
+
+# --- Client access (migration 0019) ---------------------------------------
+#
+# The Lead-stage counterpart of `POST /projects/{id}/clients`. An Estimate
+# can hang off a bare Lead (`Estimate.project_id` is nullable), and that is
+# exactly the new-business case where a prospective customer is asked to
+# review and sign before any Project exists — so the client needs the same
+# membership edge here or the flow has no reachable estimate.
+#
+# `_LEAD_ROLES` (admin, project_manager) throughout: CRM is Admin/PM-only,
+# and granting a customer sight of a lead's pricing is a CRM decision.
+
+
+@router.get("/{lead_id}/clients", response_model=ClientAccessListResponse)
+async def list_lead_clients(
+    lead_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+) -> ClientAccessListResponse:
+    lead = await _get_lead_or_404(current, lead_id)
+    return ClientAccessListResponse(
+        items=await list_client_access(current, model=LeadClient, parent_id=lead.id)
+    )
+
+
+@router.post(
+    "/{lead_id}/clients",
+    response_model=ClientAccessResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_lead_client_access(
+    lead_id: uuid.UUID,
+    payload: ClientAccessGrantRequest,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> ClientAccessResponse:
+    lead = await _get_lead_or_404(current, lead_id)
+    granted = await grant_client_access(
+        current,
+        model=LeadClient,
+        parent_id=lead.id,
+        # lead.company_id, not current.company_id — see grant_client_access.
+        parent_company_id=lead.company_id,
+        user_id=payload.user_id,
+    )
+    await write_audit_log(
+        current.session,
+        company_id=lead.company_id,
+        actor_id=current.user.id,
+        action="lead.client_access_granted",
+        entity_type="lead",
+        entity_id=lead.id,
+    )
+    return granted
+
+
+@router.delete("/{lead_id}/clients/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_lead_client_access(
+    lead_id: uuid.UUID,
+    user_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role(*_LEAD_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> None:
+    lead = await _get_lead_or_404(current, lead_id)
+    await revoke_client_access(current, model=LeadClient, parent_id=lead.id, user_id=user_id)
+    await write_audit_log(
+        current.session,
+        company_id=lead.company_id,
+        actor_id=current.user.id,
+        action="lead.client_access_revoked",
+        entity_type="lead",
+        entity_id=lead.id,
     )

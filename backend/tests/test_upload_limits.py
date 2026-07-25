@@ -8,6 +8,7 @@ imported from the routes' own test files (the established cross-file
 pattern test_tier_gating.py uses).
 """
 from app.config import settings
+from tests.conftest import grant_client_access
 from tests.test_documents import _create_project, _register_and_login, _upload
 from tests.test_subcontractors import (
     _create_subcontractor,
@@ -64,6 +65,11 @@ async def test_signature_artifact_over_cap_is_413(client, monkeypatch):
     admin = await _register_estimate_admin(client, "Upload Cap Co 3", "upload-cap-3@example.test")
     client_role = await _invite_and_login_as(client, admin, "client", "upload-cap-3-client@example.test")
     project = await _create_estimate_project(client, admin["headers"])
+    # Migration 0019: the approve route is behind project membership now, so
+    # the cap can only be reached once the client is actually on the job.
+    await grant_client_access(
+        client, admin, project_id=project["id"], email="upload-cap-3-client@example.test"
+    )
     markup_profile_id = await _create_markup_profile(client, admin["headers"])
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
 
@@ -86,7 +92,7 @@ async def test_signature_artifact_over_cap_is_413(client, monkeypatch):
 
     over = await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": "Client Signer", "signer_email": "sig@example.test"},
+        data={"signer_name": "Client Signer", "signer_email": client_role["email"]},
         files={"signature_artifact": ("sig.png", b"x" * (_CAP + 1), "image/png")},
         headers=client_role["headers"],
     )
@@ -94,7 +100,7 @@ async def test_signature_artifact_over_cap_is_413(client, monkeypatch):
 
     under = await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": "Client Signer", "signer_email": "sig@example.test"},
+        data={"signer_name": "Client Signer", "signer_email": client_role["email"]},
         files={"signature_artifact": ("sig.png", b"x" * _CAP, "image/png")},
         headers=client_role["headers"],
     )

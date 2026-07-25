@@ -39,6 +39,7 @@ async def _register_and_login(client, company_name, email):
     return {
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],
+        "email": email,
         "headers": {"Authorization": f"Bearer {body['access_token']}"},
     }
 
@@ -57,7 +58,45 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `email`/`user_id` are returned alongside the headers because migration
+    # 0019 made client-role tests need both: the id to grant project/lead
+    # membership with, and the email because `approve` now rejects a
+    # signer_email that isn't the caller's own.
+    members = await client.get("/companies/members", headers=admin["headers"])
+    assert members.status_code == 200, members.text
+    user_id = next(m["user_id"] for m in members.json()["items"] if m["email"] == email)
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "user_id": user_id,
+        "email": email,
+    }
+
+
+async def _grant_project_client_access(client, admin, project_id, client_role):
+    """Migration 0019: a `client` sees nothing on a project until granted.
+
+    Every client-role test below calls this (or its lead counterpart)
+    because that is now the real product flow — an admin decides which
+    customer may see a job. A test that forgets it gets a 404, which is the
+    point: before 0019 every client of a company could read and e-sign
+    every other client's documents."""
+    granted = await client.post(
+        f"/projects/{project_id}/clients",
+        json={"user_id": client_role["user_id"]},
+        headers=admin["headers"],
+    )
+    assert granted.status_code == 201, granted.text
+    return granted.json()
+
+
+async def _grant_lead_client_access(client, admin, lead_id, client_role):
+    granted = await client.post(
+        f"/leads/{lead_id}/clients",
+        json={"user_id": client_role["user_id"]},
+        headers=admin["headers"],
+    )
+    assert granted.status_code == 201, granted.text
+    return granted.json()
 
 
 def _lead_payload(**overrides):
@@ -541,6 +580,7 @@ async def test_list_estimates_as_client_shows_sent_only(client):
     admin = await _register_and_login(client, "Acme Construction", "clientlist-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "client-list-est@acme.test")
     project = await _create_project(client, admin["headers"])
+    await _grant_project_client_access(client, admin, project["id"], client_role)
     markup = await _create_markup_profile(client, admin["headers"])
     await client.post(
         "/estimates",
@@ -1170,10 +1210,16 @@ async def _create_calculated_estimate(client, admin, *, unit_rate="45.00", quant
     return calc_response.json(), project, catalog_item
 
 
-async def _advance_to_sent(client, admin, *, unit_rate="45.00", quantity="10.00"):
+async def _advance_to_sent(
+    client, admin, *, unit_rate="45.00", quantity="10.00", client_role=None
+):
     """Builds a fully calculated estimate, then sends it for signature via
     the real route, returning the resulting (status='sent') estimate body
-    plus the underlying project/catalog_item for callers that need them."""
+    plus the underlying project/catalog_item for callers that need them.
+
+    Pass `client_role` to also grant that client access to the project —
+    migration 0019 means a client sees nothing on a project they aren't a
+    member of, so every test that then acts as the client needs it."""
     estimate, project, catalog_item = await _create_calculated_estimate(
         client, admin, unit_rate=unit_rate, quantity=quantity
     )
@@ -1181,23 +1227,34 @@ async def _advance_to_sent(client, admin, *, unit_rate="45.00", quantity="10.00"
         f"/estimates/{estimate['id']}/send-for-signature", headers=admin["headers"]
     )
     assert response.status_code == 200, response.text
+    if client_role is not None:
+        await _grant_project_client_access(client, admin, project["id"], client_role)
     return response.json(), project, catalog_item
 
 
 async def _approve_estimate(
     client,
-    headers,
+    actor,
     estimate_id,
     *,
     signer_name="Jane Client",
-    signer_email="jane-client@example.test",
+    signer_email=None,
     content=b"fake-signature-bytes",
 ):
+    """`actor` is a whole `_register_and_login`/`_invite_and_login_as` dict,
+    not just its headers: `signer_email` now has to be the signing account's
+    own address (migration 0019 — the signature block was previously free
+    text never compared to anyone), so this helper needs the email too and
+    defaults to it. Tests asserting the rejection pass an explicit
+    mismatched `signer_email`."""
     return await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": signer_name, "signer_email": signer_email},
+        data={
+            "signer_name": signer_name,
+            "signer_email": signer_email if signer_email is not None else actor["email"],
+        },
         files={"signature_artifact": ("signature.png", content, "image/png")},
-        headers=headers,
+        headers=actor["headers"],
     )
 
 
@@ -1259,14 +1316,15 @@ async def test_non_write_roles_cannot_send_for_signature(client):
 async def test_approve_captures_esignature_and_snapshots(client):
     admin = await _register_and_login(client, "Acme Construction", "approve-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "approve-client@acme.test")
-    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
     response = await _approve_estimate(
         client,
-        client_role["headers"],
+        client_role,
         sent_estimate["id"],
         signer_name="Jane Client",
-        signer_email="jane-client@example.test",
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -1281,7 +1339,10 @@ async def test_approve_captures_esignature_and_snapshots(client):
     assert esignature_response.status_code == 200, esignature_response.text
     esignature_body = esignature_response.json()
     assert esignature_body["signer_name"] == "Jane Client"
-    assert esignature_body["signer_email"] == "jane-client@example.test"
+    # The signing account's own address — migration 0019 refuses anything
+    # else, so this is no longer a free-text field the caller chose.
+    assert esignature_body["signer_email"] == client_role["email"]
+    assert esignature_body["signed_by_user_id"] == client_role["user_id"]
     assert esignature_body["document_type"] == "estimate"
     assert esignature_body["company_id"] == admin["company_id"]
 
@@ -1300,7 +1361,9 @@ async def test_approve_publishes_estimate_approved_with_expected_payload(client)
     call, not a comment/TODO."""
     admin = await _register_and_login(client, "Acme Construction", "publish-est-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "publish-est-client@acme.test")
-    sent_estimate, project, _catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, project, _catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
     received: list[dict] = []
 
@@ -1308,7 +1371,7 @@ async def test_approve_publishes_estimate_approved_with_expected_payload(client)
         received.append(payload)
 
     events.register("ESTIMATE_APPROVED", _capture_handler)
-    response = await _approve_estimate(client, client_role["headers"], sent_estimate["id"])
+    response = await _approve_estimate(client, client_role, sent_estimate["id"])
     assert response.status_code == 200, response.text
     approved_total = response.json()["total"]
 
@@ -1329,6 +1392,10 @@ async def test_approve_publishes_estimate_approved_with_null_project_id_for_lead
     admin = await _register_and_login(client, "Acme Construction", "publish-lead-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "publish-lead-client@acme.test")
     lead = await _create_lead(client, admin["headers"])
+    # A lead-backed estimate has no project, so project membership cannot
+    # reach it — this is exactly the case `lead_clients` exists for
+    # (migration 0019): new business, signed before the job exists.
+    await _grant_lead_client_access(client, admin, lead["id"], client_role)
     await _advance_lead_to(client, admin["headers"], lead["id"], "estimating")
     markup = await _create_markup_profile(client, admin["headers"])
     catalog_item = await _create_catalog_item(client, admin["headers"])
@@ -1356,7 +1423,7 @@ async def test_approve_publishes_estimate_approved_with_null_project_id_for_lead
         received.append(payload)
 
     events.register("ESTIMATE_APPROVED", _capture_handler)
-    response = await _approve_estimate(client, client_role["headers"], estimate_id)
+    response = await _approve_estimate(client, client_role, estimate_id)
     assert response.status_code == 200, response.text
 
     assert len(received) == 1
@@ -1368,10 +1435,11 @@ async def test_approve_requires_sent_status(client):
     client_role = await _invite_and_login_as(
         client, admin, "client", "approve-status-client@acme.test"
     )
-    estimate, _project, _catalog_item = await _create_calculated_estimate(client, admin)
+    estimate, project, _catalog_item = await _create_calculated_estimate(client, admin)
+    await _grant_project_client_access(client, admin, project["id"], client_role)
     # Deliberately not sent-for-signature: estimate is still 'draft'.
 
-    response = await _approve_estimate(client, client_role["headers"], estimate["id"])
+    response = await _approve_estimate(client, client_role, estimate["id"])
     assert response.status_code == 409, response.text
 
 
@@ -1380,7 +1448,9 @@ async def test_reject_requires_a_reason(client):
     client_role = await _invite_and_login_as(
         client, admin, "client", "reject-noreason-client@acme.test"
     )
-    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
     response = await client.post(
         f"/estimates/{sent_estimate['id']}/reject", json={}, headers=client_role["headers"]
@@ -1397,7 +1467,9 @@ async def test_reject_requires_a_reason(client):
 async def test_reject_with_reason_succeeds_and_does_not_snapshot(client):
     admin = await _register_and_login(client, "Acme Construction", "reject-ok-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "reject-ok-client@acme.test")
-    sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, _project, _catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
     response = await client.post(
         f"/estimates/{sent_estimate['id']}/reject",
@@ -1426,7 +1498,8 @@ async def test_reject_requires_sent_status(client):
     client_role = await _invite_and_login_as(
         client, admin, "client", "reject-status-client@acme.test"
     )
-    estimate, _project, _catalog_item = await _create_calculated_estimate(client, admin)
+    estimate, project, _catalog_item = await _create_calculated_estimate(client, admin)
+    await _grant_project_client_access(client, admin, project["id"], client_role)
     # Deliberately not sent-for-signature: estimate is still 'draft'.
 
     response = await client.post(
@@ -1446,7 +1519,7 @@ async def test_non_client_roles_cannot_approve_or_reject(client):
     for actor in (admin, pm, accountant, field_crew):
         sent_estimate, _project, _catalog_item = await _advance_to_sent(client, admin)
 
-        approve_response = await _approve_estimate(client, actor["headers"], sent_estimate["id"])
+        approve_response = await _approve_estimate(client, actor, sent_estimate["id"])
         assert approve_response.status_code == 403, approve_response.text
 
         reject_response = await client.post(
@@ -1466,9 +1539,11 @@ async def test_approved_and_snapshotted_estimate_blocks_lines_and_calculate_via_
     flag is poked directly."""
     admin = await _register_and_login(client, "Acme Construction", "realflow-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "realflow-client@acme.test")
-    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, _project, catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
-    approve_response = await _approve_estimate(client, client_role["headers"], sent_estimate["id"])
+    approve_response = await _approve_estimate(client, client_role, sent_estimate["id"])
     assert approve_response.status_code == 200, approve_response.text
 
     put_response = await client.put(
@@ -1627,7 +1702,9 @@ async def test_replace_line_items_and_calculate_remain_legal_on_rejected_estimat
     client_role = await _invite_and_login_as(
         client, admin, "client", "rejected-edit-client@acme.test"
     )
-    sent_estimate, _project, catalog_item = await _advance_to_sent(client, admin)
+    sent_estimate, _project, catalog_item = await _advance_to_sent(
+        client, admin, client_role=client_role
+    )
 
     reject_response = await client.post(
         f"/estimates/{sent_estimate['id']}/reject",

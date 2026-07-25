@@ -438,7 +438,7 @@ async def test_pro_company_estimate_approval_drafts_no_deposit_invoice(client):
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
 
     estimate_id, _total = await _create_and_approve_estimate(
-        client, admin["headers"], client_role["headers"],
+        client, admin, client_role,
         project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
     )
 
@@ -483,7 +483,7 @@ async def test_pro_company_project_completion_drafts_no_final_invoice(client):
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
 
     await _create_and_approve_estimate(
-        client, admin["headers"], client_role["headers"],
+        client, admin, client_role,
         project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
     )
 

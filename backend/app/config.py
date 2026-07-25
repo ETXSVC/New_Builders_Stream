@@ -89,6 +89,36 @@ class Settings(BaseSettings):
     register_rate_limit_enabled: bool = True
     register_rate_limit_max_attempts: int = 5
     register_rate_limit_window_seconds: int = 3600
+    # Login throttling. `/auth/register` was rate limited from the start;
+    # `/auth/login` was not, which left unlimited password guessing against
+    # a known address — the more valuable target of the two, since a hit
+    # yields a session rather than merely confirming an address exists.
+    #
+    # Two independent counters, both of which must pass:
+    #
+    #   per-IP    catches one host spraying many accounts. Generous, because
+    #             a shared office NAT legitimately produces many logins from
+    #             one address.
+    #   per-email catches many hosts (a botnet, a proxy pool) grinding ONE
+    #             account, which the per-IP counter alone cannot see at all.
+    #             Tighter, because one human failing 10 times in 15 minutes
+    #             is already an outlier.
+    #
+    # The email key is hashed at the call site so Redis never holds a
+    # plaintext address (`app/routers/auth.py`).
+    login_rate_limit_enabled: bool = True
+    login_rate_limit_ip_max_attempts: int = 50
+    login_rate_limit_ip_window_seconds: int = 900
+    login_rate_limit_email_max_attempts: int = 10
+    login_rate_limit_email_window_seconds: int = 900
+    # TOTP verification, keyed per user id. A 6-digit code is a 1-in-a-
+    # million guess, and the replay guard only blocks REUSE of a code, not
+    # a fresh guess — so without this an attacker holding a valid password
+    # could grind the whole code space. 5 attempts per 15 minutes makes
+    # exhausting it take longer than the universe has been around, while
+    # still forgiving a clock-skewed authenticator app a few tries.
+    totp_rate_limit_max_attempts: int = 5
+    totp_rate_limit_window_seconds: int = 900
     # Verifies POST /webhooks/stripe signatures (today via FakeStripeClient
     # — see app/services/billing.py). Config-ized so a deployment can use a
     # non-public value even while the fake client stays; the production
