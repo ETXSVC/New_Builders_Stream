@@ -24,6 +24,7 @@
 # them, so leaving them unpinned would leave CI itself irreproducible.
 
 
+
 APScheduler==3.11.3
 CacheControl==0.14.4
 Jinja2==3.1.6
@@ -35,6 +36,7 @@ PyYAML==6.0.3
 Pygments==2.20.0
 SQLAlchemy==2.0.51
 alembic==1.14.1
+annotated-doc==0.0.4
 annotated-types==0.8.0
 anyio==4.14.2
 arabic-reshaper==3.0.1
@@ -49,14 +51,14 @@ cffi==2.1.0
 charset-normalizer==3.4.9
 click==8.4.2
 coverage==7.15.2
-cryptography==43.0.3
+cryptography==49.0.0
 cssselect2==0.9.0
 cyclonedx-python-lib==11.11.0
 defusedxml==0.7.1
 dnspython==2.8.0
 dramatiq==2.2.0
 email-validator==2.3.0
-fastapi==0.115.14
+fastapi==0.140.0
 filelock==3.32.0
 greenlet==3.5.4
 h11==0.16.0
@@ -107,7 +109,7 @@ ruff==0.16.0
 six==1.17.0
 sniffio==1.3.1
 sortedcontainers==2.4.0
-starlette==0.46.2
+starlette==1.3.1
 svglib==2.0.2
 tinycss2==1.5.1
 tomli==2.4.1

@@ -2956,10 +2956,7 @@ export interface components {
         };
         /** Body_approve_change_order_change_orders__change_order_id__approve_post */
         Body_approve_change_order_change_orders__change_order_id__approve_post: {
-            /**
-             * Signature Artifact
-             * Format: binary
-             */
+            /** Signature Artifact */
             signature_artifact: string;
             /** Signer Email */
             signer_email: string;
@@ -2968,10 +2965,7 @@ export interface components {
         };
         /** Body_approve_estimate_estimates__estimate_id__approve_post */
         Body_approve_estimate_estimates__estimate_id__approve_post: {
-            /**
-             * Signature Artifact
-             * Format: binary
-             */
+            /** Signature Artifact */
             signature_artifact: string;
             /** Signer Email */
             signer_email: string;
@@ -2980,10 +2974,7 @@ export interface components {
         };
         /** Body_upload_branding_logo_companies_branding_logo_post */
         Body_upload_branding_logo_companies_branding_logo_post: {
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
             file: string;
         };
         /** Body_upload_compliance_document_subcontractors__subcontractor_id__compliance_documents_post */
@@ -2995,18 +2986,12 @@ export interface components {
              * Format: date
              */
             expires_on: string;
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
             file: string;
         };
         /** Body_upload_document_projects__project_id__documents_post */
         Body_upload_document_projects__project_id__documents_post: {
-            /**
-             * File
-             * Format: binary
-             */
+            /** File */
             file: string;
             /** File Name */
             file_name: string;
@@ -5373,6 +5358,10 @@ export interface components {
         };
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */

@@ -13,6 +13,35 @@ import pytest
 from app.core.tier_gating import MODULE_MIN_TIER, TIER_RANK, tier_allows
 from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
+
+def iter_api_routes(router):
+    """Every APIRoute reachable from `router`, recursing into included ones.
+
+    FastAPI used to flatten `include_router()`'s routes into `app.routes`,
+    so both sweeps below could simply iterate it. As of 0.140 it stores an
+    `_IncludedRouter` wrapper per included router instead, and `app.routes`
+    holds 28 entries (22 of them wrappers) rather than the 116 real routes.
+
+    Iterating `app.routes` therefore finds almost nothing — which is worse
+    than it sounds for a *completeness* gate: "no route is missing its tier
+    gate" is trivially true of a route list that is nearly empty, so this
+    would have gone quietly green while checking nothing. The pinned-count
+    assertion at the bottom of this file is what turned that into a loud
+    failure, and it is the reason that pin exists.
+
+    `_IncludedRouter`/`original_router` are FastAPI internals — private
+    names, and a deliberate bet: there is no public API for "walk every
+    registered route", and the alternative (deriving routes from the
+    OpenAPI schema) loses `dependant`, which is the entire thing these
+    tests inspect. If a future release moves it again, this breaks
+    loudly at collection rather than silently under-reporting.
+    """
+    for route in getattr(router, "routes", []):
+        if type(route).__name__ == "_IncludedRouter":
+            yield from iter_api_routes(route.original_router)
+        else:
+            yield route
+
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
@@ -598,7 +627,7 @@ def test_every_gated_module_mutating_route_has_the_correct_tier_gate():
     problems = []
     connect_checked = False
     seen_modules = set()
-    for route in app.routes:
+    for route in iter_api_routes(app):
         methods = getattr(route, "methods", None)
         if not methods:
             continue
@@ -682,7 +711,7 @@ def test_tier_gating_classified_route_count_per_module_is_pinned():
     excluded = {"/integrations/{provider}/callback", "/integrations/{provider}/connect"}
 
     counts: dict[str, int] = {}
-    for route in app.routes:
+    for route in iter_api_routes(app):
         methods = getattr(route, "methods", None)
         if not methods or methods.isdisjoint({"POST", "PUT", "PATCH", "DELETE"}):
             continue
