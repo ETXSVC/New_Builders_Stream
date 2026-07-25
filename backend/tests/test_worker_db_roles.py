@@ -17,6 +17,7 @@ application code — `migrations/env.py` is deliberately out of scope below.
 """
 import ast
 import pathlib
+import uuid
 
 import asyncpg
 import pytest
@@ -122,5 +123,120 @@ async def test_scanner_cannot_weaken_the_tenant_boundary(statement):
     try:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await conn.execute(statement)
+    finally:
+        await conn.close()
+
+
+# =============================================================================
+# companies.parent_id is immutable (migration 0021)
+# =============================================================================
+
+
+async def _company_ids(client):
+    """A parent and a child, created through the real routes."""
+    register = await client.post(
+        "/auth/register",
+        json={
+            "company_name": "Reparent Co",
+            "admin_full_name": "Admin",
+            "admin_email": "reparent-admin@acme.test",
+            "admin_password": "supersecret123",
+        },
+    )
+    assert register.status_code == 201, register.text
+    parent_id = register.json()["company_id"]
+
+    from tests.conftest import set_subscription_tier
+
+    await set_subscription_tier(parent_id, "enterprise")
+    login = await client.post(
+        "/auth/login", json={"email": "reparent-admin@acme.test", "password": "supersecret123"}
+    )
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    child = await client.post(
+        f"/companies/{parent_id}/children", json={"name": "Branch"}, headers=headers
+    )
+    assert child.status_code == 201, child.text
+    return parent_id, child.json()["id"]
+
+
+async def test_detaching_a_child_company_to_a_new_root_is_refused(client):
+    """The gap this closes: `tenant_update`'s WITH CHECK allows
+    `parent_id IS NULL`, which on UPDATE means a child can be detached into
+    a NEW ROOT — leaving its parent's descendant tree (so the parent
+    silently loses data it owns) and arriving with no subscriptions row,
+    which both block_if_read_only and tier_allows treat as fail-OPEN.
+
+    Asserted through a direct write as `app_user`, because no route exposes
+    parent_id — the point is that the DATABASE refuses it, so a future
+    route cannot reintroduce the hole by accident.
+
+    The tenant context is set to the PARENT first, which is what makes this
+    a real test rather than a vacuous one: without it, `tenant_update`'s
+    USING clause matches zero rows, the UPDATE is a silent no-op, and the
+    trigger never fires — the assertion would pass while proving nothing.
+    Scoped to the parent, RLS genuinely permits this row to be updated
+    (a parent may act on its descendants), so the trigger is the only thing
+    standing between that session and a detached branch.
+    """
+    parent_id, child_id = await _company_ids(client)
+
+    conn = await asyncpg.connect(
+        OWNER_DSN.replace("postgres:devpassword", "app_user:app_password")
+    )
+    try:
+        await conn.execute("SELECT set_config('app.current_tenant', $1, false)", parent_id)
+
+        # Sanity: this session really can update that row, so the failure
+        # below is the trigger and not RLS quietly matching nothing.
+        renamed = await conn.execute(
+            "UPDATE companies SET name = 'Still Editable' WHERE id = $1", uuid.UUID(child_id)
+        )
+        assert renamed == "UPDATE 1", renamed
+
+        with pytest.raises(asyncpg.InsufficientPrivilegeError, match="immutable"):
+            await conn.execute(
+                "UPDATE companies SET parent_id = NULL WHERE id = $1", uuid.UUID(child_id)
+            )
+    finally:
+        await conn.close()
+
+
+async def test_renaming_a_company_still_works(client):
+    """The obvious fix — dropping the `IS NULL` branch from the UPDATE
+    policy — would break this: a root's parent_id IS NULL, so
+    `NULL IN (SELECT ...)` is NULL and every root update would be denied.
+    A trigger states "parent_id may not CHANGE" instead, which leaves
+    ordinary updates alone."""
+    parent_id, _child_id = await _company_ids(client)
+
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "UPDATE companies SET name = 'Renamed' WHERE id = $1", uuid.UUID(parent_id)
+        )
+        name = await conn.fetchval(
+            "SELECT name FROM companies WHERE id = $1", uuid.UUID(parent_id)
+        )
+    finally:
+        await conn.close()
+    assert name == "Renamed"
+
+
+async def test_even_the_table_owner_cannot_reparent(client):
+    """A trigger applies to every role, unlike an RLS policy — so a
+    migration or an operator with the owner connection also has to disable
+    it deliberately rather than re-parent by accident."""
+    parent_id, child_id = await _company_ids(client)
+
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError, match="immutable"):
+            await conn.execute(
+                "UPDATE companies SET parent_id = $1 WHERE id = $2",
+                uuid.UUID(child_id),
+                uuid.UUID(parent_id),
+            )
     finally:
         await conn.close()

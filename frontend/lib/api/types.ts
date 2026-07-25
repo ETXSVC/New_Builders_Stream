@@ -730,6 +730,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/companies/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove Member
+         * @description Offboard a member from the caller's active tenant.
+         *
+         *     Deletes the `company_users` row, not the `users` row: an identity is
+         *     global in this schema (one person can belong to several companies), so
+         *     deleting the user would revoke their access everywhere and destroy the
+         *     audit trail's actor references. Removing the membership is exactly
+         *     "they no longer work here".
+         *
+         *     Their `project_clients`/`lead_clients` rows cascade away with the user
+         *     only on user deletion, so those are cleaned up explicitly here —
+         *     otherwise a re-invited client would silently regain access to the jobs
+         *     they used to be on.
+         */
+        delete: operations["remove_member_companies_members__user_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Member Role */
+        patch: operations["update_member_role_companies_members__user_id__patch"];
+        trace?: never;
+    };
     "/companies/{company_id}": {
         parameters: {
             query?: never;
@@ -744,7 +776,15 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Rename Company
+         * @description Rename only. `parent_id` is deliberately not editable through any
+         *     route: re-parenting a company moves an entire subtree between tenants,
+         *     and the `tenant_update` policy's WITH CHECK exists to stop exactly that
+         *     (migration 0021 tightened it further). A legitimate re-parent is a
+         *     migration, not an API call.
+         */
+        patch: operations["rename_company_companies__company_id__patch"];
         trace?: never;
     };
     "/companies/{company_id}/children": {
@@ -1570,11 +1610,50 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Invitations
+         * @description Outstanding invitations for the caller's active tenant.
+         *
+         *     Defaults to unaccepted ones only — the actionable set. `include_accepted`
+         *     returns the full history, which is what an admin auditing "who was
+         *     invited, by which address" wants.
+         *
+         *     Scoped explicitly to `current.company_id` on top of RLS, for the same
+         *     reason `list_company_members` is: a parent-branch admin can see
+         *     descendant rows, and this list should be about the company they are
+         *     acting as.
+         */
+        get: operations["list_invitations_invitations_get"];
         put?: never;
         /** Create Invitation */
         post: operations["create_invitation_invitations_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invitations/{invitation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke Invitation
+         * @description Revoke an unaccepted invitation.
+         *
+         *     Deleted, not flagged: the row's mere existence is what
+         *     `POST /invitations/{id}/accept` checks, so removing it is what actually
+         *     withdraws the grant. An already-accepted invitation is a 409 rather than
+         *     a silent no-op — deleting it would not un-create the membership it
+         *     produced, and pretending otherwise is worse than refusing.
+         */
+        delete: operations["revoke_invitation_invitations__invitation_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2503,7 +2582,19 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update Subcontractor
+         * @description A subcontractor was create-and-read-only until now, so a trade
+         *     correction or a changed contact address could not be recorded at all —
+         *     and `contact_email` is where compliance-expiry notices are addressed,
+         *     which makes a stale one an operational problem rather than cosmetic.
+         *
+         *     `exclude_unset`, not `exclude_none`: `trade` and `contact_email` are
+         *     nullable, so sending an explicit `null` must clear them while omitting
+         *     the key leaves them alone. The two are indistinguishable under
+         *     `exclude_none`, which would make clearing a field impossible.
+         */
+        patch: operations["update_subcontractor_subcontractors__subcontractor_id__patch"];
         trace?: never;
     };
     "/subcontractors/{subcontractor_id}/compliance-documents": {
@@ -3192,6 +3283,11 @@ export interface components {
              * Format: uuid
              */
             user_id: string;
+        };
+        /** CompanyRenameRequest */
+        CompanyRenameRequest: {
+            /** Name */
+            name: string;
         };
         /** CompanyResponse */
         CompanyResponse: {
@@ -4120,6 +4216,15 @@ export interface components {
             /** Role */
             role: string;
         };
+        /**
+         * InvitationListResponse
+         * @description Not paginated: outstanding invitations are bounded by how many people
+         *     a company is onboarding at once, and they expire in 7 days.
+         */
+        InvitationListResponse: {
+            /** Items */
+            items: components["schemas"]["InvitationResponse"][];
+        };
         /** InvitationResponse */
         InvitationResponse: {
             /** Accepted At */
@@ -4478,6 +4583,14 @@ export interface components {
             overhead_pct: string;
             /** Profit Pct */
             profit_pct: string;
+        };
+        /**
+         * MemberRoleUpdateRequest
+         * @description Change an existing member's role within the caller's active tenant.
+         */
+        MemberRoleUpdateRequest: {
+            /** Role */
+            role: string;
         };
         /** MfaActivateRequest */
         MfaActivateRequest: {
@@ -5059,6 +5172,27 @@ export interface components {
             name: string;
             /** Trade */
             trade: string | null;
+        };
+        /**
+         * SubcontractorUpdateRequest
+         * @description Body for `PATCH /subcontractors/{id}`.
+         *
+         *     Every field optional and omission-sensitive: `None` is a legitimate
+         *     value for `trade`/`contact_email` (clearing them), so "not sent" and
+         *     "sent as null" have to be distinguishable. The router uses
+         *     `model_dump(exclude_unset=True)` to tell them apart — a plain
+         *     `if value is not None` check would make clearing a field impossible.
+         *
+         *     `company_id` is absent for the same reason it is absent from
+         *     `SubcontractorCreateRequest`: the server owns the tenant scoping column.
+         */
+        SubcontractorUpdateRequest: {
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Trade */
+            trade?: string | null;
         };
         /** SubscriptionResponse */
         SubscriptionResponse: {
@@ -6131,6 +6265,70 @@ export interface operations {
             };
         };
     };
+    remove_member_companies_members__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_member_role_companies_members__user_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberRoleUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyMemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_company_companies__company_id__get: {
         parameters: {
             query?: never;
@@ -6141,6 +6339,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_company_companies__company_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompanyRenameRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -6873,6 +7106,37 @@ export interface operations {
             };
         };
     };
+    list_invitations_invitations_get: {
+        parameters: {
+            query?: {
+                include_accepted?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_invitation_invitations_post: {
         parameters: {
             query?: never;
@@ -6894,6 +7158,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["InvitationResponse"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation_invitations__invitation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {
@@ -8502,6 +8795,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubcontractorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_subcontractor_subcontractors__subcontractor_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                subcontractor_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubcontractorUpdateRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

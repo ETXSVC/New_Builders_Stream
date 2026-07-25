@@ -34,7 +34,7 @@ services:
     # Every module in backend/app/tasks/ defining an actor MUST be listed,
     # or its messages are silently dead-lettered (see the dev compose's
     # incident note).
-    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email app.tasks.send_signature_request_email app.tasks.send_compliance_expiry_email
 
   scheduler:
     build:

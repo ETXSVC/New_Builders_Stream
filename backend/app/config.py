@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     # verification is the runbook's job; the fallback is a migration aid,
     # not the intended end state.
     scanner_database_url: str | None = None
+    # Connection-pool sizing for the runtime engine (app/db.py). Explicit
+    # rather than SQLAlchemy's defaults (5 + 10) because a transaction is
+    # held open for the whole request here, so the pool size IS the
+    # concurrent-request ceiling — the defaults cap the process at ~15
+    # in-flight requests, which is easy to hit and hard to diagnose from
+    # the outside (requests simply stall). Sized against Postgres's own
+    # default max_connections of 100, leaving room for the worker,
+    # scheduler and a human with psql.
+    db_pool_size: int = 20
+    db_max_overflow: int = 10
+    db_pool_timeout_seconds: int = 30
     jwt_secret: str
     # docs/07 Section 1: access tokens are short-lived; refresh tokens
     # (Task 6.2+) carry the long-lived session. 15 is the spec's number.

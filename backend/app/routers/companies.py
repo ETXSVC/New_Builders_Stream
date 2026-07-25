@@ -1,22 +1,69 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.deps import CurrentUser, block_if_read_only, get_current_user, require_role
 from app.core.tier_gating import require_module
-from app.models import Company, CompanyUser, User
+from app.models import Company, CompanyUser, LeadClient, ProjectClient, User
 from app.schemas.company import (
     CompanyMemberListResponse,
     CompanyMemberResponse,
+    CompanyRenameRequest,
     CompanyResponse,
     CreateChildCompanyRequest,
+    MemberRoleUpdateRequest,
 )
 from app.services.audit import write_audit_log
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
 _MEMBER_LIST_ROLES = ("admin", "project_manager")
+
+
+async def _get_membership_or_404(
+    current: CurrentUser, user_id: uuid.UUID
+) -> tuple[CompanyUser, User]:
+    """The membership in the caller's ACTIVE tenant, plus its user.
+
+    Scoped by `company_id == current.company_id` rather than relying on RLS
+    alone: a parent-branch admin can see descendant memberships, and
+    "remove this person" must mean "from the company I am acting as", never
+    "from whichever branch this id happens to match first".
+    """
+    result = await current.session.execute(
+        select(CompanyUser, User)
+        .join(User, CompanyUser.user_id == User.id)
+        .where(CompanyUser.user_id == user_id, CompanyUser.company_id == current.company_id)
+    )
+    row = result.first()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Member not found")
+    return row[0], row[1]
+
+
+async def _require_another_admin_remains(current: CurrentUser, excluding_user_id: uuid.UUID) -> None:
+    """Refuse to leave a company with no admins.
+
+    Every administrative route in this codebase is `require_role("admin")`,
+    so a company with zero admins cannot invite anyone, fix its own
+    subscription, or restore an admin — it is locked out permanently, with
+    no in-product recovery path.
+    """
+    result = await current.session.execute(
+        select(CompanyUser.user_id).where(
+            CompanyUser.company_id == current.company_id,
+            CompanyUser.role == "admin",
+            CompanyUser.user_id != excluding_user_id,
+        )
+    )
+    if result.first() is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This is the company's last admin; promote another admin first",
+        )
+
+
 
 
 # Declared ABOVE GET /{company_id}: FastAPI matches routes in declaration
@@ -139,3 +186,148 @@ async def create_child_company(
     # redundant and muddies who owns the transaction; one owner, one commit.
 
     return CompanyResponse.model_validate(child)
+
+
+# --- Member management ------------------------------------------------------
+#
+# Until these existed, `GET /companies/members` was the ONLY membership route:
+# there was no way to remove a member, change a role, or otherwise offboard
+# an employee through the API at all. That is not a polish gap — a departing
+# employee kept working access indefinitely, and the only remedy was a manual
+# DELETE against the database.
+#
+# Admin only. Role assignment and offboarding are the two decisions that
+# define who can do what inside a company; a project_manager who could grant
+# admin could grant it to themselves.
+
+
+@router.patch("/members/{user_id}", response_model=CompanyMemberResponse)
+async def update_member_role(
+    user_id: uuid.UUID,
+    payload: MemberRoleUpdateRequest,
+    current: CurrentUser = Depends(require_role("admin")),
+    _ro: None = Depends(block_if_read_only),
+) -> CompanyMemberResponse:
+    membership, user = await _get_membership_or_404(current, user_id)
+
+    if membership.user_id == current.user.id and payload.role != "admin":
+        # Self-demotion is how a company ends up with zero admins and no way
+        # back in. The last-admin guard below would catch the specific case
+        # of the final admin, but this rejects the whole class earlier and
+        # with a clearer message.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot change your own role; ask another admin",
+        )
+    if membership.role == "admin" and payload.role != "admin":
+        await _require_another_admin_remains(current, user_id)
+
+    previous_role = membership.role
+    membership.role = payload.role
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="company.member_role_changed",
+        entity_type="company_user",
+        entity_id=membership.user_id,
+        metadata={"from": previous_role, "to": payload.role},
+    )
+    return CompanyMemberResponse(
+        user_id=membership.user_id,
+        full_name=user.full_name,
+        email=user.email,
+        role=membership.role,
+    )
+
+
+@router.delete("/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_member(
+    user_id: uuid.UUID,
+    current: CurrentUser = Depends(require_role("admin")),
+    _ro: None = Depends(block_if_read_only),
+) -> None:
+    """Offboard a member from the caller's active tenant.
+
+    Deletes the `company_users` row, not the `users` row: an identity is
+    global in this schema (one person can belong to several companies), so
+    deleting the user would revoke their access everywhere and destroy the
+    audit trail's actor references. Removing the membership is exactly
+    "they no longer work here".
+
+    Their `project_clients`/`lead_clients` rows cascade away with the user
+    only on user deletion, so those are cleaned up explicitly here —
+    otherwise a re-invited client would silently regain access to the jobs
+    they used to be on.
+    """
+    membership, _user = await _get_membership_or_404(current, user_id)
+
+    if membership.user_id == current.user.id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot remove yourself; ask another admin",
+        )
+    if membership.role == "admin":
+        await _require_another_admin_remains(current, user_id)
+
+    await current.session.execute(
+        delete(ProjectClient).where(
+            ProjectClient.user_id == user_id, ProjectClient.company_id == current.company_id
+        )
+    )
+    await current.session.execute(
+        delete(LeadClient).where(
+            LeadClient.user_id == user_id, LeadClient.company_id == current.company_id
+        )
+    )
+    await current.session.delete(membership)
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="company.member_removed",
+        entity_type="company_user",
+        entity_id=user_id,
+    )
+
+
+@router.patch("/{company_id}", response_model=CompanyResponse)
+async def rename_company(
+    company_id: uuid.UUID,
+    payload: CompanyRenameRequest,
+    current: CurrentUser = Depends(require_role("admin")),
+    _ro: None = Depends(block_if_read_only),
+) -> CompanyResponse:
+    """Rename only. `parent_id` is deliberately not editable through any
+    route: re-parenting a company moves an entire subtree between tenants,
+    and the `tenant_update` policy's WITH CHECK exists to stop exactly that
+    (migration 0021 tightened it further). A legitimate re-parent is a
+    migration, not an API call."""
+    if company_id != current.company_id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Can only rename your active company"
+        )
+
+    result = await current.session.execute(select(Company).where(Company.id == company_id))
+    company = result.scalar_one_or_none()
+    if company is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Company not found")
+
+    previous_name = company.name
+    company.name = payload.name
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=company_id,
+        actor_id=current.user.id,
+        action="company.renamed",
+        entity_type="company",
+        entity_id=company_id,
+        metadata={"from": previous_name, "to": payload.name},
+    )
+    return CompanyResponse.model_validate(company)

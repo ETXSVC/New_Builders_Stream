@@ -9,10 +9,12 @@ test_leads.py, test_projects.py) rather than sharing them via conftest.py.
 import uuid
 from pathlib import Path
 
+import asyncpg
 import pytest
 
 from app.config import settings
 from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
+from tests.conftest import TEST_DATABASE_URL
 
 
 async def _register_and_login(client, company_name, email):
@@ -580,3 +582,111 @@ async def test_list_compliance_documents_paginates_with_cursor(client):
     assert pages == 3
     assert sorted(seen_ids) == sorted(created_ids)
     assert len(seen_ids) == len(set(seen_ids))
+
+
+# =============================================================================
+# Update + compliance-document delete
+#
+# A subcontractor was create-and-read-only, and an uploaded compliance
+# document could never be removed. Neither is cosmetic: `contact_email` is
+# where expiry notices are addressed, and a mistaken upload keeps generating
+# dashboard alerts about a document nobody can act on.
+# =============================================================================
+
+
+async def test_admin_can_update_a_subcontractor(client):
+    admin = await _register_and_login(client, "Acme Construction", "sub-patch@acme.test")
+    created = await _create_subcontractor(client, admin)
+    subcontractor_id = created.json()["id"]
+
+    response = await client.patch(
+        f"/subcontractors/{subcontractor_id}",
+        json={"trade": "electrical", "contact_email": "new@aceplumbing.test"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["trade"] == "electrical"
+    assert body["contact_email"] == "new@aceplumbing.test"
+    # Untouched fields survive a partial update.
+    assert body["name"] == "Ace Plumbing Co"
+
+
+async def test_updating_with_an_explicit_null_clears_a_nullable_field(client):
+    """`exclude_unset`, not `exclude_none`: sending `null` must CLEAR the
+    field while omitting the key leaves it alone. Under `exclude_none` the
+    two are indistinguishable and clearing becomes impossible."""
+    admin = await _register_and_login(client, "Acme Construction", "sub-patch-null@acme.test")
+    created = await _create_subcontractor(client, admin)
+    subcontractor_id = created.json()["id"]
+
+    cleared = await client.patch(
+        f"/subcontractors/{subcontractor_id}",
+        json={"trade": None},
+        headers=admin["headers"],
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["trade"] is None
+    assert cleared.json()["contact_email"] == "contact@aceplumbing.test"
+
+
+async def test_updating_with_an_empty_body_is_rejected(client):
+    admin = await _register_and_login(client, "Acme Construction", "sub-patch-empty@acme.test")
+    created = await _create_subcontractor(client, admin)
+
+    response = await client.patch(
+        f"/subcontractors/{created.json()['id']}", json={}, headers=admin["headers"]
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_non_admin_cannot_update_a_subcontractor(client):
+    admin = await _register_and_login(client, "Acme Construction", "sub-patch-rbac@acme.test")
+    pm = await _invite_and_login_as(client, admin, "project_manager", "sub-patch-pm@acme.test")
+    created = await _create_subcontractor(client, admin)
+
+    response = await client.patch(
+        f"/subcontractors/{created.json()['id']}",
+        json={"trade": "electrical"},
+        headers=pm["headers"],
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_updating_another_tenants_subcontractor_is_a_404(client):
+    a = await _register_and_login(client, "Company A", "sub-patch-cross-a@acme.test")
+    b = await _register_and_login(client, "Company B", "sub-patch-cross-b@acme.test")
+    theirs = await _create_subcontractor(client, b)
+
+    response = await client.patch(
+        f"/subcontractors/{theirs.json()['id']}",
+        json={"trade": "electrical"},
+        headers=a["headers"],
+    )
+    assert response.status_code == 404, response.text
+
+
+async def test_compliance_documents_are_immutable_at_the_grant_level(client):
+    """`compliance_documents` has UPDATE and DELETE revoked from app_user
+    (migration 0009) — an uploaded certificate is evidence, immutable from
+    the instant it is written, the same treatment esignatures gets.
+
+    Pinned as a test because the absence of a delete route looks like a gap
+    from the outside: this asserts it is a deliberate, database-enforced
+    guarantee, so anyone who adds one has to consciously re-grant DELETE in
+    a migration rather than discover it as a 500 at runtime.
+    """
+    conn = await asyncpg.connect(TEST_DATABASE_URL.replace("+asyncpg", ""))
+    try:
+        privileges = await conn.fetch(
+            "SELECT privilege_type FROM information_schema.role_table_grants "
+            "WHERE table_name = 'compliance_documents' AND grantee = 'app_user'"
+        )
+    finally:
+        await conn.close()
+
+    granted = {row["privilege_type"] for row in privileges}
+    assert granted == {"SELECT", "INSERT"}, (
+        "app_user's grants on compliance_documents changed; UPDATE/DELETE were "
+        f"revoked deliberately by migration 0009 (got {sorted(granted)})"
+    )

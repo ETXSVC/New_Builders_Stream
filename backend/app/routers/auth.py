@@ -85,6 +85,39 @@ async def register(payload: RegisterRequest, request: Request) -> RegisterRespon
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # Argon2 and the two Stripe round trips happen BEFORE the transaction
+    # opens, not inside it.
+    #
+    # `get_current_user` holds a transaction open for the whole request by
+    # design, and app/db.py's pool is therefore the concurrent-request
+    # ceiling. Doing a deliberately-slow password hash and two calls to a
+    # third party while holding one of those connections means the database
+    # sits idle-in-transaction for as long as Stripe takes to answer — a
+    # slow Stripe turns into exhausted connections and a stalled API, for
+    # requests that have nothing to do with registration.
+    #
+    # The ordering still preserves the invariant this route was built
+    # around: nothing is committed until Stripe has succeeded, so a company
+    # can never exist without its trial subscription. The cost moves to the
+    # other side — a Stripe customer can be created for a registration that
+    # then fails to insert — which is why the duplicate-email pre-check
+    # below exists: that is the common way this route fails, and it is
+    # cheap to detect before spending a third-party call on it.
+    password_hash = hash_password(payload.admin_password)
+
+    async with session_scope() as session:
+        existing = await session.execute(select(User.id).where(User.email == payload.admin_email))
+        if existing.first() is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+
+    stripe_client = get_stripe_client()
+    stripe_customer_id = await stripe_client.create_customer(
+        email=payload.admin_email, name=payload.company_name
+    )
+    stripe_subscription = await stripe_client.create_trialing_subscription(
+        customer_id=stripe_customer_id, tier="pro", trial_days=14
+    )
+
     async with session_scope() as session:
         async with session.begin():
             # 1. Top-level company: parent_id IS NULL, so tenant_insert's WITH
@@ -97,7 +130,7 @@ async def register(payload: RegisterRequest, request: Request) -> RegisterRespon
                 User(
                     id=user_id,
                     email=payload.admin_email,
-                    password_hash=hash_password(payload.admin_password),
+                    password_hash=password_hash,
                     full_name=payload.admin_full_name,
                 )
             )
@@ -113,20 +146,13 @@ async def register(payload: RegisterRequest, request: Request) -> RegisterRespon
             await session.flush()
 
             # 4. Trial subscription (Task 3.19, design spec Section 3): every
-            #    new root company starts on a 14-day Pro trial. Synchronous,
-            #    same transaction as the rows above — a trial-less root
-            #    company isn't a state this feature tolerates; if the Stripe
-            #    call fails, the whole registration transaction rolls back
-            #    (the enclosing `async with session.begin():` above — not
-            #    session_scope() itself, which is a bare passthrough with no
-            #    commit/rollback of its own), no retry/fallback path.
-            stripe_client = get_stripe_client()
-            stripe_customer_id = await stripe_client.create_customer(
-                email=payload.admin_email, name=payload.company_name
-            )
-            stripe_subscription = await stripe_client.create_trialing_subscription(
-                customer_id=stripe_customer_id, tier="pro", trial_days=14
-            )
+            #    new root company starts on a 14-day Pro trial. The Stripe
+            #    calls that produced these ids ran BEFORE this transaction
+            #    opened (see the comment above the hash) — but the row is
+            #    still written here, in the same transaction as the company
+            #    and the membership, so a trial-less root company remains a
+            #    state this feature cannot produce: if any insert below
+            #    fails, the whole registration rolls back together.
             session.add(
                 Subscription(
                     company_id=company_id,

@@ -236,10 +236,24 @@ jobs:
             exit 1
           fi
 
+      # Reports advisories against the INSTALLED dependency set, including
+      # transitive packages a pyproject range never names. Non-blocking on
+      # purpose: an advisory published upstream overnight is not a reason a
+      # PR touching an unrelated file cannot merge, and a gate that stops
+      # unrelated work is a gate people route around. Dependabot
+      # (.github/dependabot.yml) is the half that proposes the upgrade; this
+      # is the half that makes it visible in the meantime.
+      - name: Audit dependencies for known advisories
+        working-directory: backend
+        continue-on-error: true
+        run: pip-audit --progress-spinner off
+
       - name: Run test suite (includes tenant-isolation and RLS regression gates)
         working-directory: backend
         env:
           JWT_SECRET: ci-test-secret
           JWT_EXPIRE_MINUTES: "60"
           REDIS_URL: redis://localhost:6379/0
-        run: pytest -v
+        # Coverage is reported, not gated — see pyproject's [tool.coverage]
+        # for why there is deliberately no fail_under.
+        run: pytest -v --cov --cov-report=term-missing:skip-covered

@@ -25,7 +25,14 @@ from app.core.events import publish
 from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
-from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, MarkupProfile, Project
+from app.models import (
+    CostCatalogItem,
+    Estimate,
+    EstimateLineItem,
+    Lead,
+    MarkupProfile,
+    Project,
+)
 from app.models.estimate import VALID_STATUSES
 from app.schemas.estimate import (
     CategorySubtotal,
@@ -40,6 +47,7 @@ from app.schemas.estimate import (
 from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
+from app.services.client_access import client_emails_for_estimate, company_display_name
 from app.services.client_scope import (
     client_estimate_scope,
     require_client_access_to_estimate,
@@ -48,6 +56,7 @@ from app.services.client_scope import (
 from app.services.esignature import capture_esignature
 from app.services.estimate_calculation import calculate_estimate
 from app.tasks.estimate_pdf import generate_estimate_pdf
+from app.tasks.send_signature_request_email import send_signature_request_email
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -781,6 +790,21 @@ async def send_estimate_for_signature(
     await current.session.flush()
     # No explicit commit here — get_current_user (Inherited Invariant #4)
     # commits current.session once, after this handler returns.
+
+    # Tell the client there is something to sign. Until migration 0019 there
+    # was no way to say WHICH client an estimate belonged to, so this route
+    # flipped a status column and notified nobody despite its name.
+    #
+    # One message per recipient, not one addressed to several: these go to a
+    # company's customers, who should not see each other's addresses.
+    document_url = f"{settings.frontend_base_url}/estimates/{estimate.id}"
+    for recipient in await client_emails_for_estimate(current, estimate):
+        send_signature_request_email.send(
+            to_email=recipient,
+            company_name=await company_display_name(current, estimate.company_id),
+            document_type="estimate",
+            document_url=document_url,
+        )
 
     return EstimateResponse.model_validate(estimate)
 

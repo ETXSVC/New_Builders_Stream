@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.deps import CurrentUser
-from app.models import CompanyUser, LeadClient, ProjectClient, User
+from app.models import Company, CompanyUser, LeadClient, ProjectClient, User
 from app.schemas.client_access import ClientAccessResponse
 
 # (model, parent-id attribute name) for each surface. The routers pass the
@@ -130,3 +130,67 @@ async def revoke_client_access(
 
     await current.session.delete(membership)
     await current.session.flush()
+
+
+async def client_emails_for_estimate(current: CurrentUser, estimate) -> list[str]:
+    """Addresses to notify that an estimate is awaiting signature.
+
+    The membership tables migration 0019 added are what make this
+    answerable at all: before them there was no way to say WHICH of a
+    company's clients an estimate belonged to, so "email the client" had no
+    recipient to resolve — which is a large part of why send-for-signature
+    notified nobody.
+
+    Returns `[]` rather than raising when a document has no client attached
+    yet. That is a legitimate state (an estimate built before the customer
+    has an account), and refusing to send-for-signature over it would break
+    the internal workflow to fix a notification.
+    """
+    emails: list[str] = []
+
+    if estimate.project_id is not None:
+        result = await current.session.execute(
+            select(User.email)
+            .join(ProjectClient, ProjectClient.user_id == User.id)
+            .where(ProjectClient.project_id == estimate.project_id)
+        )
+        emails.extend(result.scalars().all())
+
+    if estimate.lead_id is not None:
+        result = await current.session.execute(
+            select(User.email)
+            .join(LeadClient, LeadClient.user_id == User.id)
+            .where(LeadClient.lead_id == estimate.lead_id)
+        )
+        emails.extend(result.scalars().all())
+
+    # An estimate can carry both a lead_id and a project_id (a won lead's
+    # project), and the same person may be on both — dedupe so they get one
+    # email, preserving order for a deterministic test.
+    return list(dict.fromkeys(emails))
+
+
+async def client_emails_for_project(current: CurrentUser, project_id: uuid.UUID) -> list[str]:
+    result = await current.session.execute(
+        select(User.email)
+        .join(ProjectClient, ProjectClient.user_id == User.id)
+        .where(ProjectClient.project_id == project_id)
+    )
+    return list(dict.fromkeys(result.scalars().all()))
+
+
+async def company_display_name(current: CurrentUser, company_id: uuid.UUID) -> str:
+    """The company's own name, for the "who is asking you to sign this"
+    line in a client-facing email.
+
+    Takes the DOCUMENT's company_id, never `current.company_id`: a
+    parent-branch user may send a descendant branch's estimate, and the
+    customer should see the branch they are actually doing business with —
+    the same reasoning that governs which company_id gets stamped on the
+    esignature.
+
+    Falls back to the product name if the row is somehow unreadable, so a
+    notification never goes out addressed from nobody.
+    """
+    result = await current.session.execute(select(Company.name).where(Company.id == company_id))
+    return result.scalar_one_or_none() or "Builders Stream"

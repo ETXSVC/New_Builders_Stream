@@ -1,0 +1,37 @@
+# Dependency updates. Without this, nothing in the repository ever notices
+# that a pinned dependency has a published advisory — `pip-audit` in
+# backend-ci reports one, but reporting is not upgrading, and a weekly PR is
+# what turns "we would find out" into "someone has to decide".
+#
+# Weekly, not daily: this is a small team's repository and a daily cadence
+# produces more PRs than anyone triages, which trains people to ignore them.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine patch/minor churn, individual PRs for majors.
+      # A major bump to SQLAlchemy or FastAPI needs its own review and its
+      # own CI run; grouping it with six patch bumps buries that.
+      backend-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+
+  # Pinned action versions go stale silently and are a supply-chain surface
+  # of their own — a compromised tag in a third-party action runs with the
+  # workflow's token.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

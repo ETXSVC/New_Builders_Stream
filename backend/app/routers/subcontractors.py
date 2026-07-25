@@ -34,7 +34,9 @@ from app.schemas.subcontractor import (
     SubcontractorCreateRequest,
     SubcontractorListResponse,
     SubcontractorResponse,
+    SubcontractorUpdateRequest,
 )
+from app.services.audit import write_audit_log
 from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
 
 router = APIRouter(prefix="/subcontractors", tags=["subcontractors"])
@@ -274,3 +276,65 @@ async def list_compliance_documents(
         items=[ComplianceDocumentResponse.model_validate(row) for row in rows],
         next_cursor=next_cursor,
     )
+
+
+@router.patch("/{subcontractor_id}", response_model=SubcontractorResponse)
+async def update_subcontractor(
+    subcontractor_id: uuid.UUID,
+    payload: SubcontractorUpdateRequest,
+    current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+    _tier: CurrentUser = Depends(require_module("compliance")),
+) -> SubcontractorResponse:
+    """A subcontractor was create-and-read-only until now, so a trade
+    correction or a changed contact address could not be recorded at all —
+    and `contact_email` is where compliance-expiry notices are addressed,
+    which makes a stale one an operational problem rather than cosmetic.
+
+    `exclude_unset`, not `exclude_none`: `trade` and `contact_email` are
+    nullable, so sending an explicit `null` must clear them while omitting
+    the key leaves them alone. The two are indistinguishable under
+    `exclude_none`, which would make clearing a field impossible.
+    """
+    subcontractor = await _get_subcontractor_or_404(current, subcontractor_id)
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "At least one field must be provided"
+        )
+    for field, value in updates.items():
+        setattr(subcontractor, field, value)
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=subcontractor.company_id,
+        actor_id=current.user.id,
+        action="subcontractor.updated",
+        entity_type="subcontractor",
+        entity_id=subcontractor.id,
+        metadata={"fields": sorted(updates)},
+    )
+    return SubcontractorResponse.model_validate(subcontractor)
+
+
+# NO delete route for compliance documents — deliberately, and it is worth
+# recording why, because "an uploaded document can never be removed" reads
+# like an oversight and is not one.
+#
+# Migration 0009 REVOKEs UPDATE and DELETE on `compliance_documents` from
+# `app_user` at the grant level, with the rationale spelled out in that
+# migration's docstring: an insurance certificate or license is immutable
+# from the instant it is written, the same "immutability by omission"
+# treatment migration 0006 gives `esignatures`. The ORM model omits
+# UpdatedAtMixin for the same reason. Adding a delete route here would
+# require a migration re-granting DELETE — i.e. deliberately undoing a
+# compliance guarantee — and would fail with "permission denied for table
+# compliance_documents" until someone did.
+#
+# The real complaint behind "there is no way to remove a mistaken upload" is
+# that a wrong document keeps generating expiry alerts. That wants a
+# supersede/void concept with its own audit trail, not a DELETE — and it is
+# a compliance-policy decision about record retention, not a missing
+# endpoint.

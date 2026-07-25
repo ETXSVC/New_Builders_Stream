@@ -697,7 +697,10 @@ def test_tier_gating_classified_route_count_per_module_is_pinned():
     assert counts == {
         "child_branches": 1,
         "estimation": 21,
-        "compliance": 4,
+        # 5 since PATCH /subcontractors/{id} was added: a subcontractor was
+        # create-and-read-only, so a typo'd contact_email — the address
+        # compliance-expiry notices are sent to — could never be corrected.
+        "compliance": 5,
         "accounting": 8,
     }, (
         f"classified mutating-route count per tier-gated module changed: {counts!r}. "

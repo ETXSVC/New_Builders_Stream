@@ -78,10 +78,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 from app.core.tier_gating import tier_allows
+from app.models import Company, Subcontractor
 from app.models.compliance_document import ComplianceDocument
 from app.models.compliance_notification import VALID_THRESHOLDS, ComplianceNotification
 from app.tasks import broker  # noqa: F401 - import-time side effect (see estimate_pdf.py's docstring)
 from app.tasks.scanner_db import ScannerSessionLocal
+from app.tasks.send_compliance_expiry_email import send_compliance_expiry_email
 
 # Owner-role engine: connects as the `postgres` table-owner role via
 # `settings.migrations_database_url`, the same connection string Alembic
@@ -161,6 +163,16 @@ async def _check_compliance_expiry(
         # "prefetch/loop in memory, no per-row round trips" shape.
         compliance_allowed: dict = {}
 
+        # Accumulated, not sent inline: the emails are enqueued AFTER the
+        # commit below, so a scan that fails partway through cannot leave a
+        # subcontractor told about a notification row that was rolled back.
+        # (`financial_record_sync_handler.py` enqueues inside its caller's
+        # open transaction and documents that exact hazard; this actor owns
+        # its own commit, so it can simply do the right thing.)
+        pending_emails: list[dict] = []
+        subcontractors: dict = {}
+        company_names: dict = {}
+
         for document in documents:
             allowed = compliance_allowed.get(document.company_id)
             if allowed is None:
@@ -187,7 +199,49 @@ async def _check_compliance_expiry(
                 )
                 already_fired.add((document.id, threshold))
 
+                # The subcontractor is who can actually renew the document.
+                # `contact_email` exists for exactly this and, until now,
+                # nothing ever used it — the notification row was visible
+                # only to whoever happened to open the dashboard.
+                subcontractor = subcontractors.get(document.subcontractor_id)
+                if subcontractor is None:
+                    subcontractor = (
+                        await session.execute(
+                            select(Subcontractor).where(
+                                Subcontractor.id == document.subcontractor_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    subcontractors[document.subcontractor_id] = subcontractor
+                if subcontractor is None or not subcontractor.contact_email:
+                    # No address on file is a legitimate state; the
+                    # notification row is still written either way.
+                    continue
+
+                company_name = company_names.get(document.company_id)
+                if company_name is None:
+                    company_name = (
+                        await session.execute(
+                            select(Company.name).where(Company.id == document.company_id)
+                        )
+                    ).scalar_one_or_none() or "Builders Stream"
+                    company_names[document.company_id] = company_name
+
+                pending_emails.append(
+                    {
+                        "to_email": subcontractor.contact_email,
+                        "subcontractor_name": subcontractor.name,
+                        "company_name": company_name,
+                        "doc_type": document.doc_type,
+                        "expires_on": document.expires_on.isoformat(),
+                        "threshold": threshold,
+                    }
+                )
+
         await session.commit()
+
+    for message in pending_emails:
+        send_compliance_expiry_email.send(**message)
 
 
 # The actual `@dramatiq.actor` — a thin wrapper around `_check_compliance_expiry`

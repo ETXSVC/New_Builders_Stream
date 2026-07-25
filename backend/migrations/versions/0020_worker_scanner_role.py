@@ -152,14 +152,27 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS get_integration_connection_company_id(UUID)")
 
-    op.execute(
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
-        "REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM scanner"
-    )
-    op.execute("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM scanner")
-    op.execute("REVOKE ALL ON SCHEMA public FROM scanner")
-    op.execute("REVOKE EXECUTE ON FUNCTION get_all_descendant_ids(UUID) FROM scanner")
-    op.execute("REVOKE EXECUTE ON FUNCTION get_root_company_id(UUID) FROM scanner")
-    op.execute("DROP ROLE IF EXISTS scanner")
+    # Strips scanner's privileges IN THIS DATABASE, and deliberately does
+    # NOT drop the role.
+    #
+    # Roles are CLUSTER-level, not database-level. A downgrade runs against
+    # one database, so dropping a shared role from it is wrong twice over:
+    # another database in the same cluster may still grant it (Postgres
+    # refuses with `role "scanner" cannot be dropped because some objects
+    # depend on it`, which is exactly what
+    # `tests/test_migration_downgrade.py` hit against a scratch database
+    # while the main one still used the role), and even where it succeeds it
+    # removes something this database does not exclusively own.
+    #
+    # Migration 0001 sets the same precedent: it creates `app_user` and its
+    # downgrade leaves the role in place. Re-upgrading is unaffected — the
+    # DO block above handles a role that already exists.
+    #
+    # DROP OWNED BY rather than mirroring each GRANT with a REVOKE: the
+    # dependencies include every per-table ACL entry AND the ALTER DEFAULT
+    # PRIVILEGES entry, and hand-listing the inverses looks right while
+    # missing some. This is the operation that means "remove this role's
+    # footprint from this database".
+    op.execute("DROP OWNED BY scanner")
 
     op.execute(f"ALTER ROLE app_user WITH PASSWORD {_quote_literal(_DEFAULT_APP_PASSWORD)}")
