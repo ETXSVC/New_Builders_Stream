@@ -37,6 +37,12 @@ export default function CompliancePage() {
   const [notifications, setNotifications] = React.useState<NotificationItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  // Kept separate from `error` on purpose. The dashboard and the
+  // notifications are two independent fetches, and a failure in one says
+  // nothing about the other — folding both into one banner would either
+  // blank a section that loaded fine or hide a failure behind a page that
+  // looks healthy.
+  const [notificationsError, setNotificationsError] = React.useState<string | null>(null);
 
   const isAdmin = role === "admin";
 
@@ -44,6 +50,7 @@ export default function CompliancePage() {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
+    setNotificationsError(null);
     try {
       const dashboardResponse = await fetch("/api/compliance/dashboard", {
         headers: { Authorization: `Bearer ${accessToken}` },
@@ -64,6 +71,15 @@ export default function CompliancePage() {
         const notificationsData = await notificationsResponse.json();
         if (notificationsResponse.ok) {
           setNotifications(notificationsData.items ?? []);
+        } else {
+          // Without this the section simply renders nothing, and "no
+          // documents are expiring" is indistinguishable from "we could
+          // not find out whether any are" — the more dangerous of the two
+          // to show silently on a compliance page.
+          setNotifications([]);
+          setNotificationsError(
+            notificationsData.detail ?? "Couldn't load expiry notifications.",
+          );
         }
       }
     } catch {
@@ -79,6 +95,7 @@ export default function CompliancePage() {
 
   async function dismiss(notificationId: string) {
     if (!accessToken) return;
+    setNotificationsError(null);
     try {
       const response = await fetch(`/api/compliance/notifications/${notificationId}/dismiss`, {
         method: "POST",
@@ -86,9 +103,16 @@ export default function CompliancePage() {
       });
       if (response.ok) {
         setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
+        return;
       }
+      // The row stays put on failure — which is correct, since the
+      // notification genuinely wasn't dismissed — but on its own that is
+      // indistinguishable from the click not registering. Saying so is the
+      // difference between "nothing happened" and "this didn't work."
+      const data = await response.json().catch(() => ({}));
+      setNotificationsError(data.detail ?? "Couldn't dismiss that notification. Please try again.");
     } catch {
-      // Non-critical: leave the notification in place; a reload re-fetches.
+      setNotificationsError("Unable to reach the server. Check your connection and try again.");
     }
   }
 
@@ -107,10 +131,26 @@ export default function CompliancePage() {
         </p>
       )}
 
-      {isAdmin && notifications.length > 0 && (
+      {/* Rendered when there is EITHER something to show or something to
+          say. Gating the whole section on `notifications.length > 0` would
+          hide the error too, which is the failure this section exists to
+          make visible. */}
+      {isAdmin && (notifications.length > 0 || notificationsError) && (
         <section className="flex flex-col gap-2">
           <h2 className="text-sm font-semibold">Expiry notifications</h2>
-          <ul className="flex flex-col divide-y divide-amber-200 border border-amber-300 bg-amber-50 rounded-lg">
+          {notificationsError && (
+            <p role="alert" aria-live="assertive" className="text-sm text-red-600">
+              {notificationsError}{" "}
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="underline hover:text-red-700"
+              >
+                Retry
+              </button>
+            </p>
+          )}
+          <ul className="flex flex-col divide-y divide-amber-200 border border-amber-300 bg-amber-50 rounded-lg empty:hidden">
             {notifications.map((n) => (
               <li key={n.id} className="flex items-center gap-4 px-4 py-3 text-sm">
                 <span className="flex-1">
