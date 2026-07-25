@@ -33,6 +33,18 @@ class Settings(BaseSettings):
     database_url: str
     migrations_database_url: str
     test_database_url: str
+    # Connection string for the `scanner` role (migration 0020): LOGIN +
+    # BYPASSRLS, granted DML only and owning nothing. Used by the three
+    # genuinely cross-tenant daily sweeps in app/tasks/, which previously
+    # connected as the table OWNER — a role that can also drop tables and
+    # rewrite RLS policies.
+    #
+    # Optional, and it falls back to `migrations_database_url` when unset so
+    # an existing deployment keeps working through the upgrade rather than
+    # failing to boot its worker. `scripts/check_worker_role.py`-style
+    # verification is the runbook's job; the fallback is a migration aid,
+    # not the intended end state.
+    scanner_database_url: str | None = None
     jwt_secret: str
     # docs/07 Section 1: access tokens are short-lived; refresh tokens
     # (Task 6.2+) carry the long-lived session. 15 is the spec's number.

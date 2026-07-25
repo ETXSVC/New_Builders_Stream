@@ -88,6 +88,11 @@ jobs:
           # The e2e suite registers a fresh company per spec file from one
           # IP — more than the per-IP register rate limit (5/hour) allows.
           REGISTER_RATE_LIMIT_ENABLED: "false"
+          # Same reasoning for the login limiter: every spec logs in several
+          # times (and the estimation spec logs in as three different users)
+          # from the single runner IP, so the per-IP counter would start
+          # failing runs on suite size rather than on anything real.
+          LOGIN_RATE_LIMIT_ENABLED: "false"
         run: |
           mkdir -p /tmp/e2e-documents
           # A real Fernet key (the integrations OAuth callback encrypts

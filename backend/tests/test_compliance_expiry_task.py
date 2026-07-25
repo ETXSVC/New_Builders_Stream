@@ -6,11 +6,14 @@ convention (see test_compliance_dashboard.py, test_subcontractors.py) rather
 than sharing them via conftest.py.
 
 Database-used proof: `_check_compliance_expiry` defaults its `session_factory`
-parameter to `app.tasks.compliance_expiry._OwnerSessionLocal`, itself built
-from `settings.migrations_database_url` — which `tests/conftest.py` patches
-(as an OS environment variable, before `app.config.settings` is ever
+parameter to `app.tasks.scanner_db.ScannerSessionLocal` — the shared
+`scanner` connection the three cross-tenant sweeps use since migration 0020
+(previously a per-module owner-role engine; see that migration for why the
+table owner was the wrong role for a daily read-and-insert job). Its URL
+falls back to `settings.migrations_database_url`, which `tests/conftest.py`
+patches (as an OS environment variable, before `app.config.settings` is ever
 constructed) to point at the TEST database (`builders_stream_test`), not the
-dev database. `test_owner_engine_points_at_test_database_not_dev_database`
+dev database. `test_scanner_engine_points_at_test_database_not_dev_database`
 below asserts this directly against the actual engine's URL, rather than
 just trusting the tests to pass. Every other test in this file additionally
 passes its OWN explicit `session_factory`, built the same way, straight from
@@ -27,7 +30,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.compliance_notification import ComplianceNotification
-from app.tasks.compliance_expiry import _check_compliance_expiry, _owner_engine
+from app.tasks.compliance_expiry import _check_compliance_expiry
+from app.tasks.scanner_db import scanner_engine
 from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
 
 _test_owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
@@ -99,16 +103,15 @@ async def _fetch_notifications(company_id=None):
 
 
 # =============================================================================
-# Owner-role / test-database sanity check
+# Scanner-role / test-database sanity check
 # =============================================================================
 
 
-def test_owner_engine_points_at_test_database_not_dev_database():
+def test_scanner_engine_points_at_test_database_not_dev_database():
     """Direct, explicit proof (per this task's own self-review requirement)
-    that the module's default `session_factory` — built from
-    `settings.migrations_database_url` — resolves to the TEST database under
-    pytest, not the dev database that URL points at outside of tests."""
-    assert _owner_engine.url.database == "builders_stream_test"
+    that the default `session_factory` resolves to the TEST database under
+    pytest, not the dev database its URL points at outside of tests."""
+    assert scanner_engine.url.database == "builders_stream_test"
 
 
 # =============================================================================

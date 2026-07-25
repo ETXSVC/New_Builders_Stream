@@ -51,23 +51,45 @@ is loud, not silent.
 | `REDIS_URL` | `redis://redis:6379/0` |
 | `TZ` | your zone, e.g. `America/Chicago` |
 | `BACKUP_DIR` | host path for backups, e.g. `/opt/builders-stream-backups` |
+| `APP_DB_PASSWORD` | `openssl rand -hex 24` — migration `0020` applies it to `app_user` (see below) |
+| `SCANNER_DB_PASSWORD` | `openssl rand -hex 24` — same, for the `scanner` role |
+| `SCANNER_DATABASE_URL` | `postgresql+asyncpg://scanner:<SCANNER_DB_PASSWORD>@postgres:5432/builders_stream` (the prod compose sets this per-service from the two values above) |
 | `SMTP_*` | set to enable invitation emails; unset = recording fake (no email leaves the box) |
 
-**`app_user` password — first-deploy tripwire.** Migration `0001` creates
-the runtime role with the password literally hardcoded as `'app_password'`.
-After the first `up` (migrations applied), set the real one:
+**Database role passwords.** Migration `0001` creates `app_user` with the
+password hardcoded as `'app_password'` — a value published in this
+repository. Migration `0020` rotates it, and creates the `scanner` role,
+using `APP_DB_PASSWORD` and `SCANNER_DB_PASSWORD` **read from the
+environment when `alembic upgrade head` runs**.
+
+Because the prod compose's one-shot `migrate` service reads `.env`, setting
+both values in `.env` before the first `up` is all that is required — the
+rotation happens as part of the normal deploy, with no manual `ALTER ROLE`
+step. Verify afterwards:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec postgres \
-  psql -U postgres -d builders_stream \
-  -c "ALTER ROLE app_user PASSWORD '<APP_DB_PASSWORD>'"
-docker compose -f docker-compose.prod.yml restart backend worker
+  psql -U postgres -d builders_stream -c "\du app_user scanner"
 ```
 
-(The boot validator rejects `DATABASE_URL` containing `app_password`, so
-skipping this step cannot go unnoticed — the backend won't start until the
-URL carries the real password, and the real password won't work until the
-ALTER ROLE ran.)
+Rotating later is the same mechanism: change the values in `.env` and
+re-run `docker compose -f docker-compose.prod.yml up -d migrate`, then
+restart `backend`, `worker` and `scheduler`.
+
+(The boot validator rejects a `DATABASE_URL` containing `app_password`, so
+skipping this cannot go unnoticed — the backend won't start until the URL
+carries the real password, and the real password won't work until the
+migration applied it.)
+
+**The `scanner` role, and why the worker isn't the superuser.** The three
+daily cross-tenant sweeps (compliance expiry, seat usage, overdue financial
+records) genuinely have to read every company's rows in one pass. They used
+to get that by connecting as the Postgres table owner — a role that is not
+only exempt from RLS but can also drop tables and rewrite the policies that
+enforce tenant isolation. `scanner` is `LOGIN BYPASSRLS` with DML grants
+and no ownership: same reach, none of the ability to change the rules.
+`tests/test_worker_db_roles.py` asserts both halves, including that
+`scanner` cannot `DISABLE ROW LEVEL SECURITY` or drop a policy.
 
 ## 3. First deploy
 

@@ -113,6 +113,12 @@ services:
     environment:
       APP_ENV: production
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # The `scanner` role (migration 0020): BYPASSRLS so the daily
+      # cross-tenant sweeps can see every company, but owning nothing — so a
+      # compromised worker cannot drop a table or disable a policy. Falls
+      # back to MIGRATIONS_DATABASE_URL (the table OWNER) if unset, which is
+      # an upgrade aid, not the intended steady state.
+      SCANNER_DATABASE_URL: postgresql+asyncpg://scanner:${SCANNER_DB_PASSWORD:-scanner_password}@postgres:5432/${POSTGRES_DB}
     volumes:
       - documents_data:/data/documents
     networks: [internal]
@@ -136,6 +142,7 @@ services:
     env_file: .env
     environment:
       APP_ENV: production
+      SCANNER_DATABASE_URL: postgresql+asyncpg://scanner:${SCANNER_DB_PASSWORD:-scanner_password}@postgres:5432/${POSTGRES_DB}
       # BlockingScheduler crons fire in container-local time — unpinned,
       # "02:00" silently means UTC. Set TZ in .env if off-peak should mean
       # YOUR night. Single replica only: two schedulers double-fire jobs.

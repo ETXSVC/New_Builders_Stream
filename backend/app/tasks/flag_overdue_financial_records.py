@@ -14,17 +14,21 @@ from __future__ import annotations
 
 import dramatiq
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+
 from app.tasks import broker  # noqa: F401 - import-time side effect
+from app.tasks.scanner_db import ScannerSessionLocal
 
-_owner_engine = create_async_engine(settings.migrations_database_url, pool_pre_ping=True)
-_OwnerSessionLocal = async_sessionmaker(_owner_engine, expire_on_commit=False, class_=AsyncSession)
+# The shared `scanner` connection (app/tasks/scanner_db.py), not a
+# per-module owner-role engine. This job is genuinely cross-tenant, so it
+# needs a role that sees every company — but it does not need the role that
+# OWNS every table and can rewrite the RLS policies protecting them. See
+# migration 0020.
 
 
 async def _flag_overdue_financial_records(
-    session_factory: async_sessionmaker[AsyncSession] = _OwnerSessionLocal,
+    session_factory: async_sessionmaker[AsyncSession] = ScannerSessionLocal,
 ) -> None:
     async with session_factory() as session:
         await session.execute(

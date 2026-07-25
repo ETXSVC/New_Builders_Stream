@@ -12,6 +12,7 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
   const password = "correct-horse-battery-9";
 
   let estimateId = "";
+  let projectId = "";
   let adminAccessToken = "";
 
   await test.step("register admin and land on dashboard", async () => {
@@ -48,6 +49,9 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
     await page.getByLabel("Site address").fill("1 Main St");
     await page.getByRole("button", { name: "Create project" }).click();
     await expect(page.getByRole("heading", { name: `Deck ${suffix}` })).toBeVisible({ timeout: 15_000 });
+    // Captured for the client-access grant further down: since migration
+    // 0019 a client can only see estimates on a project they belong to.
+    projectId = page.url().split("/projects/")[1];
 
     await page.getByRole("tab", { name: "Estimates" }).click();
     await page.getByRole("link", { name: "New estimate" }).click();
@@ -101,6 +105,27 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
       data: { password, full_name: "E2E Client" },
     });
     expect(acceptResponse.ok()).toBeTruthy();
+
+    // Grant this client access to the project (migration 0019). Being a
+    // client-role member of the COMPANY is no longer enough to see a job's
+    // pricing or sign its contract — the customer has to be on that
+    // specific project, which is what an admin decides here. Without this
+    // the estimate page below is a 404 for them, which is the whole point
+    // of the change.
+    const membersResponse = await apiContext.get("/companies/members", {
+      headers: { Authorization: `Bearer ${adminAccessToken}` },
+    });
+    expect(membersResponse.ok()).toBeTruthy();
+    const members = await membersResponse.json();
+    const clientUserId = members.items.find(
+      (member: { email: string; user_id: string }) => member.email === clientEmail,
+    ).user_id;
+
+    const grantResponse = await apiContext.post(`/projects/${projectId}/clients`, {
+      headers: { Authorization: `Bearer ${adminAccessToken}` },
+      data: { user_id: clientUserId },
+    });
+    expect(grantResponse.ok()).toBeTruthy();
 
     await apiContext.dispose();
 
