@@ -1,4 +1,6 @@
 
+from decimal import Decimal
+
 import asyncpg
 
 from tests.conftest import TEST_DATABASE_URL, grant_client_access, set_subscription_tier
@@ -546,3 +548,104 @@ async def test_client_cannot_void_invoice(client):
 
     response = await client.post(f"/invoices/{invoice_id}/void", headers=client_role["headers"])
     assert response.status_code == 403
+
+
+# =============================================================================
+# Monetary quantization (M1)
+#
+# Payment amounts land in a NUMERIC(12,2) column, so Postgres rounds them on
+# write. The overpayment guard used to compare the RAW submitted value
+# against the remaining balance — a different number from the one being
+# stored — which goes wrong in both directions.
+# =============================================================================
+
+
+async def test_payment_that_settles_the_invoice_after_rounding_is_accepted(client):
+    """The false-rejection half.
+
+    Remaining is 10.00 and the client submits 10.004. Compared raw,
+    10.004 > 10.00 is true and the payment is refused with a 409 — but what
+    would actually have been stored is 10.00, the exact amount that settles
+    the invoice. Quantizing before the guard is what makes the comparison
+    about the value being persisted.
+    """
+    admin = await _register_and_login(client, "Quantize Co 1", "quantize-1@example.test")
+    project = await _create_project(client, admin["headers"])
+    created = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "10.00", "due_date": "2026-12-31"},
+        headers=admin["headers"],
+    )
+    invoice_id = created.json()["id"]
+    await client.post(
+        f"/invoices/{invoice_id}/send", json={"due_date": "2026-12-31"}, headers=admin["headers"]
+    )
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "10.004", "paid_date": "2026-07-01"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 201, response.text
+    # Stored, echoed, and settled at the rounded value.
+    assert Decimal(response.json()["amount"]) == Decimal("10.00")
+
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    assert Decimal(detail.json()["outstanding_balance"]) == Decimal("0.00")
+    assert detail.json()["status"] == "paid"
+
+
+async def test_payment_response_never_echoes_an_amount_that_was_not_stored(client):
+    """The response-drift half.
+
+    9.999 passes the guard either way, but unquantized the handler builds
+    its response from the in-memory object and echoes 9.999 — a value that
+    exists nowhere in the database, since Postgres stored 10.00.
+    """
+    admin = await _register_and_login(client, "Quantize Co 2", "quantize-2@example.test")
+    project = await _create_project(client, admin["headers"])
+    created = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "20.00", "due_date": "2026-12-31"},
+        headers=admin["headers"],
+    )
+    invoice_id = created.json()["id"]
+    await client.post(
+        f"/invoices/{invoice_id}/send", json={"due_date": "2026-12-31"}, headers=admin["headers"]
+    )
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "9.999", "paid_date": "2026-07-01"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 201, response.text
+    echoed = Decimal(response.json()["amount"])
+    assert echoed == Decimal("10.00"), f"response echoed {echoed}, which was never stored"
+
+    # And the balance agrees with what the database actually holds.
+    detail = await client.get(f"/invoices/{invoice_id}", headers=admin["headers"])
+    assert Decimal(detail.json()["outstanding_balance"]) == Decimal("10.00")
+
+
+async def test_a_payment_that_genuinely_overpays_is_still_refused(client):
+    """The guard must not be loosened by the quantization: 10.005 rounds UP
+    to 10.01 against a remaining balance of 10.00, and is still a 409."""
+    admin = await _register_and_login(client, "Quantize Co 3", "quantize-3@example.test")
+    project = await _create_project(client, admin["headers"])
+    created = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "10.00", "due_date": "2026-12-31"},
+        headers=admin["headers"],
+    )
+    invoice_id = created.json()["id"]
+    await client.post(
+        f"/invoices/{invoice_id}/send", json={"due_date": "2026-12-31"}, headers=admin["headers"]
+    )
+
+    response = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "10.005", "paid_date": "2026-07-01"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text

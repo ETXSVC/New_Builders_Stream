@@ -36,9 +36,10 @@ an actor," a narrower and more accurate reason, worth distinguishing from
 LEAD_WON's handle_lead_won, whose payload DOES carry `actor_id` (leads.py's
 own `publish("LEAD_WON", ..., actor_id=current.user.id)` call) and whose
 handler signature accordingly declares `actor_id` as a required parameter.
-Widening ESTIMATE_APPROVED's payload to also carry `actor_id` is a
-reasonable follow-up, flagged in this task's implementation report rather
-than done silently here as a scope-creeping router edit.
+That follow-up has since been done: the router's publish() call now
+forwards `actor_id=current.user.id`, and this handler records it, so
+`invoice.auto_generated` is attributed identically no matter which event
+produced the invoice.
 """
 import uuid
 from decimal import ROUND_HALF_UP, Decimal
@@ -60,6 +61,7 @@ async def handle_estimate_approved(
     project_id: uuid.UUID | None,
     company_id: uuid.UUID,
     approved_total: Decimal,
+    actor_id: uuid.UUID | None = None,
     **_ignored: object,
 ) -> None:
     if project_id is None:
@@ -99,15 +101,22 @@ async def handle_estimate_approved(
     session.add(invoice)
     await session.flush()
 
-    # actor_id=None: not a stand-in for "nobody acted" (a Client DID act —
-    # see this module's own docstring above) but for "this handler's
-    # payload carries no actor_id to record," since ESTIMATE_APPROVED's
-    # publish() call doesn't forward current.user.id the way LEAD_WON's
-    # does.
+    # The client who approved and signed. This used to be a hardcoded
+    # None — not because no actor existed, but because the payload didn't
+    # carry one. The consequence was that `invoice.auto_generated`, a
+    # single audit action, had two attribution conventions: null when a
+    # deposit invoice came from here, a real actor when a final invoice
+    # came from PROJECT_COMPLETED's handler. Same action, same table,
+    # different answer to "who did this" depending on which event fired.
+    #
+    # Still Optional in the signature: `publish()` calls
+    # `handler(**payload)`, so a caller that omits it is a TypeError
+    # otherwise — and this handler no-oping on a missing actor is better
+    # than a 500 on the approve route.
     await write_audit_log(
         session,
         company_id=company_id,
-        actor_id=None,
+        actor_id=actor_id,
         action="invoice.auto_generated",
         entity_type="invoice",
         entity_id=invoice.id,

@@ -1,4 +1,5 @@
 import uuid
+from decimal import ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select, tuple_
@@ -6,6 +7,7 @@ from sqlalchemy import select, tuple_
 from app.config import settings
 from app.core.uploads import read_upload_limited
 from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor, paginate
 from app.core.tier_gating import require_module
 from app.models import ChangeOrder, Project
@@ -269,11 +271,16 @@ async def create_change_order(
             f"(current status: {project.status!r})",
         )
 
+    # cost_delta feeds the final-invoice remainder math in
+    # project_completed_handler (approved estimates + approved change
+    # orders - already-invoiced), so an unrounded value here propagates
+    # into what a customer is billed. Quantized on the way in, same as
+    # every other monetary write in this codebase.
     change_order = ChangeOrder(
         project_id=project.id,
         company_id=project.company_id,
         description=payload.description,
-        cost_delta=payload.cost_delta,
+        cost_delta=payload.cost_delta.quantize(CENTS, rounding=ROUND_HALF_UP),
         schedule_impact_days=payload.schedule_impact_days,
         status="pending",
     )

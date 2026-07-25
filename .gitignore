@@ -38,7 +38,11 @@ next-env.d.ts
 frontend/test-results/
 frontend/playwright-report/
 
-# Redis local snapshot (created by `redis-server` when run from backend/
-# during local/manual testing outside docker-compose, which runs Redis in
-# its own container instead)
-backend/dump.rdb
+# Redis local snapshot, created by `redis-server` during local/manual
+# testing outside docker-compose (which runs Redis in its own container).
+# Unanchored on purpose: this rule used to read `backend/dump.rdb`, which
+# only covers a server started from that directory — one started from the
+# repo root drops its dump beside this file and slipped straight past it.
+# Pure runtime state (queued Dramatiq messages, rate-limit counters from
+# test runs), never an input to anything.
+dump.rdb

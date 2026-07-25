@@ -277,19 +277,26 @@ async def record_bill_payment(
     # reason: without it, a payment could exceed the bill's remaining
     # balance, producing a negative outstanding_balance (bill.amount -
     # paid) for every reader after.
+    # Quantized before the guard, for the reason invoices.py's equivalent
+    # spells out at length: the raw value is not the value Postgres will
+    # store, so comparing it against `remaining` both refuses payments that
+    # would have settled the bill exactly and echoes an amount in the
+    # response that was never persisted.
+    amount = body.amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+
     already_paid = await _paid_amount(current, bill.id)
     remaining = bill.amount - already_paid
-    if body.amount > remaining:
+    if amount > remaining:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Payment amount {body.amount} exceeds the bill's remaining balance {remaining}",
+            f"Payment amount {amount} exceeds the bill's remaining balance {remaining}",
         )
 
     payment = BillPayment(
         id=uuid.uuid4(),
         bill_id=bill.id,
         company_id=bill.company_id,
-        amount=body.amount,
+        amount=amount,
         paid_date=body.paid_date,
         recorded_by=current.user.id,
     )

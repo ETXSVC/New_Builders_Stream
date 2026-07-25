@@ -218,19 +218,37 @@ async def record_invoice_payment(
     # before the row is inserted, keeps a bad request from ever landing —
     # not silently accepted and then producing a negative
     # outstanding_balance (invoice.amount - paid) for every reader after.
+    # Quantized BEFORE the guard, not just before the INSERT — the order is
+    # the whole point. `amount` lands in a NUMERIC(12,2) column, so Postgres
+    # rounds it on write regardless; comparing the RAW value against
+    # `remaining` therefore checks a number that is not the one being
+    # stored, and the two disagree in both directions:
+    #
+    #   false rejection — remaining 10.00, payment 10.004. Raw, 10.004 >
+    #     10.00 is true and the payment is refused with a 409, even though
+    #     what would actually have been stored is 10.00: the exact amount
+    #     that settles the invoice.
+    #   response drift — remaining 10.00, payment 9.999. The guard passes,
+    #     Postgres stores 10.00, but this handler's response is built from
+    #     the in-memory object and echoes 9.999 — an amount that exists
+    #     nowhere in the database.
+    #
+    # Same pattern and rationale as expenses.py's own quantization.
+    amount = body.amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+
     already_paid = await _paid_amount(current, invoice.id)
     remaining = invoice.amount - already_paid
-    if body.amount > remaining:
+    if amount > remaining:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"Payment amount {body.amount} exceeds the invoice's remaining balance {remaining}",
+            f"Payment amount {amount} exceeds the invoice's remaining balance {remaining}",
         )
 
     payment = InvoicePayment(
         id=uuid.uuid4(),
         invoice_id=invoice.id,
         company_id=invoice.company_id,
-        amount=body.amount,
+        amount=amount,
         paid_date=body.paid_date,
         recorded_by=current.user.id,
     )
