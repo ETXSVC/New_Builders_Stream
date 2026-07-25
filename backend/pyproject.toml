@@ -60,7 +60,7 @@ dev = [
     "pytest-asyncio>=0.24,<0.25",
     "httpx>=0.27,<0.28",
     "ruff>=0.8,<1.0",
-    "mypy>=1.13,<3.0",
+    "mypy>=2.3.0,<3.0",
     # Coverage measurement. Not gated on a threshold in CI (see the
     # [tool.coverage] section below for why); the point is that a reviewer
     # can see which lines a change left untested rather than guessing.
