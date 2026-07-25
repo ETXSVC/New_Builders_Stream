@@ -12,7 +12,7 @@ dependencies = [
     # thing in this repo that walks routes directly.
     "fastapi>=0.140,<0.141",
     "uvicorn[standard]>=0.32,<0.33",
-    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "sqlalchemy[asyncio]>=2.0.51,<2.1",
     "asyncpg>=0.30,<0.31",
     "alembic>=1.14,<1.15",
     "pydantic>=2.9,<3.0",
