@@ -85,8 +85,8 @@ async def test_completing_a_project_drafts_a_final_invoice_for_the_remainder(cli
 
     estimate_id, total = await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,
@@ -130,8 +130,8 @@ async def test_approved_change_orders_add_to_the_final_invoice(client):
 
     await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,
@@ -190,8 +190,8 @@ async def test_completing_a_fully_invoiced_project_drafts_nothing(client):
 
     await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,
@@ -223,8 +223,8 @@ async def test_voided_invoices_do_not_count_as_already_invoiced(client):
 
     estimate_id, _total = await _create_and_approve_estimate(
         client,
-        admin["headers"],
-        client_role["headers"],
+        admin,
+        client_role,
         project["id"],
         markup_profile_id,
         catalog_item_id,

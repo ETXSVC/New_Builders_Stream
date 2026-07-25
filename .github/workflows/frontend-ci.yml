@@ -21,3 +21,71 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+
+  # `build-and-lint` above runs a plain `next build`; production runs the
+  # *standalone* build from a container, which is a different artifact
+  # assembled by hand in the Dockerfile (server.js + .next/static + public,
+  # each COPYed separately). Nothing verified that assembly until this job:
+  # omit one COPY and the image still builds and still starts, then serves
+  # a page with no CSS or a 500, discovered on the production box.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build frontend image (production target)
+        run: docker build --target production -t bs-frontend:ci frontend
+
+      # A sidecar standing in for the backend. The point is not that the
+      # request succeeds — it is that the request ARRIVES: NEXT_PUBLIC_API_URL
+      # must be read at RUN time. Next inlines NEXT_PUBLIC_* at BUILD time
+      # wherever they reach client code, so a refactor that leaks
+      # lib/api/client.ts's URL into a client component would permanently
+      # bake this image's build-time value in and make the compose-provided
+      # runtime value a no-op — every BFF fetch in production would dial the
+      # wrong host. `python -m http.server` answers POST with 501, which is
+      # fine: it logs the request line, and that log is the assertion.
+      - name: Frontend image serves, and dials NEXT_PUBLIC_API_URL at runtime
+        run: |
+          docker network create bs-ci-smoke
+          docker run -d --name bs-api-sentinel --network bs-ci-smoke \
+            python:3.12-slim python -m http.server 8000
+          docker run -d --name bs-frontend-ci --network bs-ci-smoke -p 3000:3000 \
+            -e NEXT_PUBLIC_API_URL=http://bs-api-sentinel:8000 \
+            bs-frontend:ci
+
+          # `if` rather than `[ ... ] && break`: GitHub runs `run:` blocks
+          # under `bash -e`, where a bare test that evaluates false is a
+          # failing command and aborts the step.
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/login || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then break; fi
+            sleep 2
+          done
+
+          docker logs bs-frontend-ci
+
+          # /login is in the (app) route group but not behind middleware;
+          # / is the marketing home page. Between them they exercise both
+          # route groups, the shared layout, and the static assets.
+          for path in /login /; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:3000$path")
+            [ "$code" = "200" ] || { echo "::error::GET $path returned $code from the standalone image"; exit 1; }
+          done
+
+          curl -s -o /dev/null -X POST -H 'content-type: application/json' \
+            -d '{"email":"ci@example.test","password":"ci-smoke"}' \
+            http://localhost:3000/api/auth/login || true
+
+          docker logs bs-api-sentinel 2>&1 | tee /tmp/sentinel.log
+          grep -q 'POST /auth/login' /tmp/sentinel.log || {
+            echo "::error::the BFF never reached NEXT_PUBLIC_API_URL — the backend URL is baked in at build time, not read at runtime"
+            exit 1
+          }
+
+          docker rm -f bs-frontend-ci bs-api-sentinel
+          docker network rm bs-ci-smoke
+
+      # docker-compose.yml (the dev stack) builds this target.
+      - name: Build frontend image (dev target)
+        run: docker build --target dev -t bs-frontend:ci-dev frontend

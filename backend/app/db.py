@@ -8,7 +8,26 @@ from app.config import settings
 
 # Runtime engine: connects as the restricted `app_user` role (see design decision #1).
 # RLS policies are enforced against this connection.
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+#
+# Pool size is configured explicitly rather than left at SQLAlchemy's
+# defaults (5 + 10 overflow), because this application's transaction shape
+# makes those defaults a hard concurrency ceiling rather than a soft one:
+# `get_current_user` holds a transaction open for the ENTIRE request
+# (design decision #7 — `set_config(..., is_local=true)` is
+# transaction-scoped, so the tenant context would vanish if it committed
+# early). Every in-flight request therefore occupies a connection for its
+# whole lifetime, and the 16th concurrent request blocks on the pool
+# instead of queueing at the web layer where a timeout could handle it.
+#
+# `pool_timeout` is set for the same reason: at saturation a caller should
+# get a fast, visible failure rather than hanging on an unbounded wait.
+engine = create_async_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout_seconds,
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

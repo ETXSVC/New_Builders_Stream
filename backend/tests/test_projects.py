@@ -12,7 +12,7 @@ import uuid
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, grant_client_access
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -292,6 +292,12 @@ async def test_get_project_client_dashboard_shape(client):
 
     create = await client.post("/projects", json=_project_payload(), headers=admin["headers"])
     project_id = create.json()["id"]
+    # GET /projects/{id} doubles as the client dashboard, and migration 0019
+    # scopes it to project members — without this grant the client gets the
+    # same 404 as for a project in another company.
+    await grant_client_access(
+        client, admin, project_id=project_id, email="dash-client@acme.test"
+    )
 
     phase_1 = await _seed_phase(project_id, admin["company_id"], name="Foundation", sequence=0)
     phase_2 = await _seed_phase(project_id, admin["company_id"], name="Framing", sequence=1)
@@ -324,6 +330,9 @@ async def test_get_project_client_dashboard_shape_with_zero_phases_and_tasks(cli
 
     create = await client.post("/projects", json=_project_payload(), headers=admin["headers"])
     project_id = create.json()["id"]
+    await grant_client_access(
+        client, admin, project_id=project_id, email="dash-zero-client@acme.test"
+    )
 
     response = await client.get(f"/projects/{project_id}", headers=client_role["headers"])
     assert response.status_code == 200

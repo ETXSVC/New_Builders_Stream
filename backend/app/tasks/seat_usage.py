@@ -2,11 +2,11 @@
 
 Same genuinely-cross-tenant shape as check_compliance_expiry
 (app/tasks/compliance_expiry.py) — this scan needs to look at EVERY root
-company's subscription in one run, so it uses the identical owner-role
-engine pattern (connects as settings.migrations_database_url, the
-`postgres` table-owner role, RLS-exempt) for the same reason that module's
-own docstring explains at length. Not repeated here in full; see that
-file's docstring for the complete justification.
+company's subscription in one run, so it shares the same `scanner`
+connection (app/tasks/scanner_db.py): a role that sees every tenant but
+owns nothing, and therefore cannot alter the schema or the RLS policies
+protecting it. See migration 0020 for why that replaced the table-owner
+connection these jobs used to open.
 
 Unique-user counting (design spec Section 5): for each root company's
 subscription, counts DISTINCT user_id across company_users rows for the
@@ -42,19 +42,23 @@ from __future__ import annotations
 
 import dramatiq
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+
 from app.models import CompanyUser, Subscription
 from app.services.billing import get_stripe_client
 from app.tasks import broker  # noqa: F401 - import-time side effect
+from app.tasks.scanner_db import ScannerSessionLocal
 
-_owner_engine = create_async_engine(settings.migrations_database_url, pool_pre_ping=True)
-_OwnerSessionLocal = async_sessionmaker(_owner_engine, expire_on_commit=False, class_=AsyncSession)
+# The shared `scanner` connection (app/tasks/scanner_db.py), not a
+# per-module owner-role engine. This job is genuinely cross-tenant, so it
+# needs a role that sees every company — but it does not need the role that
+# OWNS every table and can rewrite the RLS policies protecting them. See
+# migration 0020.
 
 
 async def _report_seat_usage(
-    session_factory: async_sessionmaker[AsyncSession] = _OwnerSessionLocal,
+    session_factory: async_sessionmaker[AsyncSession] = ScannerSessionLocal,
 ) -> None:
     stripe_client = get_stripe_client()
 

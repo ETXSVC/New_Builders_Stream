@@ -3,8 +3,6 @@ public receiver, signature-verified instead. Uses FakeStripeClient's own
 webhook_secret (Task 3.17) to construct real, correctly-signed test
 payloads, exactly the way Stripe's own SDK test utilities work — no live
 Stripe account needed."""
-import hashlib
-import hmac
 import json
 
 from sqlalchemy import select
@@ -16,8 +14,9 @@ from tests.conftest import TEST_DATABASE_URL
 
 
 def _sign(payload: bytes) -> str:
-    client = get_stripe_client()
-    return hmac.new(client.webhook_secret.encode(), payload, hashlib.sha256).hexdigest()
+    """A real `t=...,v1=...` header, produced by the same code path
+    production verifies — see app/services/stripe_client.py."""
+    return get_stripe_client().sign(payload)
 
 
 async def _register_and_get_subscription_id(client, email="webhook-admin@wh.test"):

@@ -27,7 +27,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (900+ tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (970+ tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test
@@ -74,15 +74,30 @@ balancer or compose healthcheck should gate on). Conflating them would
 make a database outage restart-loop the backend for no benefit.
 
 CI: `.github/workflows/backend-ci.yml` runs a `deploy-config` job
-(validates every compose file + parses the backup scripts) plus a `test`
-job running `ruff check .`, `mypy` (scoped
+(validates every compose file + parses the backup scripts), a
+`docker-build` job, and a `test` job running `ruff check .`, `mypy` (scoped
 to `app/` via pyproject's `[tool.mypy]` — tests stay outside the type
 gate), an OpenAPI schema-diff against the committed `backend/openapi.json`
 snapshot, and `pytest -v` against real Postgres 16 + Redis 7 service
 containers (not mocks/SQLite) — the tenant-isolation and RLS regression
 tests require a real Postgres. `frontend-ci.yml` (eslint + typechecked
-build) and `e2e-ci.yml` (full stack + Playwright) run alongside. All gate
-every merge to `main`.
+build, plus its own `docker-build` job) and `e2e-ci.yml` (full stack +
+Playwright) run alongside. All gate every merge to `main`.
+
+The two `docker-build` jobs **run** the images, not just build them, and
+that distinction is load-bearing: the production image installs the backend
+non-editably (`pip install .`), while every other job — and every local
+run — uses an editable install that imports from the source tree. A file
+that setuptools doesn't package therefore exists everywhere except in the
+artifact that ships. That is not theoretical; it is why
+`backend/pyproject.toml` carries a `[tool.setuptools.package-data]` entry
+for `app/templates/*.jinja` and why the backend smoke step loads that
+template out of the *installed* package. **Adding any non-`.py` file that
+`app/` reads at runtime means adding it to `package-data`.** The frontend
+job's equivalent is booting the standalone image beside a stand-in backend
+and asserting the BFF actually dials `NEXT_PUBLIC_API_URL` — proving that
+value is read at run time rather than inlined into the bundle at build
+time.
 
 ## Architecture
 
@@ -106,7 +121,10 @@ This is the most important thing to get right when touching auth, routers,
 or migrations:
 
 - `companies.parent_id` self-references, forming a tenant hierarchy — a
-  parent branch's users can see their descendants' data.
+  parent branch's users can see their descendants' data. It is **immutable**
+  (migration 0021's `companies_parent_id_immutable` trigger): re-parenting
+  moves a subtree between tenants and detaches it from its subscription, so
+  it is a migration that disables the trigger, never a write.
 - Every tenant table has an RLS policy scoped by
   `get_all_descendant_ids(current_setting('app.current_tenant')::uuid)` /
   `get_root_company_id(...)` (Postgres functions defined in migrations).
@@ -125,7 +143,24 @@ or migrations:
   queries ran under it.
 - The runtime DB connection uses a restricted `app_user` Postgres role;
   table owners (used in some test fixtures) bypass RLS entirely, so never
-  reach for an owner-role connection in application code.
+  reach for an owner-role connection in application code —
+  `tests/test_worker_db_roles.py` enforces this with an AST sweep, so it is
+  a gate rather than a convention. The three genuinely cross-tenant daily
+  sweeps use the `scanner` role instead (migration 0020): BYPASSRLS, DML
+  grants, owning nothing, so it can read every tenant but cannot alter a
+  policy or drop a table. Single-tenant jobs resolve their tenant through a
+  narrow SECURITY DEFINER lookup and run under `app_user` with
+  `set_current_tenant` (see `app/tasks/accounting_sync.py`).
+- **RLS is company-scoped, which says nothing about two clients of the SAME
+  company.** The `client` role is additionally scoped by row: a client sees
+  only projects/leads they hold a `project_clients`/`lead_clients`
+  membership for (migration 0019). The rule lives in
+  `app/services/client_scope.py` and is applied at the by-id chokepoints
+  (`_get_estimate_or_404`, `_get_change_order_or_404`,
+  `_get_invoice_or_404`, `_get_project_or_404`) so `approve`/`reject`
+  inherit it by construction. It raises 404, never 403, so a client cannot
+  enumerate another client's document ids. A new client-facing surface must
+  go through one of those helpers or apply `client_scope` itself.
 - Any new tenant-owned table needs its own RLS policy in the same migration
   that creates it — there's no global catch-all policy.
 
@@ -163,6 +198,13 @@ every test. Current/planned events: `LEAD_WON` → drafts a Project,
 `ESTIMATE_APPROVED` → drafts a deposit invoice, `INVOICE_CREATED` /
 `EXPENSE_CREATED` / `BILL_CREATED` → enqueue accounting-integration syncs,
 `PROJECT_COMPLETED` → drafts a final invoice for the uninvoiced remainder.
+
+Dramatiq actors are registered ONLY from the modules named on the worker's
+command line, so a new actor must be added to all three compose files
+(`docker-compose.yml`, `docker-compose.prod.yml`,
+`deploy/split/middleware.compose.yml`) and `e2e-ci.yml` — miss one and that
+topology silently dead-letters those messages with no error and no log.
+`deploy-config` asserts the three compose lists agree.
 
 ### Layering within a module
 
@@ -215,6 +257,29 @@ suites that matter architecturally:
 - `test_tier_gating.py` — introspects routes to assert every mutating route
   in a gated module carries `require_module`'s *correct* module tag
   (`dependency.tier_module`), not just that some gate is present.
+- `test_rls_policy_coverage.py` + `test_company_id_index_coverage.py` — a
+  pair of catalog-driven sweeps over *every* table Postgres reports, so a
+  future tenant table is covered without anyone remembering to add it. The
+  policy sweep asserts RLS is enabled, that the `FOR ALL` policy's USING
+  **and** check expressions really call `get_all_descendant_ids` /
+  `get_root_company_id` (a `USING (true)` policy would satisfy a
+  "has a policy" check and leak everything), that any extra permissive
+  policy is on a reviewed allowlist, and that a table with no `company_id`
+  column is either RLS-protected or explicitly declared non-tenant. Adding
+  a table means adding a policy or an allowlist entry — there is no third
+  option that passes.
+
+- `test_client_role_isolation.py` — two clients of the SAME company, which
+  is the case company-scoped RLS says nothing about. A two-company version
+  of these tests passes against the vulnerable code, so the shared company
+  is the point.
+- `test_worker_db_roles.py` — no `app/` module may read
+  `migrations_database_url` (AST sweep), `scanner` holds BYPASSRLS and
+  nothing else, and `companies.parent_id` cannot change.
+- `test_migration_downgrade.py` — walks the migration chain to `base` and
+  back to `head` on a scratch database. The re-upgrade is the half that
+  matters: it proves a downgrade actually removed things rather than merely
+  not raising.
 
 When adding a new tenant-owned table or a new mutating route in a
 tier-gated module, add/extend the corresponding isolation or gating test,

@@ -26,43 +26,41 @@ chicken-and-egg problem an `app_user` connection has for tenant-scoped
 data), and it would mean N+1 round trips and N+1 transactions for what is
 conceptually one scan.
 
-The correct, and only legitimate, way to do a genuine cross-tenant scan
-from application code is to connect using `settings.migrations_database_url`
-(`app/config.py`), the same connection string every Alembic migration
-already uses (`migrations/env.py`) and the same one this codebase's own
-tenant-isolation regression tests connect with to legitimately bypass RLS
-for test setup/teardown (`OWNER_DSN` in `tests/test_tenant_isolation_phase2.py`
-and `tests/test_tenant_isolation_phase3.py`). That connection string
-authenticates as the `postgres` table-owner role, which Postgres exempts
-from RLS by default — there is no tenant context to set, and none is set
-below, because the owner connection already sees everything unconditionally,
-which is exactly what a company-wide scan needs.
+A scan like this therefore needs a connection that is exempt from RLS.
+It does NOT need one that also owns every table.
 
-This module therefore builds its OWN, separate, owner-role SQLAlchemy async
-engine/sessionmaker, module-level in this file, rather than adding a second,
-more-privileged engine to the shared `app/db.py` — that file's own module
-comment states its `engine` "connects as the restricted `app_user` role",
-and a second engine living there would blur that invariant for every other
-piece of app code that imports from it. This owner-role engine is specific
-to this one actor's genuinely cross-tenant need.
+This module originally used `settings.migrations_database_url` — the
+`postgres` table-owner role Alembic runs as — because it was the only
+RLS-exempt connection that existed. That gave a daily read-and-insert job
+the ability to drop tables, rewrite policies and disable row security, and
+put the same privilege in the other three actors besides. Migration 0020
+introduced `scanner` instead: LOGIN + BYPASSRLS, granted DML and nothing
+else, owning nothing. It still sees every tenant, because that is the job;
+it can no longer touch the schema or the policies that protect it.
+
+The connection lives in `app/tasks/scanner_db.py` rather than in this
+module, so the three cross-tenant sweeps share one engine instead of
+opening three in every worker and scheduler process. It is deliberately
+NOT in `app/db.py`: that module's `engine` is the restricted `app_user`
+one every request path uses, and a second, more privileged engine sitting
+beside it would blur that invariant for every importer.
 
 Session-factory / test-database resolution: `_check_compliance_expiry`
-takes `session_factory` as a parameter (defaulting to this module's own
-`_OwnerSessionLocal`) rather than hardcoding `_owner_engine` as the only
-path, because tests run against `settings.test_database_url`, not the dev
-database `settings.migrations_database_url` points at by default. This is
+takes `session_factory` as a parameter (defaulting to the shared
+`ScannerSessionLocal`) rather than hardcoding one engine as the only path,
+because tests run against `settings.test_database_url`, not the dev
+database the scanner URL points at by default. This is
 not a new problem: `tests/conftest.py` already solves the equivalent problem
 for `settings.database_url` and `settings.migrations_database_url` alike, by
 setting `DATABASE_URL`/`MIGRATIONS_DATABASE_URL` as OS environment variables
 at conftest.py *module* import time — guaranteed (by pytest's own collection
 order) to run before any test module's `from app.config import settings`
-executes for the first time anywhere in the process. Because
-`_owner_engine`/`_OwnerSessionLocal` below are themselves built from
-`settings.migrations_database_url` at THIS module's import time, and this
-module is only ever imported by test modules (which are always imported
-after conftest.py), the module-level default already resolves correctly to
-`builders_stream_test` under pytest and to the real dev database outside of
-it — with no test-only branching logic anywhere in this file. The
+executes for the first time anywhere in the process. Because the shared scanner engine is
+itself built from settings at import time, and these modules are only ever
+imported by test modules (which are always imported after conftest.py), the
+module-level default already resolves correctly to `builders_stream_test`
+under pytest and to the real dev database outside of it — with no test-only
+branching logic anywhere in this file. The
 `session_factory` parameter exists so tests can additionally pass an
 explicit, unambiguous sessionmaker of their own construction (see
 `tests/test_compliance_expiry_task.py`) rather than relying solely on that
@@ -76,13 +74,16 @@ from datetime import date
 
 import dramatiq
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+
 from app.core.tier_gating import tier_allows
+from app.models import Company, Subcontractor
 from app.models.compliance_document import ComplianceDocument
 from app.models.compliance_notification import VALID_THRESHOLDS, ComplianceNotification
 from app.tasks import broker  # noqa: F401 - import-time side effect (see estimate_pdf.py's docstring)
+from app.tasks.scanner_db import ScannerSessionLocal
+from app.tasks.send_compliance_expiry_email import send_compliance_expiry_email
 
 # Owner-role engine: connects as the `postgres` table-owner role via
 # `settings.migrations_database_url`, the same connection string Alembic
@@ -91,12 +92,15 @@ from app.tasks import broker  # noqa: F401 - import-time side effect (see estima
 # anywhere in this module — see the module docstring for the full
 # justification of why this is the one deliberate exception to "app code
 # always goes through the RLS-constrained `app_user` connection."
-_owner_engine = create_async_engine(settings.migrations_database_url, pool_pre_ping=True)
-_OwnerSessionLocal = async_sessionmaker(_owner_engine, expire_on_commit=False, class_=AsyncSession)
+# The shared `scanner` connection (app/tasks/scanner_db.py), not a
+# per-module owner-role engine. This job is genuinely cross-tenant, so it
+# needs a role that sees every company — but it does not need the role that
+# OWNS every table and can rewrite the RLS policies protecting them. See
+# migration 0020.
 
 
 async def _check_compliance_expiry(
-    session_factory: async_sessionmaker[AsyncSession] = _OwnerSessionLocal,
+    session_factory: async_sessionmaker[AsyncSession] = ScannerSessionLocal,
 ) -> None:
     """Scans every company's `compliance_documents` rows (no tenant filter —
     see module docstring) and inserts one `compliance_notifications` row per
@@ -159,6 +163,16 @@ async def _check_compliance_expiry(
         # "prefetch/loop in memory, no per-row round trips" shape.
         compliance_allowed: dict = {}
 
+        # Accumulated, not sent inline: the emails are enqueued AFTER the
+        # commit below, so a scan that fails partway through cannot leave a
+        # subcontractor told about a notification row that was rolled back.
+        # (`financial_record_sync_handler.py` enqueues inside its caller's
+        # open transaction and documents that exact hazard; this actor owns
+        # its own commit, so it can simply do the right thing.)
+        pending_emails: list[dict] = []
+        subcontractors: dict = {}
+        company_names: dict = {}
+
         for document in documents:
             allowed = compliance_allowed.get(document.company_id)
             if allowed is None:
@@ -185,7 +199,49 @@ async def _check_compliance_expiry(
                 )
                 already_fired.add((document.id, threshold))
 
+                # The subcontractor is who can actually renew the document.
+                # `contact_email` exists for exactly this and, until now,
+                # nothing ever used it — the notification row was visible
+                # only to whoever happened to open the dashboard.
+                subcontractor = subcontractors.get(document.subcontractor_id)
+                if subcontractor is None:
+                    subcontractor = (
+                        await session.execute(
+                            select(Subcontractor).where(
+                                Subcontractor.id == document.subcontractor_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    subcontractors[document.subcontractor_id] = subcontractor
+                if subcontractor is None or not subcontractor.contact_email:
+                    # No address on file is a legitimate state; the
+                    # notification row is still written either way.
+                    continue
+
+                company_name = company_names.get(document.company_id)
+                if company_name is None:
+                    company_name = (
+                        await session.execute(
+                            select(Company.name).where(Company.id == document.company_id)
+                        )
+                    ).scalar_one_or_none() or "Builders Stream"
+                    company_names[document.company_id] = company_name
+
+                pending_emails.append(
+                    {
+                        "to_email": subcontractor.contact_email,
+                        "subcontractor_name": subcontractor.name,
+                        "company_name": company_name,
+                        "doc_type": document.doc_type,
+                        "expires_on": document.expires_on.isoformat(),
+                        "threshold": threshold,
+                    }
+                )
+
         await session.commit()
+
+    for message in pending_emails:
+        send_compliance_expiry_email.send(**message)
 
 
 # The actual `@dramatiq.actor` — a thin wrapper around `_check_compliance_expiry`

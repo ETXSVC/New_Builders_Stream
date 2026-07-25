@@ -52,3 +52,21 @@ class SubcontractorListResponse(BaseModel):
 
     items: list[SubcontractorResponse]
     next_cursor: str | None = None
+
+
+class SubcontractorUpdateRequest(BaseModel):
+    """Body for `PATCH /subcontractors/{id}`.
+
+    Every field optional and omission-sensitive: `None` is a legitimate
+    value for `trade`/`contact_email` (clearing them), so "not sent" and
+    "sent as null" have to be distinguishable. The router uses
+    `model_dump(exclude_unset=True)` to tell them apart — a plain
+    `if value is not None` check would make clearing a field impossible.
+
+    `company_id` is absent for the same reason it is absent from
+    `SubcontractorCreateRequest`: the server owns the tenant scoping column.
+    """
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    trade: str | None = Field(None, max_length=100)
+    contact_email: EmailStr | None = None

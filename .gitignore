@@ -21,6 +21,9 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *.egg-info/
+# setuptools' scratch dir — `pip install .` / `pip wheel .` (the non-editable
+# path the production image builds through) leaves it behind.
+build/
 .venv/
 .pytest_cache/
 .coverage

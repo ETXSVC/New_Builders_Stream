@@ -1,7 +1,7 @@
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, grant_client_access, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -187,6 +187,9 @@ async def test_list_invoices_as_client_shows_non_draft_only(client):
     admin = await _register_and_login(client, "Invoice Co 6", "invoice-client-list@example.test")
     client_role = await _invite_and_login_as(client, admin, "client", "client-list@example.test")
     project = await _create_project(client, admin["headers"])
+    await grant_client_access(
+        client, admin, project_id=project["id"], email="client-list@example.test"
+    )
     await client.post(
         f"/projects/{project['id']}/invoices", json={"amount": "100.00"}, headers=admin["headers"]
     )
@@ -207,6 +210,9 @@ async def test_get_invoice_as_client_404s_on_draft(client):
     admin = await _register_and_login(client, "Invoice Co 7", "invoice-client-detail@example.test")
     client_role = await _invite_and_login_as(client, admin, "client", "client-detail@example.test")
     project = await _create_project(client, admin["headers"])
+    await grant_client_access(
+        client, admin, project_id=project["id"], email="client-detail@example.test"
+    )
     create = await client.post(
         f"/projects/{project['id']}/invoices", json={"amount": "150.00"}, headers=admin["headers"]
     )

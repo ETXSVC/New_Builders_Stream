@@ -32,3 +32,10 @@ class InvitationResponse(BaseModel):
 class InvitationAcceptRequest(BaseModel):
     full_name: str = Field(..., min_length=2, max_length=255)
     password: str = Field(..., min_length=8)
+
+
+class InvitationListResponse(BaseModel):
+    """Not paginated: outstanding invitations are bounded by how many people
+    a company is onboarding at once, and they expire in 7 days."""
+
+    items: list[InvitationResponse]

@@ -78,6 +78,10 @@ services:
       # variables `postgres:`'s own `environment:` block uses, rather than
       # duplicating literal credentials here.
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Same Docker-network-hostname reason as the line above. The
+      # `scanner` role (migration 0020) is what the cross-tenant sweeps
+      # actually connect as; it sees every tenant but owns nothing.
+      SCANNER_DATABASE_URL: postgresql+asyncpg://scanner:${SCANNER_DB_PASSWORD:-scanner_password}@postgres:5432/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,7 +112,7 @@ services:
     # overdue-flagging messages and every Integrations sync message were
     # being silently DLQ'd in the running stack (confirmed via worker logs).
     # Every module in app/tasks/ that defines an actor must be listed here.
-    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email
+    command: dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email app.tasks.send_signature_request_email app.tasks.send_compliance_expiry_email
 
   scheduler:
     # Task 3.9: fires `check_compliance_expiry.send()` (Task 3.8) once daily

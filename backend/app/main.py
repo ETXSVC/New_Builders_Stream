@@ -49,6 +49,22 @@ app = FastAPI(
     redoc_url=None if _in_production else "/redoc",
     openapi_url=None if _in_production else "/openapi.json",
 )
+# NO CORSMiddleware, deliberately — do not "fix" this by adding one.
+#
+# The browser never talks to this API. `frontend/lib/api/client.ts` is
+# `server-only`, and every browser request goes to a Next.js Route Handler
+# on the frontend's own origin, which then makes a server-to-server call
+# here (the BFF pattern). Server-to-server requests are not subject to the
+# same-origin policy, so there is no preflight to answer and nothing for
+# CORS to permit.
+#
+# Adding a permissive CORS policy — `allow_origins=["*"]` especially, which
+# is the usual reflex when a "CORS error" appears — would not fix any real
+# problem and WOULD turn this into an API any origin can call directly with
+# a stolen bearer token, bypassing the BFF boundary entirely. If a genuine
+# cross-origin consumer ever exists (a native mobile app, a partner
+# integration), it needs an explicit allowlist and its own review, not a
+# wildcard.
 app.add_middleware(TenantMiddleware)
 app.include_router(auth.router)
 # branding.router is registered BEFORE companies.router deliberately:

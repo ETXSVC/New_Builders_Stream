@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.models.user import VALID_ROLES
 
 
 class CompanyResponse(BaseModel):
@@ -34,3 +36,20 @@ class CompanyMemberListResponse(BaseModel):
     included_seats model), far below any size needing cursors."""
 
     items: list[CompanyMemberResponse]
+
+
+class CompanyRenameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class MemberRoleUpdateRequest(BaseModel):
+    """Change an existing member's role within the caller's active tenant."""
+
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v: str) -> str:
+        if v not in VALID_ROLES:
+            raise ValueError(f"role must be one of {VALID_ROLES}")
+        return v

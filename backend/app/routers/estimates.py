@@ -25,7 +25,14 @@ from app.core.events import publish
 from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
-from app.models import CostCatalogItem, Estimate, EstimateLineItem, Lead, MarkupProfile, Project
+from app.models import (
+    CostCatalogItem,
+    Estimate,
+    EstimateLineItem,
+    Lead,
+    MarkupProfile,
+    Project,
+)
 from app.models.estimate import VALID_STATUSES
 from app.schemas.estimate import (
     CategorySubtotal,
@@ -40,9 +47,16 @@ from app.schemas.estimate import (
 from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
+from app.services.client_access import client_emails_for_estimate, company_display_name
+from app.services.client_scope import (
+    client_estimate_scope,
+    require_client_access_to_estimate,
+    require_signer_is_caller,
+)
 from app.services.esignature import capture_esignature
 from app.services.estimate_calculation import calculate_estimate
 from app.tasks.estimate_pdf import generate_estimate_pdf
+from app.tasks.send_signature_request_email import send_signature_request_email
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -97,18 +111,27 @@ _LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE = ("estimating", "qualified", "won")
 
 
 async def _get_estimate_or_404(current: CurrentUser, estimate_id: uuid.UUID) -> Estimate:
-    """Shared existence/tenant check, same pattern as `_get_lead_or_404`/
-    `_get_project_or_404` — RLS makes another tenant's estimate invisible,
-    so this 404 covers both "doesn't exist" and "exists but isn't yours"
-    identically (Inherited Invariant #8), intentionally indistinguishable
-    from outside. Deliberately does NOT apply the client's `status='sent'`
-    scoping that `list_estimates` applies below — Task 2.10's own spec
-    frames that scoping around the list-and-act-on-it flow specifically,
-    and doesn't ask for the same restriction on direct-by-id access."""
+    """Shared existence/tenant/membership check, same pattern as
+    `_get_lead_or_404`/`_get_project_or_404` — RLS makes another tenant's
+    estimate invisible, so this 404 covers both "doesn't exist" and "exists
+    but isn't yours" identically (Inherited Invariant #8), intentionally
+    indistinguishable from outside.
+
+    For a `client` caller it additionally enforces project/lead membership
+    (migration 0019). This function is the chokepoint every by-id estimate
+    route goes through, including `approve`/`reject` — putting the check
+    here rather than in each route is what makes "a client can only act on
+    their own contract" true by construction instead of by remembering.
+
+    It still does NOT apply `list_estimates`'s `status='sent'` narrowing:
+    that one is about which estimates are worth *listing* to a client, and
+    a client who holds a legitimate estimate id should be able to re-read
+    it after approving (status is `approved` by then)."""
     result = await current.session.execute(select(Estimate).where(Estimate.id == estimate_id))
     estimate = result.scalar_one_or_none()
     if estimate is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Estimate not found")
+    await require_client_access_to_estimate(current, estimate)
     return estimate
 
 
@@ -325,13 +348,16 @@ async def list_estimates(
     # tenant, same pattern list_leads/list_projects rely on.
     query = select(Estimate)
 
-    # Client's "own estimate" scoping (design decision #3): a client only
-    # ever sees `sent`-status estimates — the ones actually awaiting their
-    # approve/reject action — never drafts still being built internally.
-    # Same `if current.role == X: query = query.where(...)` shape
-    # list_projects's field_crew scoping uses.
+    # Client scoping, in two independent halves — both are required:
+    #
+    #   status: a client only ever sees `sent` estimates, never drafts
+    #     still being built internally (design decision #3).
+    #   identity: ...and only estimates on a project or lead they are
+    #     actually a member of (migration 0019). Status alone was the
+    #     original bug — it made every client of the company a reader of
+    #     every other client's pricing and margins.
     if current.role == "client":
-        query = query.where(Estimate.status == "sent")
+        query = query.where(Estimate.status == "sent", client_estimate_scope(current))
 
     if status_filter is not None:
         query = query.where(Estimate.status == status_filter)
@@ -765,6 +791,21 @@ async def send_estimate_for_signature(
     # No explicit commit here — get_current_user (Inherited Invariant #4)
     # commits current.session once, after this handler returns.
 
+    # Tell the client there is something to sign. Until migration 0019 there
+    # was no way to say WHICH client an estimate belonged to, so this route
+    # flipped a status column and notified nobody despite its name.
+    #
+    # One message per recipient, not one addressed to several: these go to a
+    # company's customers, who should not see each other's addresses.
+    document_url = f"{settings.frontend_base_url}/estimates/{estimate.id}"
+    for recipient in await client_emails_for_estimate(current, estimate):
+        send_signature_request_email.send(
+            to_email=recipient,
+            company_name=await company_display_name(current, estimate.company_id),
+            document_type="estimate",
+            document_url=document_url,
+        )
+
     return EstimateResponse.model_validate(estimate)
 
 
@@ -826,6 +867,7 @@ async def approve_estimate(
     """
     estimate = await _get_estimate_or_404(current, estimate_id)
     _require_estimate_sent(estimate)
+    require_signer_is_caller(current, signer_email)
 
     signature_artifact_bytes = await read_upload_limited(
         signature_artifact, settings.max_signature_upload_bytes
@@ -843,6 +885,7 @@ async def approve_estimate(
         company_id=estimate.company_id,
         signer_name=signer_name,
         signer_email=signer_email,
+        signed_by_user_id=current.user.id,
         ip_address=ip_address,
         document_type="estimate",
         signature_artifact_bytes=signature_artifact_bytes,

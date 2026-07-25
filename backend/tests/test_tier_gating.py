@@ -438,7 +438,7 @@ async def test_pro_company_estimate_approval_drafts_no_deposit_invoice(client):
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
 
     estimate_id, _total = await _create_and_approve_estimate(
-        client, admin["headers"], client_role["headers"],
+        client, admin, client_role,
         project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
     )
 
@@ -483,7 +483,7 @@ async def test_pro_company_project_completion_drafts_no_final_invoice(client):
     catalog_item_id = await _create_catalog_item(client, admin["headers"])
 
     await _create_and_approve_estimate(
-        client, admin["headers"], client_role["headers"],
+        client, admin, client_role,
         project["id"], markup_profile_id, catalog_item_id, quantity="8.00",
     )
 
@@ -697,7 +697,10 @@ def test_tier_gating_classified_route_count_per_module_is_pinned():
     assert counts == {
         "child_branches": 1,
         "estimation": 21,
-        "compliance": 4,
+        # 5 since PATCH /subcontractors/{id} was added: a subcontractor was
+        # create-and-read-only, so a typo'd contact_email — the address
+        # compliance-expiry notices are sent to — could never be corrected.
+        "compliance": 5,
         "accounting": 8,
     }, (
         f"classified mutating-route count per tier-gated module changed: {counts!r}. "

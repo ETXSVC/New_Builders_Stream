@@ -26,7 +26,7 @@ from decimal import Decimal
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, grant_client_access
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
@@ -64,7 +64,11 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `email` because migration 0019 binds the signature to the caller.
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "email": email,
+    }
 
 
 def _project_payload(**overrides):
@@ -121,18 +125,23 @@ async def _create_catalog_item(client, headers, **overrides):
 
 async def _approve_estimate(
     client,
-    headers,
+    actor,
     estimate_id,
     *,
     signer_name="Jane Client",
-    signer_email="jane-client@example.test",
+    signer_email=None,
     content=b"fake-signature-bytes",
 ):
+    """`actor` is the whole login dict: migration 0019 requires
+    `signer_email` to be the signing account's own address."""
     return await client.post(
         f"/estimates/{estimate_id}/approve",
-        data={"signer_name": signer_name, "signer_email": signer_email},
+        data={
+            "signer_name": signer_name,
+            "signer_email": signer_email if signer_email is not None else actor["email"],
+        },
         files={"signature_artifact": ("signature.png", content, "image/png")},
-        headers=headers,
+        headers=actor["headers"],
     )
 
 
@@ -187,6 +196,9 @@ async def test_approved_estimate_totals_and_line_items_are_immune_to_later_catal
         client, admin, "client", "snaphist-client@acme.test"
     )
     project = await _create_project(client, admin["headers"])
+    await grant_client_access(
+        client, admin, project_id=project["id"], email="snaphist-client@acme.test"
+    )
     markup = await _create_markup_profile(
         client, admin["headers"], overhead_pct="10.00", profit_pct="15.00"
     )
@@ -227,7 +239,7 @@ async def test_approved_estimate_totals_and_line_items_are_immune_to_later_catal
     )
     assert sent_response.status_code == 200, sent_response.text
 
-    approve_response = await _approve_estimate(client, client_role["headers"], estimate_id)
+    approve_response = await _approve_estimate(client, client_role, estimate_id)
     assert approve_response.status_code == 200, approve_response.text
     approved_body = approve_response.json()
     assert approved_body["is_snapshotted"] is True

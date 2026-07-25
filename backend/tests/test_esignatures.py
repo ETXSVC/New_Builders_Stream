@@ -67,7 +67,16 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `user_id` because migration 0019's tests need to capture a signature
+    # AS a specific client and then assert who can read it back.
+    members = await client.get("/companies/members", headers=admin["headers"])
+    assert members.status_code == 200, members.text
+    user_id = next(m["user_id"] for m in members.json()["items"] if m["email"] == email)
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "user_id": user_id,
+        "email": email,
+    }
 
 
 @asynccontextmanager
@@ -96,6 +105,10 @@ async def _capture(company_id, user_id, **overrides):
         "company_id": company_id,
         "signer_name": "Jane Client",
         "signer_email": "jane@client.test",
+        # The account that signed (migration 0019). Here it's the same user
+        # the session is scoped to, which is what the real approve routes
+        # pass — `current.user.id`.
+        "signed_by_user_id": user_id,
         "ip_address": "203.0.113.42",
         "document_type": "estimate",
         "signature_artifact_bytes": b"fake-png-bytes",
@@ -283,11 +296,59 @@ async def test_get_esignature_allowed_for_read_roles(client):
 
     pm = await _invite_and_login_as(client, admin, "project_manager", "esig-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "esig-acct@acme.test")
-    client_role = await _invite_and_login_as(client, admin, "client", "esig-client@acme.test")
 
-    for actor in (admin, pm, accountant, client_role):
+    # Staff roles keep blanket, RLS-backed company-wide read. `client` is
+    # deliberately NOT in this list any more — see the two tests below.
+    for actor in (admin, pm, accountant):
         response = await client.get(f"/esignatures/{esignature.id}", headers=actor["headers"])
         assert response.status_code == 200, response.text
+
+
+async def test_client_can_read_only_their_own_signature(client):
+    """The finding this reverses: `client` used to get blanket company-wide
+    read here, so every customer of a company could pull up every other
+    customer's executed contract. Migration 0019's `signed_by_user_id`
+    makes "mine" expressible, and this asserts both halves of it."""
+    admin = await _register_and_login(client, "Acme Construction", "esig-own-admin@acme.test")
+    company_id = uuid.UUID(admin["company_id"])
+
+    signer = await _invite_and_login_as(client, admin, "client", "esig-signer@acme.test")
+    other = await _invite_and_login_as(client, admin, "client", "esig-other@acme.test")
+
+    esignature = await _capture(company_id, uuid.UUID(signer["user_id"]))
+
+    mine = await client.get(f"/esignatures/{esignature.id}", headers=signer["headers"])
+    assert mine.status_code == 200, mine.text
+    assert mine.json()["signed_by_user_id"] == signer["user_id"]
+
+    theirs = await client.get(f"/esignatures/{esignature.id}", headers=other["headers"])
+    assert theirs.status_code == 404, theirs.text
+
+
+async def test_client_cannot_read_a_pre_0019_signature_with_no_signer_account(client):
+    """Rows captured before `signed_by_user_id` existed carry NULL, and are
+    invisible to every client rather than visible to all of them —
+    deliberate, since those are precisely the records whose attribution was
+    never verified. Staff can still read them."""
+    admin = await _register_and_login(client, "Acme Construction", "esig-legacy-admin@acme.test")
+    company_id = uuid.UUID(admin["company_id"])
+    user_id = uuid.UUID(admin["user_id"])
+
+    esignature = await _capture(company_id, user_id)
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "UPDATE esignatures SET signed_by_user_id = NULL WHERE id = $1", esignature.id
+        )
+    finally:
+        await conn.close()
+
+    client_role = await _invite_and_login_as(client, admin, "client", "esig-legacy@acme.test")
+    response = await client.get(f"/esignatures/{esignature.id}", headers=client_role["headers"])
+    assert response.status_code == 404, response.text
+
+    staff = await client.get(f"/esignatures/{esignature.id}", headers=admin["headers"])
+    assert staff.status_code == 200, staff.text
 
 
 async def test_get_esignature_blocked_for_field_crew(client):

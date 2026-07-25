@@ -60,6 +60,19 @@ class Esignature(Base, UUIDPKMixin):
     )
     signer_name: Mapped[str] = mapped_column(String(255), nullable=False)
     signer_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The authenticated account that produced this signature (migration
+    # 0019). `signer_name`/`signer_email` are what the signer typed; this is
+    # who they actually were. Both are kept: the typed pair is the
+    # contract's own signature block (people sign in varied forms), this is
+    # the non-repudiable link back to a real login — the property that
+    # makes the ESIGN record evidence rather than an assertion.
+    #
+    # Nullable only because rows signed before 0019 have no account to
+    # point at. Every signature captured since is written with it; see
+    # `app/services/esignature.py`.
+    signed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
     signed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # Postgres-native INET, not a String column — the schema doc specifies
     # `ip_address INET NOT NULL` explicitly (Section 6), and this is the

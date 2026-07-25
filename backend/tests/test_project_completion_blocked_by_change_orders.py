@@ -26,6 +26,9 @@ test_change_orders.py, which itself copied `_advance_project_to`'s shape
 from test_project_state_machine.py's `_advance_to`.
 """
 
+from tests.conftest import grant_client_access
+
+
 async def _register_and_login(client, company_name, email):
     register = await client.post(
         "/auth/register",
@@ -59,7 +62,11 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `email` because migration 0019 binds the signature to the caller.
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "email": email,
+    }
 
 
 def _project_payload(**overrides):
@@ -120,18 +127,23 @@ async def _create_change_order(client, actor, project_id, **overrides):
 
 async def _approve_change_order(
     client,
-    headers,
+    actor,
     change_order_id,
     *,
     signer_name="Jane Client",
-    signer_email="jane-client@example.test",
+    signer_email=None,
     content=b"fake-signature-bytes",
 ):
+    """`actor` is the whole login dict — migration 0019 requires
+    `signer_email` to be the signing account's own address."""
     response = await client.post(
         f"/change-orders/{change_order_id}/approve",
-        data={"signer_name": signer_name, "signer_email": signer_email},
+        data={
+            "signer_name": signer_name,
+            "signer_email": signer_email if signer_email is not None else actor["email"],
+        },
         files={"signature_artifact": ("signature.png", content, "image/png")},
-        headers=headers,
+        headers=actor["headers"],
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -226,8 +238,11 @@ async def test_project_with_only_approved_change_orders_can_complete(client):
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-approved-only-c@acme.test"
+    )
     change_order = await _create_change_order(client, admin, project_id)
-    await _approve_change_order(client, client_role["headers"], change_order["id"])
+    await _approve_change_order(client, client_role, change_order["id"])
 
     response = await _complete_project(client, admin, project_id)
     assert response.status_code == 200, response.text
@@ -253,6 +268,9 @@ async def test_project_with_only_rejected_change_orders_can_complete_from_active
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-rejected-only-c@acme.test"
+    )
     change_order = await _create_change_order(client, admin, project_id)
     await _reject_change_order(client, client_role["headers"], change_order["id"])
 
@@ -270,6 +288,9 @@ async def test_project_with_only_rejected_change_orders_can_complete_from_suspen
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-rejected-only-susp-c@acme.test"
+    )
     change_order = await _create_change_order(client, admin, project_id)
     await _reject_change_order(client, client_role["headers"], change_order["id"])
     await _advance_project_to(client, admin, project_id, ["suspended"])
@@ -289,9 +310,12 @@ async def test_project_with_mix_of_approved_and_rejected_change_orders_can_compl
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-mix-noblock-c@acme.test"
+    )
 
     approved_co = await _create_change_order(client, admin, project_id, description="Approved one")
-    await _approve_change_order(client, client_role["headers"], approved_co["id"])
+    await _approve_change_order(client, client_role, approved_co["id"])
     rejected_co = await _create_change_order(client, admin, project_id, description="Rejected one")
     await _reject_change_order(client, client_role["headers"], rejected_co["id"])
 
@@ -314,9 +338,12 @@ async def test_project_with_pending_among_approved_and_rejected_change_orders_is
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-mix-blocked-c@acme.test"
+    )
 
     approved_co = await _create_change_order(client, admin, project_id, description="Approved one")
-    await _approve_change_order(client, client_role["headers"], approved_co["id"])
+    await _approve_change_order(client, client_role, approved_co["id"])
     rejected_co = await _create_change_order(client, admin, project_id, description="Rejected one")
     await _reject_change_order(client, client_role["headers"], rejected_co["id"])
     pending_co = await _create_change_order(client, admin, project_id, description="Still pending")
@@ -344,9 +371,12 @@ async def test_pending_count_in_error_message_is_accurate_for_multiple_pending(c
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
+    await grant_client_access(
+        client, admin, project_id=project_id, email="coblock-count-accurate-c@acme.test"
+    )
 
     approved_co = await _create_change_order(client, admin, project_id, description="Approved one")
-    await _approve_change_order(client, client_role["headers"], approved_co["id"])
+    await _approve_change_order(client, client_role, approved_co["id"])
     rejected_co = await _create_change_order(client, admin, project_id, description="Rejected one")
     await _reject_change_order(client, client_role["headers"], rejected_co["id"])
     for i in range(3):

@@ -33,6 +33,29 @@ class Settings(BaseSettings):
     database_url: str
     migrations_database_url: str
     test_database_url: str
+    # Connection string for the `scanner` role (migration 0020): LOGIN +
+    # BYPASSRLS, granted DML only and owning nothing. Used by the three
+    # genuinely cross-tenant daily sweeps in app/tasks/, which previously
+    # connected as the table OWNER — a role that can also drop tables and
+    # rewrite RLS policies.
+    #
+    # Optional, and it falls back to `migrations_database_url` when unset so
+    # an existing deployment keeps working through the upgrade rather than
+    # failing to boot its worker. `scripts/check_worker_role.py`-style
+    # verification is the runbook's job; the fallback is a migration aid,
+    # not the intended end state.
+    scanner_database_url: str | None = None
+    # Connection-pool sizing for the runtime engine (app/db.py). Explicit
+    # rather than SQLAlchemy's defaults (5 + 10) because a transaction is
+    # held open for the whole request here, so the pool size IS the
+    # concurrent-request ceiling — the defaults cap the process at ~15
+    # in-flight requests, which is easy to hit and hard to diagnose from
+    # the outside (requests simply stall). Sized against Postgres's own
+    # default max_connections of 100, leaving room for the worker,
+    # scheduler and a human with psql.
+    db_pool_size: int = 20
+    db_max_overflow: int = 10
+    db_pool_timeout_seconds: int = 30
     jwt_secret: str
     # docs/07 Section 1: access tokens are short-lived; refresh tokens
     # (Task 6.2+) carry the long-lived session. 15 is the spec's number.
@@ -89,6 +112,36 @@ class Settings(BaseSettings):
     register_rate_limit_enabled: bool = True
     register_rate_limit_max_attempts: int = 5
     register_rate_limit_window_seconds: int = 3600
+    # Login throttling. `/auth/register` was rate limited from the start;
+    # `/auth/login` was not, which left unlimited password guessing against
+    # a known address — the more valuable target of the two, since a hit
+    # yields a session rather than merely confirming an address exists.
+    #
+    # Two independent counters, both of which must pass:
+    #
+    #   per-IP    catches one host spraying many accounts. Generous, because
+    #             a shared office NAT legitimately produces many logins from
+    #             one address.
+    #   per-email catches many hosts (a botnet, a proxy pool) grinding ONE
+    #             account, which the per-IP counter alone cannot see at all.
+    #             Tighter, because one human failing 10 times in 15 minutes
+    #             is already an outlier.
+    #
+    # The email key is hashed at the call site so Redis never holds a
+    # plaintext address (`app/routers/auth.py`).
+    login_rate_limit_enabled: bool = True
+    login_rate_limit_ip_max_attempts: int = 50
+    login_rate_limit_ip_window_seconds: int = 900
+    login_rate_limit_email_max_attempts: int = 10
+    login_rate_limit_email_window_seconds: int = 900
+    # TOTP verification, keyed per user id. A 6-digit code is a 1-in-a-
+    # million guess, and the replay guard only blocks REUSE of a code, not
+    # a fresh guess — so without this an attacker holding a valid password
+    # could grind the whole code space. 5 attempts per 15 minutes makes
+    # exhausting it take longer than the universe has been around, while
+    # still forgiving a clock-skewed authenticator app a few tries.
+    totp_rate_limit_max_attempts: int = 5
+    totp_rate_limit_window_seconds: int = 900
     # Verifies POST /webhooks/stripe signatures (today via FakeStripeClient
     # — see app/services/billing.py). Config-ized so a deployment can use a
     # non-public value even while the fake client stays; the production

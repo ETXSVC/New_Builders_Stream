@@ -43,10 +43,7 @@ each verified to fail without its fix.
 
 ### High
 
-| # | Area | Finding | Where |
-|---|---|---|---|
-| H1 | Tests/CI | **Dockerfiles are never built in CI.** `deploy-config` validates compose syntax and script parsing only; a broken Dockerfile, missing runtime dep, or failing `pip install` ships undetected. Add `docker build --target production` (no push) for both images. | `.github/workflows/backend-ci.yml` |
-| H2 | Tests | **No RLS-policy coverage test.** `test_company_id_index_coverage.py` catches a new tenant table missing an *index*, but a new table with **no RLS policy at all** — the more dangerous omission — passes silently. Mirror that test against `pg_policies`/`relrowsecurity`. | `backend/tests/` |
+Both High findings were **closed on 2026-07-25** — see §6.
 
 ### Medium
 
@@ -94,8 +91,8 @@ each verified to fail without its fix.
 
 ## 4. Recommended order of work
 
-1. **H1** — build the Docker images in CI. The largest gap between what CI verifies and what production runs.
-2. **H2** — RLS-policy coverage test. Cheap, and it guards the system's core invariant against the most dangerous omission.
+~~1. **H1**~~ and ~~2. **H2**~~ — both done, §6.
+
 3. **M1** — quantize the three remaining monetary writes (small, mechanical, correctness-affecting).
 4. **M5** — surface the silent compliance failures (a user-visible dead end today).
 5. **M10** — reconcile the docs (test counts, the missing event, `/health` vs `/ready`); then **M2/M3** when touching those modules.
@@ -108,10 +105,260 @@ each verified to fail without its fix.
 The sandbox cannot run Docker builds, so these were reviewed but never
 executed. Check them on the first deploy, in this order:
 
-1. `docker compose -f docker-compose.prod.yml exec frontend printenv NEXT_PUBLIC_API_URL`, then grep the built server bundle for `localhost:8000` — confirms the URL wasn't inlined at build time.
-2. Split topology only: `stat -c '%u' $DOCUMENTS_DIR` must be `1000`; then upload a document and generate a PDF.
+1. ~~Confirm `NEXT_PUBLIC_API_URL` wasn't inlined at build time.~~ **Now automated** — `frontend-ci.yml`'s `docker-build` job boots the image against a sidecar and fails if the BFF doesn't dial the runtime value (§6).
+2. Split topology only: `stat -c '%u' $DOCUMENTS_DIR` must be `1000`; then upload a document and generate a PDF. (`docker-build` now proves the *image* runs as uid 1000 with a writable `/data/documents`; the host bind's ownership still has to be checked on the box.)
 3. Dry-run `restore.sh` with an **absolute** dump path against a scratch stack; confirm the documents tarball lands in the real volume.
 4. Run `restore-drill.sh` **now**, not next quarter.
 5. Boot from a `.env` built strictly from the runbook's §2 table (catches any other missing required field).
 6. `caddy validate` in both Caddy containers, then re-run smoke-test item 6 (ESIGN records the real client IP).
 7. Force a failing migration on a scratch box and confirm what keeps serving.
+
+---
+
+## 6. Follow-up — 2026-07-25: both High findings closed
+
+### H1 — Docker images are now built and exercised in CI
+
+Two new `docker-build` jobs, one per workflow, so each image is owned by
+the workflow that owns its code:
+
+- **`backend-ci.yml`** builds the `production` target, then *runs* it:
+  imports `app.main`, loads the PDF template out of the installed package,
+  imports the four runtimes the deploy launches from this one image
+  (uvicorn / dramatiq / apscheduler / alembic), imports every actor module
+  named in `docker-compose.prod.yml`'s worker command — **read out of the
+  compose file**, so the list can't drift from what the worker actually
+  starts — asserts the container runs as uid 1000 with a writable
+  `/data/documents`, and finally builds the `dev` target the dev compose
+  stack uses.
+- **`frontend-ci.yml`** builds the `production` target and boots it on a
+  throwaway network beside a `python -m http.server` sidecar standing in
+  for the backend. `/login` and `/` must both return 200 (that is what
+  proves the hand-assembled standalone layout — `server.js` +
+  `.next/static` + `public`, three separate `COPY`s — is complete), then a
+  POST to the BFF's login route must show up in the **sidecar's** log. That
+  last assertion is the one that matters: it proves `NEXT_PUBLIC_API_URL`
+  is read at run time, not inlined at build time, which was §5's first
+  deploy-day check and is now automated.
+
+**This immediately found a real, shipped defect.** `pip install .` — the
+non-editable install the `builder` stage runs — was silently dropping
+`app/templates/estimate_pdf.html.jinja` from site-packages, because
+setuptools' `include_package_data` default only picks up files a
+`MANIFEST.in` or VCS plugin declares, and this project has neither. Local
+dev and every CI job run an *editable* install, which imports straight from
+the source tree, so all 900+ tests passed against a package that, once
+built into an image, would raise `TemplateNotFound` on the first PDF-export
+job. Fixed with a `[tool.setuptools.package-data]` entry in
+`backend/pyproject.toml`; the smoke step loads the template from the
+installed package specifically so this cannot regress.
+
+Note the shape of that bug: **building the image would not have caught
+it.** `docker build --target production` succeeds either way. Only running
+the image catches it — which is why these jobs run the images rather than
+just building them.
+
+### H2 — RLS-policy coverage test
+
+`backend/tests/test_rls_policy_coverage.py`, the companion to
+`test_company_id_index_coverage.py`, asserts five properties against
+Postgres's own catalogs:
+
+1. every table with a `company_id` column has RLS **enabled** and at least
+   one policy;
+2. each has a `FOR ALL` policy whose USING *and* check expressions both
+   call `get_all_descendant_ids` / `get_root_company_id` — this is what
+   catches a policy that exists but reads `USING (true)`, which property 1
+   alone would happily pass;
+3. any *additional* permissive policy is on a reviewed allowlist (Postgres
+   ORs permissive policies, so each one can only widen access) — currently
+   `company_users.self_membership` and `invitations.invitation_probe`, each
+   documented in the file with why it can't be tenant-scoped;
+4. every table *without* a `company_id` column either has RLS enabled or is
+   on the `NON_TENANT_TABLES` allowlist (`users`, `refresh_tokens`,
+   `alembic_version`) — so a tenant table that models ownership some other
+   way can't hide from property 1;
+5. `companies` — the tree's root, which has no `company_id` column and
+   per-command rather than `FOR ALL` policies — is tenant-scoped on every
+   expression it defines, and does **not** have `FORCE ROW LEVEL SECURITY`
+   (which would make `get_all_descendant_ids` recurse into the policy that
+   calls it; migration 0001 records hitting exactly that).
+
+Plus a sixth: `app_user` has neither `BYPASSRLS` nor `SUPERUSER`, without
+which every policy above is decoration.
+
+All five defect cases were verified to fail the corresponding assertion
+before being reverted: a tenant table with no RLS, a `USING (true)` policy,
+an extra wide-open permissive policy, a tenant-ish table with no
+`company_id` column, and `ALTER ROLE app_user BYPASSRLS`.
+
+---
+
+## 7. Follow-up — 2026-07-25: the 2026-07-12 audit's open items
+
+A separate audit (`requirements-vs-implementation-comparison`, 2026-07-12
+vintage) was re-verified against current `main`. Roughly half its findings
+had already been closed by later work; the rest were real and are addressed
+here. One turned out to rest on a false premise — see §7.9.
+
+### 7.1 The `client` role was a tenant-wide reader (migration 0019)
+
+The most serious finding, and confirmed present. RLS is company-scoped, so
+every `test_*_tenant_isolation.py` file passed while this was open — the
+hole was *inside* one tenant. Client-facing routes narrowed by document
+**status** and never by identity, so a company with two customers showed
+each the other's pricing, margins, invoices and executed contracts, and
+`POST /estimates/{id}/approve` let either legally e-sign the other's
+contract.
+
+Root cause was schema-level: nothing said *which* client a Project,
+Estimate or Invoice belonged to. Fixed with `project_clients` /
+`lead_clients` membership tables rather than a denormalized FK per record —
+one row grants one user access to one job, two homeowners on one contract
+is a row rather than a schema change, and there is a single place to write
+the linkage (a `client_user_id` copied onto four models would re-open the
+`company_id`-stamping bug class already fixed seven times).
+
+The rule lives in `app/services/client_scope.py` and is applied at the
+by-id chokepoints, so `approve`/`reject` inherit it by construction. All
+404s, never 403, so a client cannot enumerate another's document ids.
+
+Turning it on broke **28 existing tests**, every one a place where a client
+acted on a job they had no relationship to;
+`test_get_esignature_allowed_for_read_roles` asserted the vulnerable
+behaviour outright and was rewritten.
+
+### 7.2 Signature attribution was unverified
+
+`signer_name`/`signer_email` were free-text form fields never compared to
+the caller, on a record whose entire purpose is legal evidence.
+`esignatures.signed_by_user_id` now records the account and `signer_email`
+must be the caller's own. `signer_name` stays free text deliberately —
+people sign in varied forms, and the FK carries the identity claim.
+
+Pre-0019 rows carry NULL and are invisible to every client rather than
+visible to all of them: those are precisely the records whose attribution
+was never verified.
+
+### 7.3 No rate limit on login or TOTP
+
+`/auth/register` was limited from the start; `/auth/login` was not. Two
+counters now, both of which must pass: per-IP (one host spraying many
+accounts) and per-email (a botnet grinding one account, invisible to
+per-IP). Checked *before* password verification, so a blocked attacker
+learns nothing and never reaches the Argon2 call. The email counter's Redis
+key is SHA-256 hashed — Redis keys surface in `MONITOR`/`KEYS`/slowlogs,
+and a per-address counter should not become a roster of every address that
+has attempted a login.
+
+TOTP is throttled per user id: the replay guard blocks *reuse* of a code,
+never a fresh guess across the 10⁶ space.
+
+### 7.4 Stripe webhook had no replay protection
+
+The fake signed a bare hex digest with **no timestamp**, which makes a
+replay window impossible to express — a captured body stayed valid forever
+on a public route that can move any tenant's subscription to `active`. Now
+implements Stripe's real `t=,v1=` format with the timestamp inside the
+signed string and a 300s tolerance, checked on the absolute difference so a
+far-future stamp is rejected too.
+
+### 7.5 All four background jobs ran as the table owner (migration 0020)
+
+Single-tenant `accounting_sync` moved to the RLS-constrained `app_user`,
+resolving its tenant through a narrow SECURITY DEFINER lookup. The three
+genuinely cross-tenant sweeps moved to a new `scanner` role: BYPASSRLS,
+DML grants, **owning nothing** — same reach, no ability to alter a policy
+or drop a table. `tests/test_worker_db_roles.py` pins it, including an AST
+sweep that fails if any future `app/` module reads
+`migrations_database_url`.
+
+### 7.6 `app_user`'s password was a literal in migration 0001
+
+Both roles' passwords now come from the environment at `alembic upgrade
+head`, so rotation happens during a normal deploy and the runbook's manual
+`ALTER ROLE` step is gone.
+
+### 7.7 `companies.parent_id` was mutable (migration 0021)
+
+`tenant_update`'s `WITH CHECK` needs its `parent_id IS NULL` branch for
+INSERT, but on UPDATE that branch permits detaching a child into a new
+root — leaving its parent's descendant tree *and* arriving with no
+subscription row, which both `block_if_read_only` and `tier_allows` treat
+as fail-open.
+
+Fixed with a trigger, not a tighter policy: dropping the `IS NULL` branch
+breaks every root company (a root's `parent_id` IS NULL, so
+`NULL IN (SELECT ...)` is NULL and renaming becomes impossible). The rule
+is "parent_id may not *change*", which needs the old row — a `WITH CHECK`
+cannot see it, a `BEFORE UPDATE` trigger can. It also binds the table owner
+and `scanner`, not just `app_user`.
+
+### 7.8 Missing management API surface
+
+Member role change and removal, company rename, invitation list and revoke,
+subcontractor update. Offboarding an employee was previously impossible
+through the API. Two guards worth noting: a company can never be left
+without an admin (every administrative route is `require_role("admin")`, so
+zero admins is a permanent lockout), and revoking an *accepted* invitation
+is a 409 rather than a no-op, since deleting the row would not un-create
+the membership it produced.
+
+### 7.9 "No compliance-document delete" — not a gap
+
+Migration 0009 explicitly `REVOKE UPDATE, DELETE ON compliance_documents
+FROM app_user`, documented as "immutability by omission" matching the
+`esignatures` precedent: a certificate is evidence, immutable from the
+instant it is written. A delete route was written, failed with `permission
+denied`, and was **removed** rather than re-granting DELETE in a migration
+— that would deliberately undo a compliance guarantee. A test now pins
+`app_user`'s grants to `{SELECT, INSERT}`.
+
+The real complaint behind the finding (a mistaken upload keeps generating
+expiry alerts) wants a supersede/void concept with its own audit trail —
+a retention-policy decision, not a missing endpoint.
+
+### 7.10 Nothing sent email except invitations
+
+`send-for-signature` flipped a status column and notified nobody, and
+compliance-expiry wrote rows visible only on the dashboard. Both now
+enqueue actors. Worth noting *why* the first was hard before: there was no
+recipient to resolve until migration 0019 made "which client owns this
+document" answerable — one schema gap producing both a security hole and a
+missing notification.
+
+The expiry sweep enqueues **after** its commit, so a scan that fails
+partway cannot tell a subcontractor about a row that was rolled back.
+
+### 7.11 Process gaps
+
+`requirements.lock` (99 pinned packages), dependabot across pip/npm/actions,
+`pip-audit` in CI (non-blocking — an advisory published overnight is not a
+reason an unrelated PR cannot merge), coverage reported without a
+`fail_under` (a floor measures execution, not assertion), and a migration
+**downgrade** test that walks the chain to `base` and back.
+
+That last one found a real bug on its first run: migration 0020's own
+downgrade tried to `DROP ROLE scanner`, but roles are cluster-level and
+another database still granted it. Mirroring each GRANT with a REVOKE was
+also insufficient — the dependencies include every per-table ACL entry and
+the `ALTER DEFAULT PRIVILEGES` entry. It now uses `DROP OWNED BY` and
+leaves the role, matching migration 0001's treatment of `app_user`.
+
+### 7.12 Open, deliberately
+
+- **`pip-audit` reports 21 advisories across 4 packages.** The two that
+  matter are `starlette` 0.46.2 (9 advisories; fixes require a **FastAPI
+  major bump**, since FastAPI is pinned `>=0.115,<0.116`) and
+  `cryptography` 43.0.3 (5 advisories; fixes in 44.0.1+, pinned `<44.0`).
+  Both need a deliberate dependency upgrade with its own review and CI run,
+  not a line buried in an audit-remediation commit. Dependabot will now
+  propose them.
+- **`SCANNER_DATABASE_URL` falls back to the owner URL when unset**, so an
+  existing deployment survives the upgrade rather than failing to start its
+  worker. An operator who ignores the new variables keeps running the
+  sweeps as the table owner. The compose files set it; the runbook
+  documents it.
+- **Invitation ids are still the accept credential** (opaque tokens were an
+  explicitly excluded item in an earlier scope decision). Revocation now
+  exists, which was the sharper half of the problem.

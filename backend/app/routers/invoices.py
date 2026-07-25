@@ -29,6 +29,7 @@ from app.schemas.invoice import (
     InvoiceSendRequest,
 )
 from app.services.audit import write_audit_log
+from app.services.client_scope import require_client_access_to_project
 from app.services.invoicing import next_invoice_number
 
 router = APIRouter(tags=["invoices"])
@@ -42,6 +43,12 @@ async def _get_invoice_or_404(current: CurrentUser, invoice_id: uuid.UUID) -> In
     invoice = result.scalar_one_or_none()
     if invoice is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
+    # Membership check for `client` callers (migration 0019); a no-op for
+    # every staff role. Placed in the shared helper so every by-id invoice
+    # route inherits it — the write routes are already closed to clients by
+    # require_role, but a future client-facing route gets the scoping for
+    # free rather than by remembering.
+    await require_client_access_to_project(current, invoice.project_id, entity="Invoice")
     return invoice
 
 
@@ -309,9 +316,15 @@ async def list_invoices(
     cursor: str | None = Query(None),
 ) -> InvoiceListResponse:
     project = await _get_project_or_404(current, project_id)
+    await require_client_access_to_project(current, project.id)
 
     query = select(Invoice).where(Invoice.project_id == project.id)
     if current.role == "client":
+        # Status was the only filter here, so every client of the company
+        # could read every other client's billing by walking project ids.
+        # The membership guard above is what actually closes that; this
+        # line remains because a client should still not see drafts on
+        # their own project.
         query = query.where(Invoice.status != "draft")
 
     rows, next_cursor = await paginate(

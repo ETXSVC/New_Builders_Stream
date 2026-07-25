@@ -88,6 +88,11 @@ jobs:
           # The e2e suite registers a fresh company per spec file from one
           # IP — more than the per-IP register rate limit (5/hour) allows.
           REGISTER_RATE_LIMIT_ENABLED: "false"
+          # Same reasoning for the login limiter: every spec logs in several
+          # times (and the estimation spec logs in as three different users)
+          # from the single runner IP, so the per-IP counter would start
+          # failing runs on suite size rather than on anything real.
+          LOGIN_RATE_LIMIT_ENABLED: "false"
         run: |
           mkdir -p /tmp/e2e-documents
           # A real Fernet key (the integrations OAuth callback encrypts
@@ -98,7 +103,7 @@ jobs:
           # The Dramatiq worker, same module list as docker-compose.yml's
           # `worker` service — without it, background jobs (the estimation
           # spec's PDF export) enqueue but never run.
-          nohup dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email --processes 1 --threads 2 > /tmp/worker.log 2>&1 &
+          nohup dramatiq app.tasks.estimate_pdf app.tasks.compliance_expiry app.tasks.seat_usage app.tasks.flag_overdue_financial_records app.tasks.accounting_sync app.tasks.send_invitation_email app.tasks.send_signature_request_email app.tasks.send_compliance_expiry_email --processes 1 --threads 2 > /tmp/worker.log 2>&1 &
 
       - name: Install frontend and browser
         working-directory: frontend

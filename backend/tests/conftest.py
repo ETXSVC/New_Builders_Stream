@@ -58,6 +58,12 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 # limiter itself is covered by its own dedicated test, not by leaving it live
 # against the shared-IP test client.
 os.environ.setdefault("REGISTER_RATE_LIMIT_ENABLED", "false")
+# Same reasoning for /auth/login, and more acutely: every test client shares
+# 127.0.0.1 under httpx's ASGITransport, and the suite logs in far more often
+# than it registers, so a live per-IP login limiter would start failing tests
+# purely on suite size. Both login limiters are covered by their own
+# dedicated tests, which re-enable them scoped to themselves.
+os.environ.setdefault("LOGIN_RATE_LIMIT_ENABLED", "false")
 # Task 4.3: must be a real, valid Fernet key (not an arbitrary string like
 # "test-secret" above) — app.services.token_encryption constructs
 # Fernet(settings.integration_token_encryption_key.encode()) at import time,
@@ -105,6 +111,36 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture(autouse=True)
+def _fresh_redis_client():
+    """Rebind `app.services.rate_limit`'s module-level Redis client to each
+    test's own event loop.
+
+    A `redis.asyncio.Redis` is bound to the loop that was running when it
+    was constructed; reused from a later test's loop it raises "Event loop
+    is closed". That module's `_reset_redis_client_for_tests` docstring has
+    the full diagnosis, and until now a couple of rate-limiter tests called
+    it by hand — enough, because the only Redis-touching route was
+    `/auth/register`, whose limiter conftest disables suite-wide, so the
+    singleton was rarely constructed at all.
+
+    Adding the login and TOTP limiters made every authenticated test path
+    touch Redis, which turned that latent hazard into real failures in
+    `test_mfa_totp.py`. Resetting here fixes the whole class at once rather
+    than adding an opt-out flag per limiter: `redis.from_url` is lazy (no
+    socket until the first command), so tests that never touch Redis pay
+    nothing for this.
+
+    Application code is unaffected — one uvicorn process has one event loop
+    for its lifetime, which is exactly why the singleton is correct there.
+    """
+    from app.services import rate_limit
+
+    rate_limit._reset_redis_client_for_tests()
+    yield
+    rate_limit._reset_redis_client_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -234,3 +270,27 @@ async def set_subscription_tier(company_id, tier) -> None:
         )
     finally:
         await conn.close()
+
+
+async def grant_client_access(http_client, admin, *, project_id=None, lead_id=None, email):
+    """Grant a client-role user access to a Project or a Lead.
+
+    Migration 0019 gave the `client` role row-level scoping: a client sees
+    nothing on a project or lead they aren't a member of. That makes this a
+    setup step for every client-role test in the suite, so it lives here
+    rather than being re-derived per file — including the `/companies/members`
+    lookup that turns an email into the `user_id` the grant needs (test
+    helpers commonly keep only the auth headers).
+
+    Exactly one of `project_id`/`lead_id`.
+    """
+    assert (project_id is None) != (lead_id is None), "pass exactly one of project_id/lead_id"
+
+    members = await http_client.get("/companies/members", headers=admin["headers"])
+    assert members.status_code == 200, members.text
+    user_id = next(m["user_id"] for m in members.json()["items"] if m["email"] == email)
+
+    path = f"/projects/{project_id}/clients" if project_id else f"/leads/{lead_id}/clients"
+    granted = await http_client.post(path, json={"user_id": user_id}, headers=admin["headers"])
+    assert granted.status_code == 201, granted.text
+    return granted.json()

@@ -61,6 +61,14 @@ dev = [
     "httpx>=0.27,<0.28",
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<3.0",
+    # Coverage measurement. Not gated on a threshold in CI (see the
+    # [tool.coverage] section below for why); the point is that a reviewer
+    # can see which lines a change left untested rather than guessing.
+    "pytest-cov>=6.0,<8.0",
+    # Checks the installed dependency set against the Python advisory
+    # database. Runs in backend-ci; dependabot (.github/dependabot.yml)
+    # is the other half — this one reports, that one proposes the upgrade.
+    "pip-audit>=2.7,<3.0",
 ]
 
 [build-system]
@@ -69,6 +77,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+# Not cosmetic: without this, `pip install .` (the NON-editable install the
+# production Docker image is built from — see backend/Dockerfile's `builder`
+# stage) copies only *.py into site-packages and silently drops
+# app/templates/estimate_pdf.html.jinja. Local dev and CI never noticed
+# because both run an editable install, which imports straight from the
+# source tree. The failure only ever appeared in a built image, at runtime,
+# as a Jinja TemplateNotFound the moment a PDF export job ran — the reason
+# `docker-build`'s image smoke test in .github/workflows/backend-ci.yml
+# loads this template out of the installed package rather than just building
+# the image. (setuptools' include_package_data default of True only picks up
+# files a MANIFEST.in or a VCS plugin declares; this project has neither.)
+[tool.setuptools.package-data]
+app = ["templates/*.jinja"]
 
 [tool.ruff]
 # 120 rather than the 88 default: this codebase's long inline-rationale
@@ -95,3 +117,29 @@ python_version = "3.12"
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
 files = ["app"]
+
+
+[tool.coverage.run]
+source = ["app"]
+# The measured surface is the application, not the tests measuring it.
+omit = ["app/tasks/broker.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    # Guard clauses for states that cannot be reached from a test but must
+    # exist — re-raising after cleanup, TYPE_CHECKING blocks, and the
+    # `if __name__ == "__main__"` in app/scheduler.py.
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+# Deliberately NO `fail_under`. A coverage floor measures how much code a
+# test suite EXECUTES, which is not the same as how much behaviour it
+# checks — and once a number is a gate, the cheapest way past it is a test
+# that executes code without asserting anything about it. The regression
+# suites that actually protect this codebase (tenant isolation, RLS policy
+# coverage, tier gating, client scoping) earn their keep by failing when a
+# specific invariant breaks, not by moving a percentage. The report is here
+# to show a reviewer what a change left untested.

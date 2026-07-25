@@ -4,15 +4,19 @@ plan's scope), tracking per-record status in integration_sync_records.
 
 Same undecorated-function/decorated-actor split as every other Dramatiq
 actor in this codebase (see app/tasks/flag_overdue_financial_records.py's
-own docstring for the full rationale). Uses the owner-role engine
-(settings.migrations_database_url) — this actor is scoped to ONE
-connection/company via connection_id, not a cross-tenant scan, but it
-still uses the owner engine and filters explicitly by connection_id/
-company_id in every query (never relying on RLS, since there is no
-set_current_tenant() call in a worker process) — same established
-convention every other worker actor in this codebase already follows,
-rather than introducing a new "workers set tenant context" pattern for
-just this one actor.
+own docstring for the full rationale).
+
+Runs on the ORDINARY RLS-constrained `app_user` session, not an owner-role
+engine. This actor is scoped to ONE connection/company by construction, so
+it has no reason to bypass RLS — and the earlier reasoning for doing so
+("there is no set_current_tenant() call in a worker process") described a
+limitation rather than a requirement. Migration 0020's
+get_integration_connection_company_id removes it: the actor resolves its
+tenant from the connection id through a narrow SECURITY DEFINER lookup,
+calls set_current_tenant, and runs everything after that under RLS. The
+explicit connection_id/company_id filters below stay, but they are now
+belt-and-braces over an enforced boundary rather than the only thing
+standing between this job and another tenant's financial records.
 
 Retry: on any exception from entity lookup, token decryption, or the
 push itself, this function marks the integration_sync_records row
@@ -77,16 +81,26 @@ from typing import cast
 import dramatiq
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import settings
+from app.db import SessionLocal, set_current_tenant
 from app.models import Bill, Expense, IntegrationConnection, IntegrationSyncRecord, Invoice
 from app.services import accounting_client
 from app.services.token_encryption import decrypt_token
 from app.tasks import broker  # noqa: F401 - import-time side effect
 
-_owner_engine = create_async_engine(settings.migrations_database_url, pool_pre_ping=True)
-_OwnerSessionLocal = async_sessionmaker(_owner_engine, expire_on_commit=False, class_=AsyncSession)
+# The ordinary RLS-constrained `app_user` session, NOT an owner-role engine.
+#
+# This actor is single-tenant by construction: it is handed one
+# connection_id and everything it touches belongs to that one company. It
+# therefore has no reason to bypass RLS, and running under it turns tenant
+# isolation here from "every WHERE company_id clause below is written
+# correctly" into something the database enforces. Migration 0020's
+# get_integration_connection_company_id resolves the tenant first — reading
+# the connection row to LEARN its company is the chicken-and-egg problem RLS
+# creates for a job with no caller, and that narrow SECURITY DEFINER lookup
+# is the same escape migration 0011 established for the Stripe webhook.
+_AppUserSessionLocal = SessionLocal
 
 _ENTITY_MODELS: dict[str, type[Invoice] | type[Expense] | type[Bill]] = {
     "invoice": Invoice,
@@ -168,9 +182,25 @@ async def _sync_financial_record(
     connection_id: str,
     entity_type: str,
     entity_id: str,
-    session_factory: async_sessionmaker[AsyncSession] = _OwnerSessionLocal,
+    session_factory: async_sessionmaker[AsyncSession] = _AppUserSessionLocal,
 ) -> None:
     async with session_factory() as session:
+        # Resolve the tenant BEFORE any RLS-scoped read: without
+        # app.current_tenant set, get_all_descendant_ids(NULL) matches
+        # nothing and the connection row below is invisible to this
+        # session's own role.
+        company_id = (
+            await session.execute(
+                select(func.get_integration_connection_company_id(uuid.UUID(connection_id)))
+            )
+        ).scalar_one_or_none()
+        if company_id is None:
+            # The connection was deleted between enqueue and execution.
+            # Nothing to sync and nothing to record against — a sync record
+            # needs a company_id, and there is no longer one to use.
+            return
+        await set_current_tenant(session, str(company_id))
+
         connection = (
             await session.execute(
                 select(IntegrationConnection).where(IntegrationConnection.id == uuid.UUID(connection_id))

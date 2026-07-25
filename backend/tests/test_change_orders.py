@@ -31,7 +31,7 @@ task's own real `approve`/`reject` routes.
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, grant_client_access
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
@@ -52,6 +52,7 @@ async def _register_and_login(client, company_name, email):
     return {
         "company_id": register.json()["company_id"],
         "user_id": register.json()["user_id"],
+        "email": email,
         "headers": {"Authorization": f"Bearer {body['access_token']}"},
     }
 
@@ -70,7 +71,12 @@ async def _invite_and_login_as(client, admin, role, email):
     assert accept.status_code == 200, accept.text
     login = await client.post("/auth/login", json={"email": email, "password": "anothersecret123"})
     assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+    # `email` because migration 0019 makes the approve routes reject a
+    # signer_email that isn't the signing account's own.
+    return {
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+        "email": email,
+    }
 
 
 def _project_payload(**overrides):
@@ -429,13 +435,16 @@ async def test_client_can_list_change_orders_scoped_to_pending(client):
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-list-client-scoped-c@acme.test"
+    )
 
     pending_co = await _create_change_order(client, admin, project_id, description="Still pending")
     assert pending_co.status_code == 201, pending_co.text
     approved_co = await _create_change_order(client, admin, project_id, description="Already approved")
     assert approved_co.status_code == 201, approved_co.text
     approve_response = await _approve_change_order(
-        client, client_role["headers"], approved_co.json()["id"]
+        client, client_role, approved_co.json()["id"]
     )
     assert approve_response.status_code == 200, approve_response.text
 
@@ -487,18 +496,24 @@ async def _fetch_audit_rows(company_id):
 
 async def _approve_change_order(
     client,
-    headers,
+    actor,
     change_order_id,
     *,
     signer_name="Jane Client",
-    signer_email="jane-client@example.test",
+    signer_email=None,
     content=b"fake-signature-bytes",
 ):
+    """`actor` is the whole login dict, not just headers: migration 0019
+    requires `signer_email` to be the signing account's own address, so the
+    default comes from the caller rather than being a fixed literal."""
     return await client.post(
         f"/change-orders/{change_order_id}/approve",
-        data={"signer_name": signer_name, "signer_email": signer_email},
+        data={
+            "signer_name": signer_name,
+            "signer_email": signer_email if signer_email is not None else actor["email"],
+        },
         files={"signature_artifact": ("signature.png", content, "image/png")},
-        headers=headers,
+        headers=actor["headers"],
     )
 
 
@@ -532,11 +547,14 @@ async def test_send_for_signature_requires_pending_status(client):
     client_role = await _invite_and_login_as(client, admin, "client", "co-sfs-409-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-sfs-409-client@acme.test"
+    )
     created = await _create_change_order(client, admin, project_id)
     assert created.status_code == 201, created.text
     change_order_id = created.json()["id"]
 
-    approve_response = await _approve_change_order(client, client_role["headers"], change_order_id)
+    approve_response = await _approve_change_order(client, client_role, change_order_id)
     assert approve_response.status_code == 200, approve_response.text
 
     response = await client.post(
@@ -595,16 +613,18 @@ async def test_approve_captures_esignature_reusing_shared_capture_path(client):
     client_role = await _invite_and_login_as(client, admin, "client", "co-approve-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-approve-client@acme.test"
+    )
     created = await _create_change_order(client, admin, project_id)
     assert created.status_code == 201, created.text
     change_order_id = created.json()["id"]
 
     response = await _approve_change_order(
         client,
-        client_role["headers"],
+        client_role,
         change_order_id,
         signer_name="Jane Client",
-        signer_email="jane-client@example.test",
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -619,7 +639,9 @@ async def test_approve_captures_esignature_reusing_shared_capture_path(client):
     assert esignature_response.status_code == 200, esignature_response.text
     esignature_body = esignature_response.json()
     assert esignature_body["signer_name"] == "Jane Client"
-    assert esignature_body["signer_email"] == "jane-client@example.test"
+    # The signing account's own address — migration 0019 refuses anything
+    # else, so this is no longer whatever the caller typed.
+    assert esignature_body["signer_email"] == client_role["email"]
     assert esignature_body["document_type"] == "change_order"
     assert esignature_body["company_id"] == admin["company_id"]
 
@@ -655,14 +677,17 @@ async def test_approve_requires_pending_status(client):
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-approve-409-client@acme.test"
+    )
     created = await _create_change_order(client, admin, project_id)
     assert created.status_code == 201, created.text
     change_order_id = created.json()["id"]
 
-    first = await _approve_change_order(client, client_role["headers"], change_order_id)
+    first = await _approve_change_order(client, client_role, change_order_id)
     assert first.status_code == 200, first.text
 
-    second = await _approve_change_order(client, client_role["headers"], change_order_id)
+    second = await _approve_change_order(client, client_role, change_order_id)
     assert second.status_code == 409, second.text
 
 
@@ -673,7 +698,7 @@ async def test_approve_nonexistent_change_order_returns_404(client):
     )
 
     response = await _approve_change_order(
-        client, client_role["headers"], "00000000-0000-0000-0000-000000000000"
+        client, client_role, "00000000-0000-0000-0000-000000000000"
     )
     assert response.status_code == 404
 
@@ -710,6 +735,9 @@ async def test_reject_with_reason_succeeds_and_does_not_capture_esignature(clien
     client_role = await _invite_and_login_as(client, admin, "client", "co-reject-ok-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-reject-ok-client@acme.test"
+    )
     created = await _create_change_order(client, admin, project_id)
     assert created.status_code == 201, created.text
     change_order_id = created.json()["id"]
@@ -742,11 +770,14 @@ async def test_reject_requires_pending_status(client):
     )
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
+    await grant_client_access(
+        client, admin, project_id=project_id, email="co-reject-409-client@acme.test"
+    )
     created = await _create_change_order(client, admin, project_id)
     assert created.status_code == 201, created.text
     change_order_id = created.json()["id"]
 
-    approve_response = await _approve_change_order(client, client_role["headers"], change_order_id)
+    approve_response = await _approve_change_order(client, client_role, change_order_id)
     assert approve_response.status_code == 200, approve_response.text
 
     response = await client.post(
@@ -787,7 +818,7 @@ async def test_non_client_roles_cannot_approve_or_reject(client):
         assert created.status_code == 201, created.text
         change_order_id = created.json()["id"]
 
-        approve_response = await _approve_change_order(client, actor["headers"], change_order_id)
+        approve_response = await _approve_change_order(client, actor, change_order_id)
         assert approve_response.status_code == 403, approve_response.text
 
         reject_response = await client.post(
