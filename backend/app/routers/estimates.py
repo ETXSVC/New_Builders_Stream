@@ -924,6 +924,15 @@ async def approve_estimate(
         project_id=estimate.project_id,
         company_id=estimate.company_id,
         approved_total=estimate.total,
+        # The client who signed. Without this the deposit invoice's
+        # `invoice.auto_generated` audit row was written with actor_id=None,
+        # while PROJECT_COMPLETED's handler recorded a real actor for the
+        # SAME action — so one audit action had two different attribution
+        # conventions depending on which event produced it. The actor was
+        # never unknown; the payload simply didn't carry it (see
+        # estimate_approved_handler's own docstring, which flagged this as
+        # the follow-up).
+        actor_id=current.user.id,
     )
 
     return EstimateResponse.model_validate(estimate)

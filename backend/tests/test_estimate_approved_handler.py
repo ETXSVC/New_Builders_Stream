@@ -84,9 +84,14 @@ async def _invite_and_login_as(client, admin, role, email):
     assert login.status_code == 200, login.text
     # `email` is needed because migration 0019 rejects a signer_email that
     # isn't the signing account's own.
+    # `user_id` so a test can assert WHICH account an audit row names, not
+    # merely that one exists.
+    members = await client.get("/companies/members", headers=admin["headers"])
+    user_id = next(m["user_id"] for m in members.json()["items"] if m["email"] == email)
     return {
         "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
         "email": email,
+        "user_id": user_id,
     }
 
 
@@ -221,7 +226,11 @@ async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(cli
     assert len(audit_rows) == 1
     audit_row = audit_rows[0]
     assert audit_row["action"] == "invoice.auto_generated"
-    assert audit_row["actor_id"] is None
+    # Was `is None` — pinning a gap rather than a requirement. The payload
+    # now carries the approving client, so this action is attributed the
+    # same way whether the invoice came from here or from
+    # PROJECT_COMPLETED's handler (M4).
+    assert audit_row["actor_id"] == uuid.UUID(client_role["user_id"])
     assert _decode_metadata(audit_row["log_metadata"]) == {"estimate_id": estimate_id}
 
 
@@ -347,3 +356,53 @@ async def test_approving_an_estimate_against_a_bare_lead_does_not_create_an_invo
 
     invoices = await _fetch_invoices_for_estimate(estimate_id)
     assert invoices == [], "an Estimate with no project_id must not auto-generate an Invoice"
+
+
+async def test_auto_generated_invoice_records_the_client_who_approved(client):
+    """M4: `invoice.auto_generated` is written by two different handlers —
+    this one (deposit invoice, on ESTIMATE_APPROVED) and
+    project_completed_handler (final invoice, on PROJECT_COMPLETED). The
+    latter always recorded a real actor; this one hardcoded None, because
+    the event payload didn't carry one. So a single audit action answered
+    "who did this" two different ways depending on which event fired.
+
+    The actor was never unknown: the approve route's own `estimate.approved`
+    audit row right above the publish() call already used
+    `current.user.id`.
+    """
+    register_event_handlers()
+
+    admin = await _register_and_login(client, "Actor Co", "actor-admin@example.test")
+    client_role = await _invite_and_login_as(client, admin, "client", "actor-client@example.test")
+    project = await _create_project(client, admin["headers"])
+    markup_profile_id = await _create_markup_profile(client, admin["headers"])
+    catalog_item_id = await _create_catalog_item(client, admin["headers"])
+
+    estimate_id, _total = await _create_and_approve_estimate(
+        client,
+        admin,
+        client_role,
+        project["id"],
+        markup_profile_id,
+        catalog_item_id,
+        quantity="4.00",
+    )
+
+    invoices = await _fetch_invoices_for_estimate(uuid.UUID(estimate_id))
+    assert len(invoices) == 1, invoices
+
+    conn = await asyncpg.connect(ADMIN_CONN_DSN)
+    try:
+        actor = await conn.fetchval(
+            "SELECT actor_id FROM audit_log "
+            "WHERE action = 'invoice.auto_generated' AND entity_id = $1",
+            invoices[0]["id"],
+        )
+    finally:
+        await conn.close()
+
+    assert actor is not None, (
+        "the deposit invoice's audit row has no actor, while the final-invoice "
+        "handler records one for the same action"
+    )
+    assert str(actor) == client_role["user_id"]
