@@ -74,15 +74,30 @@ balancer or compose healthcheck should gate on). Conflating them would
 make a database outage restart-loop the backend for no benefit.
 
 CI: `.github/workflows/backend-ci.yml` runs a `deploy-config` job
-(validates every compose file + parses the backup scripts) plus a `test`
-job running `ruff check .`, `mypy` (scoped
+(validates every compose file + parses the backup scripts), a
+`docker-build` job, and a `test` job running `ruff check .`, `mypy` (scoped
 to `app/` via pyproject's `[tool.mypy]` — tests stay outside the type
 gate), an OpenAPI schema-diff against the committed `backend/openapi.json`
 snapshot, and `pytest -v` against real Postgres 16 + Redis 7 service
 containers (not mocks/SQLite) — the tenant-isolation and RLS regression
 tests require a real Postgres. `frontend-ci.yml` (eslint + typechecked
-build) and `e2e-ci.yml` (full stack + Playwright) run alongside. All gate
-every merge to `main`.
+build, plus its own `docker-build` job) and `e2e-ci.yml` (full stack +
+Playwright) run alongside. All gate every merge to `main`.
+
+The two `docker-build` jobs **run** the images, not just build them, and
+that distinction is load-bearing: the production image installs the backend
+non-editably (`pip install .`), while every other job — and every local
+run — uses an editable install that imports from the source tree. A file
+that setuptools doesn't package therefore exists everywhere except in the
+artifact that ships. That is not theoretical; it is why
+`backend/pyproject.toml` carries a `[tool.setuptools.package-data]` entry
+for `app/templates/*.jinja` and why the backend smoke step loads that
+template out of the *installed* package. **Adding any non-`.py` file that
+`app/` reads at runtime means adding it to `package-data`.** The frontend
+job's equivalent is booting the standalone image beside a stand-in backend
+and asserting the BFF actually dials `NEXT_PUBLIC_API_URL` — proving that
+value is read at run time rather than inlined into the bundle at build
+time.
 
 ## Architecture
 
@@ -215,6 +230,17 @@ suites that matter architecturally:
 - `test_tier_gating.py` — introspects routes to assert every mutating route
   in a gated module carries `require_module`'s *correct* module tag
   (`dependency.tier_module`), not just that some gate is present.
+- `test_rls_policy_coverage.py` + `test_company_id_index_coverage.py` — a
+  pair of catalog-driven sweeps over *every* table Postgres reports, so a
+  future tenant table is covered without anyone remembering to add it. The
+  policy sweep asserts RLS is enabled, that the `FOR ALL` policy's USING
+  **and** check expressions really call `get_all_descendant_ids` /
+  `get_root_company_id` (a `USING (true)` policy would satisfy a
+  "has a policy" check and leak everything), that any extra permissive
+  policy is on a reviewed allowlist, and that a table with no `company_id`
+  column is either RLS-protected or explicitly declared non-tenant. Adding
+  a table means adding a policy or an allowlist entry — there is no third
+  option that passes.
 
 When adding a new tenant-owned table or a new mutating route in a
 tier-gated module, add/extend the corresponding isolation or gating test,

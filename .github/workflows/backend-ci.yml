@@ -8,9 +8,8 @@ on:
 
 jobs:
   # Fast, service-free validation of the production deployment artifacts:
-  # compose file resolves with a stub env, backup scripts parse. (Building
-  # the images in CI would need registry pulls; the on-box smoke-test
-  # checklist in docs/11-production-deployment.md covers that.)
+  # compose file resolves with a stub env, backup scripts parse. The images
+  # those files reference are built and exercised by `docker-build` below.
   deploy-config:
     runs-on: ubuntu-latest
     steps:
@@ -50,11 +49,114 @@ jobs:
           docker compose -f deploy/split/backend.compose.yml config -q
           docker compose -f deploy/split/middleware.compose.yml config -q
           docker compose -f deploy/split/frontend.compose.yml config -q
+      # The worker's actor-module list is spelled out in three compose files
+      # (dev, prod single-box, split middleware tier). Dramatiq only
+      # registers actors from the modules named on its command line, so a
+      # new actor added to two of the three means that third topology
+      # silently dead-letters those messages — no error, no log, the job
+      # just never runs. `docker-build` proves the modules import; this
+      # proves every deployment shape asks for the same ones.
+      - name: Worker actor-module lists agree across compose files
+        run: |
+          lists=$(grep -hoP '(?<=command: dramatiq ).*' \
+            docker-compose.yml docker-compose.prod.yml deploy/split/middleware.compose.yml)
+          [ "$(echo "$lists" | wc -l)" = "3" ] || { echo "::error::expected a dramatiq command in all three compose files"; exit 1; }
+          [ "$(echo "$lists" | sort -u | wc -l)" = "1" ] || {
+            echo "::error::the worker's dramatiq module lists have drifted apart:"
+            echo "$lists"
+            exit 1
+          }
+
       - name: Backup scripts parse
         run: |
           bash -n deploy/backup/backup.sh
           bash -n deploy/backup/restore.sh
           bash -n deploy/backup/restore-drill.sh
+
+  # Builds the backend image and proves it can actually run. Until this job
+  # existed, no Dockerfile in the repo was ever built anywhere in CI — the
+  # first build of an image was the first `docker compose up` on the
+  # production box, so a broken Dockerfile, a dependency missing from the
+  # runtime install, or an image that builds but cannot start would all have
+  # shipped undetected.
+  #
+  # That is not hypothetical: this job's smoke test was written after
+  # finding that `pip install .` (non-editable, what the `builder` stage
+  # runs) silently dropped app/templates/estimate_pdf.html.jinja from
+  # site-packages, so every PDF-export job in a built image raised
+  # TemplateNotFound while all 900+ tests passed against the editable
+  # install used locally and by the `test` job. Building alone would not
+  # have caught it — hence the run-the-image steps below, which load the
+  # template out of the *installed* package.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Plain `docker build`, no buildx cache actions: this runs a handful
+      # of times a day, and a registry-backed layer cache would add a
+      # third-party action plus credentials for a couple of saved minutes.
+      - name: Build backend image (production target)
+        run: docker build --target production -t bs-backend:ci backend
+
+      # Dummy values: importing the app opens no connections (same reasoning
+      # as the OpenAPI step below), so this exercises the image's Python
+      # environment, not the database.
+      - name: Backend image is serviceable
+        env:
+          SMOKE: |
+            import app.main  # noqa: F401  — wires routers + event handlers at import time
+            from app.services.pdf_export import _jinja_env
+            _jinja_env.get_template("estimate_pdf.html.jinja")
+            # The three processes the deploy runs from this one image:
+            # uvicorn (backend), dramatiq (worker), apscheduler (scheduler),
+            # plus alembic for the one-shot `migrate` service.
+            import uvicorn, dramatiq, apscheduler, alembic.config  # noqa: F401
+            import app.scheduler  # noqa: F401
+            print("backend image OK")
+        run: |
+          docker run --rm \
+            -e DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e MIGRATIONS_DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e TEST_DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e JWT_SECRET=image-smoke-dummy \
+            -e INTEGRATION_TOKEN_ENCRYPTION_KEY=image-smoke-dummy \
+            bs-backend:ci python -c "$SMOKE"
+
+      # The worker's actor-module list is a hand-maintained command line: a
+      # module renamed, or one whose import breaks only in the image, means
+      # Dramatiq starts without that actor registered and silently
+      # dead-letters its messages. The list is read out of the compose file
+      # rather than duplicated here, so the two cannot drift.
+      - name: Backend image can import every worker actor module
+        run: |
+          modules=$(grep -oP '(?<=command: dramatiq ).*' docker-compose.prod.yml | head -1)
+          [ -n "$modules" ] || { echo "::error::could not find the worker's dramatiq command in docker-compose.prod.yml"; exit 1; }
+          echo "worker modules: $modules"
+          docker run --rm \
+            -e DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e MIGRATIONS_DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e TEST_DATABASE_URL=postgresql+asyncpg://dummy:dummy@localhost:5432/dummy \
+            -e JWT_SECRET=image-smoke-dummy \
+            -e INTEGRATION_TOKEN_ENCRYPTION_KEY=image-smoke-dummy \
+            bs-backend:ci python -c \
+            'import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]; print("worker actor modules OK")' \
+            $modules
+
+      # The image runs unprivileged and must still be able to write uploads.
+      # Getting this wrong surfaces on the real box as an EACCES on the
+      # first document upload, long after deploy — the same failure mode the
+      # split-topology runbook's `chown 1000 $DOCUMENTS_DIR` step exists for.
+      - name: Backend image runs as appuser with a writable documents dir
+        run: |
+          uid=$(docker run --rm bs-backend:ci id -u)
+          [ "$uid" = "1000" ] || { echo "::error::backend image runs as uid $uid, expected 1000 (appuser)"; exit 1; }
+          docker run --rm bs-backend:ci touch /data/documents/.ci-write-probe
+
+      # docker-compose.yml (the dev stack) builds this target; a break here
+      # would only be discovered by the next developer running the stack.
+      - name: Build backend image (dev target)
+        run: docker build --target dev -t bs-backend:ci-dev backend
 
   test:
     runs-on: ubuntu-latest
