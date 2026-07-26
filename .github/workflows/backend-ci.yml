@@ -13,7 +13,7 @@ jobs:
   deploy-config:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Validate production compose file
         env:
           SITE_ADDRESS: ci.example.com
@@ -91,7 +91,7 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Plain `docker build`, no buildx cache actions: this runs a handful
       # of times a day, and a registry-backed layer cache would add a
@@ -193,7 +193,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
