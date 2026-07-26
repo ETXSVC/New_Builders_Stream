@@ -68,7 +68,7 @@ def require_module(module: str):
     # for a typo'd module name — not at request time.
     min_tier = MODULE_MIN_TIER[module]
 
-    async def dependency(current: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    async def dependency(current: CurrentUser = Depends(get_current_user, scope="function")) -> CurrentUser:
         tier = await _root_tier(current.session, current.company_id)
         if tier is not None and TIER_RANK[tier] < TIER_RANK[min_tier]:
             raise HTTPException(
