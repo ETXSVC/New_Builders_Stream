@@ -55,6 +55,7 @@ from app.services.client_scope import (
 )
 from app.services.esignature import capture_esignature
 from app.services.estimate_calculation import calculate_estimate
+from app.services.project_lookup import get_project_or_404
 from app.tasks.estimate_pdf import generate_estimate_pdf
 from app.tasks.send_signature_request_email import send_signature_request_email
 from app.services.concurrency import guard_stale_write
@@ -113,7 +114,7 @@ _LEAD_STATUSES_ELIGIBLE_FOR_ESTIMATE = ("estimating", "qualified", "won")
 
 async def _get_estimate_or_404(current: CurrentUser, estimate_id: uuid.UUID) -> Estimate:
     """Shared existence/tenant/membership check, same pattern as
-    `_get_lead_or_404`/`_get_project_or_404` — RLS makes another tenant's
+    `_get_lead_or_404`/`get_project_or_404` — RLS makes another tenant's
     estimate invisible, so this 404 covers both "doesn't exist" and "exists
     but isn't yours" identically (Inherited Invariant #8), intentionally
     indistinguishable from outside.
@@ -207,15 +208,16 @@ async def create_estimate(
     resolved_company_id = current.company_id
 
     if payload.project_id is not None:
-        # No explicit company_id filter — same pattern as every other
-        # single-row-by-id lookup in this codebase: the tenant_isolation
-        # RLS policy already scopes visibility to the caller's own tenant.
-        result = await current.session.execute(
-            select(Project).where(Project.id == payload.project_id)
-        )
-        project = result.scalar_one_or_none()
-        if project is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+        # Through the shared chokepoint rather than an open-coded
+        # `select(Project)`. Tenant scope comes from RLS either way, but
+        # `get_project_or_404` also applies field_crew's assigned-only
+        # scope and the `client` role's row scope (migration 0019).
+        # Neither changes anything here — `_WRITE_ROLES` is admin/PM and
+        # both scopes are no-ops for staff — which is exactly why the
+        # open-coded version survived review. It was correct only by
+        # coincidence of the role tuple above; this is correct by
+        # construction if that tuple ever grows.
+        project = await get_project_or_404(current, payload.project_id)
         resolved_company_id = project.company_id
 
     if payload.lead_id is not None:

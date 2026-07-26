@@ -9,10 +9,10 @@ resource from both `Project` and `Subcontractor`, with real business logic
 of its own (the Admin-override-required expired-compliance rule below) that
 doesn't belong bolted onto either of those routers' entity-focused files.
 
-Reuses `_get_project_or_404` (`app/routers/projects.py`) and
-`_get_subcontractor_or_404` (`app/routers/subcontractors.py`) via
+Reuses `get_project_or_404` (`app/services/project_lookup.py`) and
+`get_subcontractor_or_404` (`app/services/subcontractor_lookup.py`) via
 cross-router import rather than redefining either — the exact same pattern
-`change_orders.py` uses for `_get_project_or_404`.
+`change_orders.py` uses for `get_project_or_404`.
 """
 
 import uuid
@@ -26,8 +26,8 @@ from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import ComplianceDocument, SubcontractorAssignment
 from app.models.compliance_document import VALID_DOC_TYPES
-from app.routers.projects import _get_project_or_404
-from app.routers.subcontractors import _get_subcontractor_or_404
+from app.services.project_lookup import get_project_or_404
+from app.services.subcontractor_lookup import get_subcontractor_or_404
 from app.schemas.subcontractor_assignment import (
     SubcontractorAssignmentCreateRequest,
     SubcontractorAssignmentListResponse,
@@ -108,13 +108,13 @@ async def create_subcontractor_assignment(
 ) -> SubcontractorAssignmentResponse:
     """Task 3.11: the Admin-override-required expired-compliance rule.
 
-    Ordering: `_get_project_or_404` first, then `_get_subcontractor_or_404`
+    Ordering: `get_project_or_404` first, then `get_subcontractor_or_404`
     on `payload.subcontractor_id` — a cross-tenant/nonexistent id in either
     the path or the body 404s before any semantic (expired-document)
     validation runs, same "existence/tenant check before business-rule
     check" ordering `create_change_order`'s own docstring
     (`app/routers/change_orders.py`) establishes. Without the second
-    `_get_subcontractor_or_404` call, a cross-tenant `subcontractor_id`
+    `get_subcontractor_or_404` call, a cross-tenant `subcontractor_id`
     would silently pass through to `_has_expired_compliance_document`
     (whose query is itself RLS-scoped and would just find nothing), letting
     a nonexistent/invisible subcontractor be "assigned" freely instead of
@@ -131,7 +131,7 @@ async def create_subcontractor_assignment(
     A project — a dangling cross-tenant reference invisible to any session
     scoped narrowly to just one of the two branches. The
     `subcontractor.company_id != project.company_id` check below closes
-    this, 404ing with the same "not found" message `_get_subcontractor_or_404`
+    this, 404ing with the same "not found" message `get_subcontractor_or_404`
     itself would use, consistent with this codebase's "doesn't exist" and
     "exists but isn't yours" being intentionally indistinguishable from
     outside.
@@ -179,7 +179,7 @@ async def create_subcontractor_assignment(
     (`app/routers/change_orders.py`) and `update_project_status`'s audit
     entry (`app/routers/projects.py`, Task 2.23): a parent company's session
     can legitimately act on a descendant branch's Project without switching
-    `X-Tenant-ID` first (`_get_project_or_404` already makes the
+    `X-Tenant-ID` first (`get_project_or_404` already makes the
     descendant's Project reachable via RLS's `get_all_descendant_ids()`
     grant). Using `current.company_id` here would stamp both rows with the
     PARENT's id instead of the Project's own, making them invisible to a
@@ -194,8 +194,8 @@ async def create_subcontractor_assignment(
     `upload_compliance_document` (`app/routers/subcontractors.py`) already
     establish.
     """
-    project = await _get_project_or_404(current, project_id)
-    subcontractor = await _get_subcontractor_or_404(current, payload.subcontractor_id)
+    project = await get_project_or_404(current, project_id)
+    subcontractor = await get_subcontractor_or_404(current, payload.subcontractor_id)
     if subcontractor.company_id != project.company_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Subcontractor not found")
 
@@ -258,7 +258,7 @@ async def list_subcontractor_assignments(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> SubcontractorAssignmentListResponse:
-    """Task 3.11. `_get_project_or_404` first, then `paginate()` scoped to
+    """Task 3.11. `get_project_or_404` first, then `paginate()` scoped to
     this project — copies `list_change_orders`'s exact structure (imports,
     `Query` params, the `paginate()` call itself with `created_at_col`/
     `id_col`), same as every other project-nested list route in this
@@ -275,7 +275,7 @@ async def list_subcontractor_assignments(
     to the caller's active tenant, same pattern every other list route in
     this codebase relies on.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     query = select(SubcontractorAssignment).where(SubcontractorAssignment.project_id == project.id)
 

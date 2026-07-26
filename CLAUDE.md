@@ -112,8 +112,14 @@ generic `/companies/{company_id}` would otherwise shadow `branding.router`'s
 literal `/companies/branding` paths.
 
 Modules should only reach another module's data through its service layer
-(`app/services/`), never by querying another module's tables directly — a
-convention enforced by review, not tooling.
+(`app/services/`), never by querying another module's tables directly.
+`tests/test_module_boundaries.py` makes this a gate rather than a
+convention: no `app/routers/*.py` may import another router (AST sweep,
+absolute and relative forms), and no router outside `projects.py` may
+hand-roll a `select(Project).where(Project.id == ...)` lookup instead of
+calling `app.services.project_lookup.get_project_or_404` — which is where
+field_crew's assigned-only scope and the `client` role's row scope live,
+so an open-coded lookup silently drops both.
 
 ### Multi-tenancy: PostgreSQL RLS is the enforcement boundary, not app code
 

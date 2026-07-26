@@ -863,8 +863,8 @@ export interface paths {
          *     tenant_isolation RLS policy on both `compliance_documents` and
          *     `subcontractors` already scopes every row this query can see to the
          *     caller's active tenant, same pattern every other router in this
-         *     codebase relies on (see e.g. `_get_subcontractor_or_404`,
-         *     `app/routers/subcontractors.py`).
+         *     codebase relies on (see e.g. `get_subcontractor_or_404`,
+         *     `app/services/subcontractor_lookup.py`).
          *
          *     No pagination: a company-wide compliance dashboard is expected to be a
          *     bounded, glanceable list. If this becomes a real scale problem later,
@@ -2000,13 +2000,13 @@ export interface paths {
          *     app/routers/projects.py): without a list route, a PM has no way to see
          *     a project's Change Order history at all.
          *
-         *     `_get_project_or_404` first, then `paginate()` scoped to this project —
+         *     `get_project_or_404` first, then `paginate()` scoped to this project —
          *     copies `list_documents`'s exact structure (imports, `Query` params,
          *     the `paginate()` call itself with `created_at_col`/`id_col`).
          *
          *     Uses `_READ_ROLES` (admin, project_manager, accountant, client — see
          *     that constant's own comment for `client`'s Task 2.22 addition and
-         *     scoping), not `_get_project_or_404`'s field_crew-scoping machinery:
+         *     scoping), not `get_project_or_404`'s field_crew-scoping machinery:
          *     field_crew has no read access to Change Orders at all per the RBAC
          *     matrix's Project Management row (field_crew's only granted verb there is
          *     "create Daily Logs"), so it's simply absent from `_READ_ROLES` and
@@ -2023,7 +2023,7 @@ export interface paths {
         put?: never;
         /**
          * Create Change Order
-         * @description Task 2.21. `_get_project_or_404` first, same ordering as every other
+         * @description Task 2.21. `get_project_or_404` first, same ordering as every other
          *     project-nested write route in this codebase (existence/tenant check
          *     before any semantic validation of the payload) — a cross-tenant
          *     project_id and a not-`active` project both fail, but the caller learns
@@ -2136,7 +2136,7 @@ export interface paths {
          *     only)", which for Phase 1 collapses to plain read, same reasoning
          *     _LIST_ROLES's own comment gives above).
          *
-         *     `_get_project_or_404` applies field_crew's assigned-only scoping here
+         *     `get_project_or_404` applies field_crew's assigned-only scoping here
          *     exactly as list_documents does: an unassigned field_crew caller gets a
          *     404 before any daily_logs query runs.
          */
@@ -2149,7 +2149,7 @@ export interface paths {
          *     row is the only place field_crew gets any write verb at all ("create
          *     Daily Logs"), so this route intentionally does NOT reuse _WRITE_ROLES.
          *
-         *     `_get_project_or_404` first, same ordering as every other project-nested
+         *     `get_project_or_404` first, same ordering as every other project-nested
          *     write route in this router (existence/tenant/field-crew-assigned-scope
          *     check before touching the payload) — this doubles as field_crew's
          *     project-level scoping: a field_crew caller with no assigned task on
@@ -2209,7 +2209,7 @@ export interface paths {
          *     reasoning list_projects's own docstring gives for excluding `client`
          *     from that route.
          *
-         *     `_get_project_or_404` handles field_crew's assigned-only scoping here
+         *     `get_project_or_404` handles field_crew's assigned-only scoping here
          *     exactly as it does for phase/task creation: a field_crew caller whose
          *     project isn't theirs (no assigned task on it) gets a 404 before this
          *     function ever queries `documents`, so no separate per-document
@@ -2226,7 +2226,7 @@ export interface paths {
          *     2: Project Management is "Full CRUD" for Admin/PM only, matching
          *     _WRITE_ROLES's existing rationale above).
          *
-         *     `_get_project_or_404` first, same order every other project-nested
+         *     `get_project_or_404` first, same order every other project-nested
          *     write route in this router/tasks.py uses (existence/tenant check
          *     before any semantic validation of the payload) — a cross-tenant
          *     project_id and an invalid file_name both fail, but the caller learns
@@ -2265,7 +2265,7 @@ export interface paths {
         /**
          * Download Document
          * @description Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
-         *     Same visibility rules as the document list: _get_project_or_404 covers
+         *     Same visibility rules as the document list: get_project_or_404 covers
          *     tenant/role/project scope, and the document must belong to the path's
          *     project (a mismatched pair 404s — same id-pair discipline as every
          *     nested resource in this codebase). storage_path is always relative to
@@ -2345,7 +2345,7 @@ export interface paths {
         /**
          * List Phases
          * @description Phases ordered by (sequence, id), each with its tasks nested,
-         *     ordered by (created_at, id). _get_project_or_404 covers existence,
+         *     ordered by (created_at, id). get_project_or_404 covers existence,
          *     tenant scope, and field_crew's assigned-projects-only visibility, same
          *     as the create routes above.
          */
@@ -2386,7 +2386,7 @@ export interface paths {
          * Update Phase
          * @description Rename/reorder a Phase — `admin`/`project_manager` only, matching
          *     `create_phase`'s own role gate (field_crew can never reach this route).
-         *     `_get_project_or_404` first, same "existence/tenant before touching the
+         *     `get_project_or_404` first, same "existence/tenant before touching the
          *     nested resource" ordering every other project-nested route in this
          *     file/router uses.
          */
@@ -2411,7 +2411,7 @@ export interface paths {
          * @description Task 1.13: the Project status state machine, entirely separate from
          *     `patch_project` above (design decision #3 — Project splits field edits
          *     and status transitions into two routes/schemas, unlike Lead's combined
-         *     `PATCH /leads/{id}`). Reuses `_get_project_or_404` for the existence/
+         *     `PATCH /leads/{id}`). Reuses `get_project_or_404` for the existence/
          *     tenant check; field_crew can never reach this route at all (`_WRITE_ROLES`
          *     is admin/project_manager only), so the field_crew-scoping half of that
          *     helper is inert here — it's reused purely to avoid duplicating the
@@ -2422,7 +2422,7 @@ export interface paths {
          *     `current.company_id` — same rationale as `upload_document`'s/
          *     `create_daily_log`'s own fix (this router, above): a parent company's
          *     session can legitimately transition a descendant branch's Project
-         *     without switching `X-Tenant-ID` first (`_get_project_or_404` already
+         *     without switching `X-Tenant-ID` first (`get_project_or_404` already
          *     makes the descendant's Project reachable via RLS's
          *     `get_all_descendant_ids()` grant). Using `current.company_id` here
          *     would record the `project.status_changed` audit entry under the
@@ -2442,7 +2442,7 @@ export interface paths {
         };
         /**
          * List Subcontractor Assignments
-         * @description Task 3.11. `_get_project_or_404` first, then `paginate()` scoped to
+         * @description Task 3.11. `get_project_or_404` first, then `paginate()` scoped to
          *     this project — copies `list_change_orders`'s exact structure (imports,
          *     `Query` params, the `paginate()` call itself with `created_at_col`/
          *     `id_col`), same as every other project-nested list route in this
@@ -2465,13 +2465,13 @@ export interface paths {
          * Create Subcontractor Assignment
          * @description Task 3.11: the Admin-override-required expired-compliance rule.
          *
-         *     Ordering: `_get_project_or_404` first, then `_get_subcontractor_or_404`
+         *     Ordering: `get_project_or_404` first, then `get_subcontractor_or_404`
          *     on `payload.subcontractor_id` — a cross-tenant/nonexistent id in either
          *     the path or the body 404s before any semantic (expired-document)
          *     validation runs, same "existence/tenant check before business-rule
          *     check" ordering `create_change_order`'s own docstring
          *     (`app/routers/change_orders.py`) establishes. Without the second
-         *     `_get_subcontractor_or_404` call, a cross-tenant `subcontractor_id`
+         *     `get_subcontractor_or_404` call, a cross-tenant `subcontractor_id`
          *     would silently pass through to `_has_expired_compliance_document`
          *     (whose query is itself RLS-scoped and would just find nothing), letting
          *     a nonexistent/invisible subcontractor be "assigned" freely instead of
@@ -2488,7 +2488,7 @@ export interface paths {
          *     A project — a dangling cross-tenant reference invisible to any session
          *     scoped narrowly to just one of the two branches. The
          *     `subcontractor.company_id != project.company_id` check below closes
-         *     this, 404ing with the same "not found" message `_get_subcontractor_or_404`
+         *     this, 404ing with the same "not found" message `get_subcontractor_or_404`
          *     itself would use, consistent with this codebase's "doesn't exist" and
          *     "exists but isn't yours" being intentionally indistinguishable from
          *     outside.
@@ -2536,7 +2536,7 @@ export interface paths {
          *     (`app/routers/change_orders.py`) and `update_project_status`'s audit
          *     entry (`app/routers/projects.py`, Task 2.23): a parent company's session
          *     can legitimately act on a descendant branch's Project without switching
-         *     `X-Tenant-ID` first (`_get_project_or_404` already makes the
+         *     `X-Tenant-ID` first (`get_project_or_404` already makes the
          *     descendant's Project reachable via RLS's `get_all_descendant_ids()`
          *     grant). Using `current.company_id` here would stamp both rows with the
          *     PARENT's id instead of the Project's own, making them invisible to a
@@ -2685,14 +2685,14 @@ export interface paths {
         };
         /**
          * List Compliance Documents
-         * @description Task 3.5. `_get_subcontractor_or_404` first — a nonexistent/
+         * @description Task 3.5. `get_subcontractor_or_404` first — a nonexistent/
          *     cross-tenant `subcontractor_id` in the path must 404, not just return an
          *     empty list (the RLS `compliance_documents` scan alone would silently
          *     return zero rows for a cross-tenant id, which would be indistinguishable
          *     from "this subcontractor genuinely has no compliance documents yet" —
          *     the explicit existence check up front avoids that ambiguity, same
          *     reasoning `list_documents`/other project-nested list routes already
-         *     apply via their own `_get_project_or_404` call).
+         *     apply via their own `get_project_or_404` call).
          *
          *     Standard `paginate()` helper, `created_at_col=ComplianceDocument.created_at,
          *     id_col=ComplianceDocument.id`, same as `list_subcontractors` above — this
@@ -2708,7 +2708,7 @@ export interface paths {
          *     row this router's module docstring already cites: Compliance is "Full
          *     CRUD" for Admin only.
          *
-         *     `_get_subcontractor_or_404` first, same ordering `upload_document`
+         *     `get_subcontractor_or_404` first, same ordering `upload_document`
          *     (app/routers/projects.py) uses: existence/tenant check before any
          *     semantic validation of the payload, so a cross-tenant/nonexistent
          *     `subcontractor_id` always 404s before the caller learns anything about
@@ -2821,7 +2821,7 @@ export interface paths {
          *     this route. Reuses `_get_task_or_404` purely for the existence/tenant
          *     404 — its field_crew-scoping branch is inert here, same "helper reused
          *     for a role that can never reach this route" pattern `create_phase`'s
-         *     own docstring notes for `_get_project_or_404`.
+         *     own docstring notes for `get_project_or_404`.
          */
         delete: operations["delete_task_tasks__task_id__delete"];
         options?: never;
@@ -2839,7 +2839,7 @@ export interface paths {
          *
          *     Ownership is enforced by _get_task_or_404 (404 if the task isn't
          *     theirs — they can't see it at all, so it doesn't "exist" from their
-         *     point of view, matching projects.py's _get_project_or_404 precedent).
+         *     point of view, matching project_lookup.py's get_project_or_404 precedent).
          *
          *     The field-level restriction below is enforced with an explicit 403,
          *     not a silent drop of disallowed fields. Alternative considered: quietly

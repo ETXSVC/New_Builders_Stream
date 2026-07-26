@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.models import Phase, Project, Task
-from app.routers.projects import _get_project_or_404
+from app.services.project_lookup import get_project_or_404
 from app.schemas.phase import (
     PhaseCreateRequest,
     PhaseListResponse,
@@ -52,7 +52,7 @@ async def _get_task_or_404(current: CurrentUser, task_id: uuid.UUID) -> Task:
     """Own existence/tenant/RBAC-scope check for PATCH /tasks/{id}. A Task
     isn't reached via a project_id path param (unlike phase/task creation
     below), so it needs its own lookup — same shape as projects.py's
-    _get_project_or_404: RLS makes another tenant's task invisible, so this
+    get_project_or_404: RLS makes another tenant's task invisible, so this
     404 covers "doesn't exist" and "exists but isn't yours" identically.
 
     Also folds in field_crew's assigned-only visibility here, not just as a
@@ -71,7 +71,7 @@ async def _get_task_or_404(current: CurrentUser, task_id: uuid.UUID) -> Task:
     touch, not whether they can see the row at all. Same "404 for anything
     you can't see, 403 for role-based restrictions on things you CAN see"
     split projects.py's own docstrings already establish for
-    _get_project_or_404 vs. the RBAC-blocked write routes."""
+    get_project_or_404 vs. the RBAC-blocked write routes."""
     query = select(Task).where(Task.id == task_id)
     if current.role == "field_crew":
         query = query.where(Task.assignee_id == current.user.id)
@@ -95,13 +95,13 @@ async def create_phase(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> PhaseResponse:
-    # Reuses projects.py's _get_project_or_404 purely to avoid duplicating
+    # Reuses project_lookup.py's get_project_or_404 purely to avoid duplicating
     # the existence/tenant-404 check — same reuse rationale as Task 1.13's
     # update_project_status (itself modeled on Task 1.7's _get_lead_or_404
     # reuse for communication logs). field_crew can never reach this route
     # at all (_WRITE_ROLES is admin/project_manager only), so the
     # field_crew-scoping half of that helper is inert here.
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     # `company_id=project.company_id`, not `current.company_id`: a parent
     # company's session can legitimately act on a descendant branch's
@@ -145,7 +145,7 @@ async def create_task(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> TaskResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     # phase_id must belong to the SAME project as the path's project_id —
     # an application-layer check, same pattern as Phase 0's
@@ -206,7 +206,7 @@ async def _get_phase_or_404(current: CurrentUser, project_id: uuid.UUID, phase_i
     field validated with a 422 for "doesn't belong to this project") —
     addressed-by-path resources in this codebase 404 on "doesn't exist,
     isn't yours, or isn't reachable via this exact path", same convention
-    `_get_task_or_404`/`_get_project_or_404` already establish. Filtering
+    `_get_task_or_404`/`get_project_or_404` already establish. Filtering
     on `Phase.project_id == project_id` in the same query (rather than a
     separate `.project_id != project_id` check after fetching by id alone)
     means a phase belonging to a DIFFERENT project and a genuinely
@@ -232,10 +232,10 @@ async def update_phase(
 ) -> PhaseResponse:
     """Rename/reorder a Phase — `admin`/`project_manager` only, matching
     `create_phase`'s own role gate (field_crew can never reach this route).
-    `_get_project_or_404` first, same "existence/tenant before touching the
+    `get_project_or_404` first, same "existence/tenant before touching the
     nested resource" ordering every other project-nested route in this
     file/router uses."""
-    await _get_project_or_404(current, project_id)
+    await get_project_or_404(current, project_id)
     phase = await _get_phase_or_404(current, project_id, phase_id)
 
     # No stale-write guard here, unlike Project/Lead/Estimate: `phases` has no
@@ -268,7 +268,7 @@ async def delete_phase(
     before deleting the Phase itself; Postgres removes the child rows as
     part of the same statement (same pattern `delete_estimate`'s own
     docstring establishes for `estimate_line_items`, `app/routers/estimates.py`)."""
-    await _get_project_or_404(current, project_id)
+    await get_project_or_404(current, project_id)
     phase = await _get_phase_or_404(current, project_id, phase_id)
 
     await current.session.delete(phase)
@@ -281,10 +281,10 @@ async def list_phases(
     current: CurrentUser = Depends(require_role(*_READ_ROLES)),
 ) -> PhaseListResponse:
     """Phases ordered by (sequence, id), each with its tasks nested,
-    ordered by (created_at, id). _get_project_or_404 covers existence,
+    ordered by (created_at, id). get_project_or_404 covers existence,
     tenant scope, and field_crew's assigned-projects-only visibility, same
     as the create routes above."""
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     phase_result = await current.session.execute(
         select(Phase).where(Phase.project_id == project.id).order_by(Phase.sequence, Phase.id)
@@ -375,7 +375,7 @@ async def patch_task(
 
     Ownership is enforced by _get_task_or_404 (404 if the task isn't
     theirs — they can't see it at all, so it doesn't "exist" from their
-    point of view, matching projects.py's _get_project_or_404 precedent).
+    point of view, matching project_lookup.py's get_project_or_404 precedent).
 
     The field-level restriction below is enforced with an explicit 403,
     not a silent drop of disallowed fields. Alternative considered: quietly
@@ -437,7 +437,7 @@ async def delete_task(
     this route. Reuses `_get_task_or_404` purely for the existence/tenant
     404 — its field_crew-scoping branch is inert here, same "helper reused
     for a role that can never reach this route" pattern `create_phase`'s
-    own docstring notes for `_get_project_or_404`."""
+    own docstring notes for `get_project_or_404`."""
     task = await _get_task_or_404(current, task_id)
 
     await current.session.delete(task)

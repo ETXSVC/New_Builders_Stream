@@ -18,7 +18,7 @@ from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Invoice, InvoicePayment
-from app.routers.projects import _get_project_or_404
+from app.services.project_lookup import get_project_or_404
 from app.schemas.invoice import (
     InvoiceCreateRequest,
     InvoiceDetailResponse,
@@ -89,7 +89,7 @@ async def create_invoice(
     _ro: None = Depends(block_if_read_only),
     _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> InvoiceResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     invoice_number = await next_invoice_number(current.session, project.company_id)
     # Quantized to 2 decimal places (ROUND_HALF_UP, matching Postgres's own
@@ -333,7 +333,7 @@ async def list_invoices(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> InvoiceListResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     await require_client_access_to_project(current, project.id)
 
     query = select(Invoice).where(Invoice.project_id == project.id)
