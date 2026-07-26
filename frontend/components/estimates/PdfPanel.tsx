@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 export function PdfPanel({ estimateId, pdfStatus, canExport }: { estimateId: string; pdfStatus: string; canExport: boolean }) {
   const { accessToken } = useAuth();
@@ -27,12 +28,15 @@ export function PdfPanel({ estimateId, pdfStatus, canExport }: { estimateId: str
     return () => clearInterval(interval);
   }, [status, accessToken, estimateId]);
 
+  const beginLoadViewer = useLatestOnly();
   const loadViewer = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadViewer();
     try {
       const response = await fetch(`/api/estimates/${estimateId}/pdf`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
+      if (!isCurrent()) return;
       if (!response.ok) return;
       const blob = await response.blob();
       setViewerUrl(URL.createObjectURL(blob));
@@ -40,7 +44,7 @@ export function PdfPanel({ estimateId, pdfStatus, canExport }: { estimateId: str
       // Viewer stays unset — the Download button below still works via its
       // own fetch and is the fallback path if inline preview fails.
     }
-  }, [accessToken, estimateId]);
+  }, [accessToken, beginLoadViewer, estimateId]);
 
   React.useEffect(() => {
     if (status === "ready") void Promise.resolve().then(() => loadViewer());

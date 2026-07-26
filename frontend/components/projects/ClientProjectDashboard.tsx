@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useAuth } from "@/contexts/AuthContext";
 import { SigningPanel } from "@/components/esign/SigningPanel";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 function AwaitingSignatureCard({ projectId }: { projectId: string }) {
   const { accessToken } = useAuth();
@@ -16,8 +17,10 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
   >([]);
   const [expandedCoId, setExpandedCoId] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     const [allEstimates, allChangeOrders] = await Promise.all([
       (async () => {
         const all: { id: string; total: string | null; project_id?: string }[] = [];
@@ -56,9 +59,10 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
         return all;
       })(),
     ]);
+    if (!isCurrent()) return;
     setSentEstimates(allEstimates.filter((e) => e.project_id === projectId));
     setPendingChangeOrders(allChangeOrders.filter((co) => co.project_id === projectId));
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoad, projectId]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

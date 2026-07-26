@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Vendor {
   id: string;
@@ -37,8 +38,10 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
 
   const canWrite = role === "admin" || role === "project_manager";
 
+  const beginLoadLines = useLatestOnly();
   const loadLines = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadLines();
     try {
       const all: BomLine[] = [];
       let cursor: string | null = null;
@@ -56,14 +59,17 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setLines(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoadLines, projectId]);
 
+  const beginLoadVendors = useLatestOnly();
   const loadVendors = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadVendors();
     try {
       const all: Vendor[] = [];
       let cursor: string | null = null;
@@ -78,13 +84,14 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setVendors(all);
     } catch {
       // Vendor list is a supporting dropdown, not the primary data this
       // tab exists for — a failure here shouldn't blank out the materials
       // list itself, so it's swallowed rather than surfaced via `error`.
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoadVendors]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => {

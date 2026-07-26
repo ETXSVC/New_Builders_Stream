@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Doc {
   id: string;
@@ -21,8 +22,10 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
 
   const canUpload = role === "admin" || role === "project_manager";
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       // The backend pages at 25/entry ascending by created_at, so a
       // just-uploaded document lands on the LAST page — follow next_cursor
@@ -44,11 +47,12 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setDocs(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoadAll, projectId]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in loadAll's call path
