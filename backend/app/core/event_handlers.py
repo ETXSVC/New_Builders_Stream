@@ -28,6 +28,7 @@ A dedicated module rather than inlining `register()` calls in
 """
 
 from app.core.events import is_registered, register
+from app.services.bom_generation_handler import handle_estimate_approved_bom
 from app.services.estimate_approved_handler import handle_estimate_approved
 from app.services.financial_record_sync_handler import handle_financial_record_created
 from app.services.lead_won_handler import handle_lead_won
@@ -57,6 +58,16 @@ def register_event_handlers() -> None:
 
     if not is_registered("ESTIMATE_APPROVED", handle_estimate_approved):
         register("ESTIMATE_APPROVED", handle_estimate_approved)
+
+    # A SECOND handler on the same event, registered after the deposit-invoice
+    # one above. `publish()` awaits handlers in registration order inside the
+    # one request transaction (app/core/events.py), so approving an estimate
+    # drafts the deposit invoice and then generates the BOM lines; either
+    # raising rolls back both along with the approval itself, which is the
+    # behaviour wanted — a project should never end up with materials but no
+    # invoice, or vice versa.
+    if not is_registered("ESTIMATE_APPROVED", handle_estimate_approved_bom):
+        register("ESTIMATE_APPROVED", handle_estimate_approved_bom)
 
     if not is_registered("PROJECT_COMPLETED", handle_project_completed):
         register("PROJECT_COMPLETED", handle_project_completed)
