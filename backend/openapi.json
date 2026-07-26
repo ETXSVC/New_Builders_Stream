@@ -623,6 +623,18 @@
       "BomLinePatchRequest": {
         "description": "Two independent actions in one request shape (design spec Decision\n3): `ordered=True` marks the line ordered (idempotent \u2014 a second\nrequest with `ordered=True` on an already-ordered line does not reset\n`ordered_at`); `vendor_id` attaches/reassigns a vendor, independently\nof `ordered`. There is no `ordered=False` un-marking path \u2014 not\nrequired by the spec, and `ordered_at`'s semantics on an un-mark\naren't specified, so it's deliberately not built.",
         "properties": {
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
           "ordered": {
             "anyOf": [
               {
@@ -1735,6 +1747,18 @@
               }
             ],
             "title": "Category"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
           },
           "name": {
             "anyOf": [
@@ -5482,6 +5506,18 @@
               }
             ],
             "title": "Contact Phone"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
           },
           "name": {
             "anyOf": [

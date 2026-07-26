@@ -8,6 +8,7 @@ from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Vendor
 from app.schemas.vendor import VendorCreateRequest, VendorListResponse, VendorPatchRequest, VendorResponse
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(tags=["vendors"])
 
@@ -74,6 +75,7 @@ async def update_vendor(
     _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> VendorResponse:
     vendor = await _get_vendor_or_404(current, vendor_id)
+    guard_stale_write(vendor, payload.expected_updated_at, entity_name="vendor")
 
     if payload.name is not None:
         vendor.name = payload.name

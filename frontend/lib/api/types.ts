@@ -3143,6 +3143,8 @@ export interface components {
          *     aren't specified, so it's deliberately not built.
          */
         BomLinePatchRequest: {
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Ordered */
             ordered?: boolean | null;
             /** Vendor Id */
@@ -3753,6 +3755,8 @@ export interface components {
         CostCatalogItemPatchRequest: {
             /** Category */
             category?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Name */
             name?: string | null;
             /** Unit */
@@ -5648,6 +5652,8 @@ export interface components {
             contact_email?: string | null;
             /** Contact Phone */
             contact_phone?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Name */
             name?: string | null;
             /** Notes */
