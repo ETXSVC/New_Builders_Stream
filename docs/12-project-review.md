@@ -93,10 +93,18 @@ Both High findings were **closed on 2026-07-25** — see §6.
 
 ~~1. **H1**~~ and ~~2. **H2**~~ — both done, §6.
 
-3. **M1** — quantize the three remaining monetary writes (small, mechanical, correctness-affecting).
-4. **M5** — surface the silent compliance failures (a user-visible dead end today).
-5. **M10** — reconcile the docs (test counts, the missing event, `/health` vs `/ready`); then **M2/M3** when touching those modules.
-6. Everything else as encountered; the Low list is genuinely low.
+~~3. **M1**~~, ~~4. **M5**~~, ~~5. **M10**~~, ~~**M3**~~, ~~**M4**~~, ~~**M9**~~ — all done, §8.
+
+What is actually left, in the order worth doing it:
+
+1. **M8's client-role e2e spec** — the client-role scoping added in §7.1 has
+   unit coverage but no browser-level proof. The rest of M8's list
+   (integrations, my-tasks, MFA enrollment, branding) is ordinary coverage
+   debt; this one covers code that is both new and security-relevant.
+2. **M2** — route the six cross-router private-helper imports through
+   `app/services/`. No defect today, purely the coupling CLAUDE.md forbids.
+3. **M6/M7** — frontend confirm-pattern consistency and tab a11y.
+4. The Low list, which is genuinely low.
 
 ---
 
@@ -362,3 +370,58 @@ leaves the role, matching migration 0001's treatment of `app_user`.
 - **Invitation ids are still the accept credential** (opaque tokens were an
   explicitly excluded item in an earlier scope decision). Revocation now
   exists, which was the sharper half of the problem.
+
+---
+
+## 8. Follow-up — 2026-07-26: the Medium list
+
+Six of §2's ten Medium findings are now closed. Recorded here because §4's
+ordering list is what the next session reads to pick up work, and a review
+doc that still lists closed findings as open is worse than no list.
+
+| # | Closed by | Note |
+|---|---|---|
+| M1 | PR #41 | Quantize **before** the guard, not after — see below. |
+| M4 | PR #41 | `ESTIMATE_APPROVED` now publishes `actor_id=current.user.id`. |
+| M9 | PR #41 | `retries: 1` + `trace: "on-first-retry"`. |
+| M5 | PR #42 | Separate `notificationsError` state, a Retry button, and an e2e spec that forces the 500 with `page.route`. |
+| M10 | — | Counts reconciled; CLAUDE.md documents `PROJECT_COMPLETED`, the `/health` vs `/ready` split, MFA, rate limiting, upload caps, and the split topology. |
+| M3 | this change | See below. |
+
+**M1's description above is wrong in one detail**, left in place rather than
+edited so the correction is visible: it says `10.004` "passes the guard and
+persists as `10.00`". It does not — `Decimal("10.004") > Decimal("10.00")` is
+`True`, so an exact-remainder payment of `10.004` was *rejected* with a 409.
+The real symptoms were a **false rejection** of a payment that rounds to the
+remainder, and **response drift** (`9.999` echoed back to the caller while
+`10.00` was stored). Both fixed by quantizing before the comparison rather
+than letting `Numeric(12,2)` round after it.
+
+### 8.1 M3 — the catalog cursor key was mutable
+
+`_paginate_resolved_items` sorted on `(updated_at, id)`, chosen to echo the
+`(created_at, id)` composite `paginate()` hardcodes, substituting `updated_at`
+because `cost_catalog_items` has no `created_at` column. The substitution
+looked cosmetic and was not: `created_at` is immutable and `updated_at` is
+not. A `PATCH /catalogs/items/{id}` — an ordinary unit-rate edit, the most
+likely write to land against this table while someone is paging it — rewrites
+`updated_at` to `now()` and moves that row to the **end** of the ordering. A
+row already returned on page 1 then sorts after the caller's cursor and comes
+back a second time.
+
+The key is now `id` alone: random, so it carries no calendar meaning, but
+unique and **immutable**, which is the only property a cursor key needs. That
+is the same conclusion `_paginate_markup_profiles` in the same module had
+already reached from the other direction (that table has no timestamp column
+at all), so the two list routes now share `_encode_id_cursor` /
+`_decode_id_cursor` and one rationale. **No migration**: adding a `created_at`
+column was considered and rejected — the schema doc deliberately omits it, and
+an immutable key was already available.
+
+Cost: a caller walking the catalog sees every item exactly once but in no
+human-meaningful order. `category`/`search` are how this API expects a caller
+to find a specific item; page order never was.
+
+Pinned by `test_list_catalog_items_pagination_survives_a_concurrent_edit`,
+which edits an already-returned row mid-walk. Against the old key it fails
+with the duplicate id in the seen-list; against the new one it passes.
