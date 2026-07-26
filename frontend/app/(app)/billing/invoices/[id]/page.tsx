@@ -4,6 +4,7 @@ import * as React from "react";
 import { useParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/ui/confirm-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -34,7 +35,6 @@ export default function InvoiceDetailPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [planGate, setPlanGate] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [confirmingVoid, setConfirmingVoid] = React.useState(false);
 
   const [paymentAmount, setPaymentAmount] = React.useState("");
   const [paymentDate, setPaymentDate] = React.useState("");
@@ -87,7 +87,6 @@ export default function InvoiceDetailPage() {
       }
       setPaymentAmount("");
       setPaymentDate("");
-      setConfirmingVoid(false);
       await load();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
@@ -148,27 +147,17 @@ export default function InvoiceDetailPage() {
                 Send invoice
               </Button>
             )}
-            {isOpen &&
-              (confirmingVoid ? (
-                <span className="flex items-center gap-2 text-sm">
-                  Void this invoice?
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => act(`/api/invoices/${invoice.id}/void`)}
-                    disabled={busy}
-                  >
-                    Yes, void
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={() => setConfirmingVoid(false)}>
-                    Cancel
-                  </Button>
-                </span>
-              ) : (
-                <Button variant="outline" onClick={() => setConfirmingVoid(true)} disabled={busy}>
-                  Void
-                </Button>
-              ))}
+            {isOpen && (
+              <ConfirmButton
+                variant="outline"
+                disabled={busy}
+                confirmMessage="Void this invoice?"
+                confirmLabel="Yes, void"
+                onConfirm={() => act(`/api/invoices/${invoice.id}/void`)}
+              >
+                Void
+              </ConfirmButton>
+            )}
           </div>
 
           {invoice.status === "sent" && (
