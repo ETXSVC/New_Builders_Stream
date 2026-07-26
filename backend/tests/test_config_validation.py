@@ -70,6 +70,23 @@ def test_development_env_accepts_dev_defaults():
             "MIGRATIONS_DATABASE_URL",
         ),
         ({"frontend_base_url": "http://localhost:3001"}, "FRONTEND_BASE_URL"),
+        # config.py's own comment on integration_token_encryption_key has
+        # always said it "must not be the same value as jwt_secret";
+        # nothing checked it until now. Both values here are otherwise
+        # perfectly acceptable — long, non-dev — so this case fails ONLY
+        # on the equality rule.
+        (
+            {
+                "jwt_secret": "c" * 64,
+                "integration_token_encryption_key": "c" * 64,
+            },
+            "same value as JWT_SECRET",
+        ),
+        # Credentials over cleartext SMTP.
+        (
+            {"smtp_host": "smtp.example.com", "smtp_username": "mailer", "smtp_starttls": False},
+            "SMTP_STARTTLS",
+        ),
     ],
 )
 def test_each_dev_default_is_rejected_in_production(overrides, expected_fragment):
@@ -91,3 +108,20 @@ def test_all_violations_reported_in_one_error():
     assert "JWT_SECRET" in message
     assert "STRIPE_WEBHOOK_SECRET" in message
     assert "FRONTEND_BASE_URL" in message
+
+
+def test_unauthenticated_smtp_relay_without_starttls_is_allowed():
+    """An open relay on a trusted network is a legitimate self-hosted
+    setup, and there is no password to leak — so the STARTTLS rule fires
+    only when SMTP_USERNAME is actually set. Without this, the check would
+    refuse to boot a perfectly valid configuration.
+    """
+    settings = _settings(smtp_host="smtp.internal", smtp_starttls=False)
+    assert settings.smtp_host == "smtp.internal"
+
+
+def test_starttls_enabled_with_credentials_is_allowed():
+    settings = _settings(
+        smtp_host="smtp.example.com", smtp_username="mailer", smtp_starttls=True
+    )
+    assert settings.smtp_username == "mailer"

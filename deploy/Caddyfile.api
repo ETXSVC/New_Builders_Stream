@@ -28,10 +28,40 @@
 }
 
 {$API_ADDRESS} {
+	encode gzip
+
+	# HSTS, matching the sibling Caddyfile. The API is a separate origin
+	# in the split topology and needs its own header — a browser that has
+	# only ever pinned app.<domain> knows nothing about api.<domain>.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	# Same outer belt the sibling Caddyfile carries, and it was missing
+	# here. In the split topology this proxy fronts the routes that
+	# actually take uploads (project/compliance documents, signature
+	# images) — so the file this cap most needs to stop reaches the
+	# backend through THIS proxy, not through the frontend's. The
+	# application-layer caps (app/core/uploads.py) remain the real
+	# per-route limits; this only keeps a multi-gigabyte body from being
+	# buffered before any of them get a say.
+	request_body {
+		max_size 30MB
+	}
+
 	@frontend remote_ip {$FRONTEND_SERVER_IP}
 	handle @frontend {
 		reverse_proxy backend:8000
 	}
 	# Anything not from the frontend server: flat 403, no detail.
-	respond 403
+	#
+	# `handle` rather than a bare `respond`: a bare directive's position
+	# in the evaluation order is decided by Caddy's own directive
+	# ordering, not by where it sits in this file, so the 403 relied on
+	# `handle` blocks being evaluated first — true today, but an
+	# invariant expressed nowhere and silently breakable by a Caddy
+	# upgrade or by anyone adding a directive above it. `handle` blocks
+	# are mutually exclusive and evaluated in written order, which makes
+	# "frontend gets the proxy, everyone else gets 403" explicit.
+	handle {
+		respond 403
+	}
 }

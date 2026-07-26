@@ -197,6 +197,29 @@ class Settings(BaseSettings):
                 "FRONTEND_BASE_URL still points at localhost — OAuth redirects and "
                 "invitation-email links would send users to their own machine"
             )
+        # `integration_token_encryption_key`'s own comment above already
+        # states it "must not be the same value as jwt_secret" — nothing
+        # checked it, so the requirement lived only in a comment nobody
+        # reads while copying an .env. The two secrets have different
+        # cryptographic purposes (Fernet symmetric encryption vs HMAC
+        # signing) and, more to the point, different blast radii: leaking
+        # the signing secret forges sessions, leaking the encryption key
+        # decrypts every tenant's stored OAuth tokens. Sharing one value
+        # merges those into a single failure.
+        if self.integration_token_encryption_key == self.jwt_secret:
+            problems.append(
+                "INTEGRATION_TOKEN_ENCRYPTION_KEY is the same value as JWT_SECRET — "
+                "they are separate secrets with separate blast radii and must differ"
+            )
+        # Credentials over an unencrypted SMTP session. Only a violation
+        # when there is something to protect: an unauthenticated relay
+        # (the common self-hosted case) is a deliberate, valid setup and
+        # is left alone.
+        if self.smtp_host and self.smtp_username and not self.smtp_starttls:
+            problems.append(
+                "SMTP_STARTTLS is disabled while SMTP_USERNAME is set — the mail "
+                "password would cross the network in the clear on every send"
+            )
 
         if problems:
             details = "\n".join(f"  - {p}" for p in problems)
