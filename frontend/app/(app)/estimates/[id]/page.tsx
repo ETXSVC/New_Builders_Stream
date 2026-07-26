@@ -263,6 +263,26 @@ export default function EstimateDetailPage() {
             </div>
           )}
           <EstimateBuilder
+            // `key` forces a fresh builder whenever the estimate identity
+            // changes. Without it, navigating between estimates without
+            // unmounting the page — which is exactly what "Duplicate as new
+            // draft" does, `router.push`ing to a new id on the same route —
+            // keeps the previous builder instance alive, and its `lines` come
+            // from a `useState` INITIALIZER that only ever runs on mount. A
+            // changed `initialLines` prop is therefore ignored, so whatever
+            // the builder was first seeded with is what it shows forever.
+            //
+            // That turns any transient bad read into a permanent one: mount
+            // once with an estimate whose `line_items` had not landed yet and
+            // the builder stays empty for good, with no amount of waiting or
+            // re-fetching recovering it.
+            //
+            // `key` rather than an effect that re-seeds on `initialLines`:
+            // re-seeding on the prop would also fire while someone is midway
+            // through editing quantities and would discard their input. The
+            // identity of the estimate is the only thing that should reset
+            // this state, and that is precisely what `key` expresses.
+            key={estimate.id}
             estimateId={estimate.id}
             initialLines={estimate.line_items}
             onSaved={(total, categoryBreakdown) => {
