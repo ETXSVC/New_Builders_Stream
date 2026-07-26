@@ -96,6 +96,29 @@ test("materials: BOM auto-generation, vendor assignment, receiving", async ({ pa
     });
     expect(acceptResponse.ok()).toBeTruthy();
 
+    // Grant this client access to the project (migration 0019, which landed
+    // after this spec was written). Being a client-role member of the COMPANY
+    // is no longer enough to see a job's pricing or sign its contract — the
+    // customer has to be on that specific project, which is what an admin
+    // decides here. Without it the estimate page below renders no signature
+    // form at all, because `_get_estimate_or_404` 404s rather than 403s so a
+    // client cannot enumerate another client's documents. Granted through the
+    // same admin API a real deployment uses, not by writing the row directly.
+    const membersResponse = await apiContext.get("/companies/members", {
+      headers: { Authorization: `Bearer ${adminAccessToken}` },
+    });
+    expect(membersResponse.ok()).toBeTruthy();
+    const members = await membersResponse.json();
+    const clientUserId = members.items.find(
+      (member: { email: string; user_id: string }) => member.email === clientEmail,
+    ).user_id;
+
+    const grantResponse = await apiContext.post(`/projects/${projectId}/clients`, {
+      headers: { Authorization: `Bearer ${adminAccessToken}` },
+      data: { user_id: clientUserId },
+    });
+    expect(grantResponse.ok()).toBeTruthy();
+
     await apiContext.dispose();
 
     // Sign in as the client THROUGH THE BROWSER — approval must happen via
