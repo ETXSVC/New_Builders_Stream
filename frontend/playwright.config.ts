@@ -31,6 +31,27 @@ export default defineConfig({
   // `on-first-retry` rather than `on`: tracing every attempt of a green
   // run costs time and uploads artifacts nobody opens.
   retries: 1,
+  // ...and CI must ACT on that signal, not merely print it.
+  //
+  // `retries: 1` above claims a flaky test "still shows as flaky, which is
+  // the signal worth having". It did show — in the log, where nobody looks.
+  // Playwright exits 0 when a retry passes, so the GitHub check went green
+  // and `2 flaky, 6 passed` was indistinguishable from a clean run at the
+  // only level anyone actually reads: the check-run conclusion.
+  //
+  // That blind spot hid two real product bugs, both since fixed (#47, #48):
+  // a superseded fetch overwriting fresh state, and the API returning 201
+  // for a write that was not yet readable. Neither was test flakiness.
+  // Both were found only by opening raw job logs by hand — and neither
+  // would have needed finding had the job gone red the first time it
+  // flaked.
+  //
+  // CI-only (Playwright's own documented pattern) so local iteration stays
+  // usable: someone re-running one spec does not want the whole run failed
+  // by a retry-passed test, but a merge gate absolutely does. GitHub
+  // Actions sets CI=true for every step; set CI=1 locally to reproduce the
+  // gate's behaviour.
+  failOnFlakyTests: !!process.env.CI,
   use: {
     trace: "on-first-retry",
     // The worktree's docker-compose.yml maps the frontend container to
