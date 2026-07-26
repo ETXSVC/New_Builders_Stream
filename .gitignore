@@ -46,3 +46,8 @@ frontend/playwright-report/
 # Pure runtime state (queued Dramatiq messages, rate-limit counters from
 # test runs), never an input to anything.
 dump.rdb
+
+# Sandbox-only Playwright shim: pins executablePath at the Chromium build
+# present in this dev container when it does not match the version
+# @playwright/test expects. Machine-specific, never a CI input.
+frontend/playwright.local.config.ts

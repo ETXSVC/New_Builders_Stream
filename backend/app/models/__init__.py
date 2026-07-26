@@ -28,6 +28,9 @@ from app.models.expense import Expense
 from app.models.integration_connection import IntegrationConnection
 from app.models.integration_sync_record import IntegrationSyncRecord
 from app.models.refresh_token import RefreshToken
+from app.models.vendor import Vendor
+from app.models.bom_line import BomLine
+from app.models.bom_line_receipt import BomLineReceipt
 from app.models.company_branding import CompanyBranding
 from app.models.project_client import ProjectClient
 from app.models.lead_client import LeadClient
@@ -65,6 +68,9 @@ __all__ = [
     "IntegrationConnection",
     "IntegrationSyncRecord",
     "RefreshToken",
+    "Vendor",
+    "BomLine",
+    "BomLineReceipt",
     "CompanyBranding",
     "ProjectClient",
     "LeadClient",

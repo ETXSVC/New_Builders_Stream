@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLatestOnly } from "@/lib/use-latest-only";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -61,13 +62,24 @@ export default function EstimateDetailPage() {
 
   const canEdit = role === "admin" || role === "project_manager";
 
+  const beginLoad = useLatestOnly();
+
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch(`/api/estimates/${id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      // Every setState below is gated on this load still being the newest.
+      // `id` changes under a mounted component — "Duplicate as new draft"
+      // routes from the approved estimate straight to the new one — so the
+      // outgoing estimate's response can land after the incoming one's and
+      // put the OLD estimate back on screen under the NEW url. The visible
+      // symptom is a fresh draft rendering as read-only, because the stale
+      // approved record it reverted to has no editable line inputs.
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load estimate");
         return;
@@ -77,15 +89,27 @@ export default function EstimateDetailPage() {
         const esigResponse = await fetch(`/api/esignatures/${data.esignature_id}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
-        if (esigResponse.ok) setEsignature(await esigResponse.json());
+        if (esigResponse.ok) {
+          const esig = await esigResponse.json();
+          if (!isCurrent()) return;
+          setEsignature(esig);
+        }
       }
     } catch {
+      if (!isCurrent()) return;
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, id]);
+  }, [accessToken, beginLoad, id]);
+
+  // A SECOND counter, deliberately not shared with `beginLoad` above: the two
+  // loaders are independent, and one counter between them would mean starting
+  // a profile load invalidates an in-flight estimate load (and vice versa),
+  // silently dropping a result that was never superseded.
+  const beginLoadProfiles = useLatestOnly();
 
   const loadProfiles = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadProfiles();
     try {
       const all: MarkupProfileOption[] = [];
       let cursor: string | null = null;
@@ -100,11 +124,12 @@ export default function EstimateDetailPage() {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setProfiles(all);
     } catch {
       // Non-blocking — the Select just stays empty if this fails.
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoadProfiles]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => {

@@ -11,6 +11,7 @@ import { CommunicationLog } from "@/components/leads/CommunicationLog";
 import { LeadForm, leadPayload, LeadFormValues } from "@/components/leads/LeadForm";
 import { LEAD_TRANSITIONS, labelFor } from "@/lib/state-machines";
 import { formatCurrency } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Lead {
   id: string;
@@ -33,13 +34,16 @@ export default function LeadDetailPage() {
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch(`/api/leads/${id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load lead");
         return;
@@ -48,7 +52,7 @@ export default function LeadDetailPage() {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, id]);
+  }, [accessToken, beginLoad, id]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in load's call path
@@ -186,8 +190,10 @@ function LeadEstimatesList({ leadId }: { leadId: string }) {
   const { accessToken } = useAuth();
   const [estimates, setEstimates] = React.useState<{ id: string; status: string; total: string | null }[]>([]);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     // Client-side filter: no ?lead_id= query param exists on
     // GET /estimates (out of this plan's scope to add one). All pages
     // are fetched to exhaustion so the filter sees the full result set.
@@ -203,11 +209,12 @@ function LeadEstimatesList({ leadId }: { leadId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setEstimates(all.filter((e) => e.lead_id === leadId));
     } catch {
       // Non-blocking — the list just stays empty if this fails.
     }
-  }, [accessToken, leadId]);
+  }, [accessToken, beginLoad, leadId]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

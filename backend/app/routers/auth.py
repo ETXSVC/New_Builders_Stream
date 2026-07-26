@@ -422,7 +422,7 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     payload: ChangePasswordRequest,
-    current: CurrentUser = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user, scope="function"),
 ) -> None:
     """Verify-then-rehash, then revoke EVERY refresh token the user holds
     across all families/devices (docs/07 Section 1's 'password change'
@@ -465,7 +465,7 @@ async def change_password(
 @router.post("/mfa/enroll", response_model=MfaEnrollResponse)
 async def mfa_enroll(
     response: Response,
-    current: CurrentUser = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user, scope="function"),
 ) -> MfaEnrollResponse:
     """Begin (or restart) TOTP enrollment. The base32 secret is presentable
     exactly once, here; storage is Fernet ciphertext. Re-enrolling while
@@ -485,7 +485,7 @@ async def mfa_enroll(
 @router.post("/mfa/activate", status_code=status.HTTP_204_NO_CONTENT)
 async def mfa_activate(
     payload: MfaActivateRequest,
-    current: CurrentUser = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user, scope="function"),
 ) -> None:
     """Prove possession of the enrolled secret; only then does MFA start
     gating login. The replay guard starts here too (the activation code's
@@ -510,7 +510,7 @@ async def mfa_activate(
 @router.post("/mfa/disable", status_code=status.HTTP_204_NO_CONTENT)
 async def mfa_disable(
     payload: MfaDisableRequest,
-    current: CurrentUser = Depends(get_current_user),
+    current: CurrentUser = Depends(get_current_user, scope="function"),
 ) -> None:
     """BOTH factors required (spec Decision 6): a hijacked 15-minute access
     token alone must not be able to strip MFA. Password first (same

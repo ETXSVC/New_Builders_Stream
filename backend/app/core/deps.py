@@ -31,6 +31,35 @@ async def get_current_user():
     Verified empirically: the same scenario with an eager commit() here
     returns zero rows for a route handler's own company; with the commit
     deferred past `yield`, it correctly returns the row.
+
+    **Every `Depends(get_current_user)` in this codebase MUST pass
+    `scope="function"`.** Deferring the commit past `yield` is necessary but
+    not sufficient — it also matters *how far* past. FastAPI runs a
+    dependency's exit code on one of two exit stacks (`fastapi/routing.py`):
+
+        async with AsyncExitStack() as request_stack:      # closes LAST
+            async with AsyncExitStack() as function_stack: # closes FIRST
+                response = await f(request)
+            await response(scope, receive, send)           # response sent here
+
+    A generator dependency defaults to the `request` stack
+    (`_get_computed_scope` returns "request" for any gen callable), which
+    closes *after* the response has already been sent. So `POST /invitations`
+    returned `201 Created` to the client and committed afterwards — a caller
+    that immediately used the returned id could beat the commit and get a 404,
+    because its new transaction's READ COMMITTED snapshot predated the insert.
+
+    That was reproduced, not theorised: 400 concurrent create-then-accept
+    cycles produced 5 x 404, and instrumenting the miss showed the RLS probe
+    GUC set correctly and the row visible milliseconds later — the row simply
+    wasn't committed yet when the probe's snapshot was taken.
+
+    `scope="function"` moves the teardown to the inner stack, which closes
+    *before* `await response(...)`, so the commit is durable by the time the
+    client can act on the response. The scope is part of the dependency cache
+    key (`_get_cache_key`), so a mix of scoped and unscoped call sites would
+    resolve `get_current_user` TWICE per request — two sessions, two
+    transactions, only one committed. It is all-or-nothing on purpose.
     """
     token = bearer_token_ctx.get()
     if token is None:
@@ -90,7 +119,7 @@ async def get_current_user():
 
 
 def require_role(*allowed_roles: str):
-    async def dependency(current: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    async def dependency(current: CurrentUser = Depends(get_current_user, scope="function")) -> CurrentUser:
         if current.role not in allowed_roles:
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Requires one of roles: {allowed_roles}")
         return current
@@ -99,7 +128,7 @@ def require_role(*allowed_roles: str):
 
 
 async def block_if_read_only(
-    request: Request, current: CurrentUser = Depends(get_current_user)
+    request: Request, current: CurrentUser = Depends(get_current_user, scope="function")
 ) -> None:
     """Task 3.24 (design spec Section 6). GET/HEAD/OPTIONS always pass —
     only non-read methods are subject to this check. Resolves the caller's
@@ -108,7 +137,7 @@ async def block_if_read_only(
     Stripe's more granular dunning states into one simple rule rather than
     mirroring Stripe's exact status machine.
 
-    `current: CurrentUser = Depends(get_current_user)` is deliberately the
+    `current: CurrentUser = Depends(get_current_user, scope="function")` is deliberately the
     SAME dependency every write route's own `require_role(...)` already
     depends on — FastAPI caches a dependency's result per request by
     callable+params, so declaring this alongside `require_role(...)` on the

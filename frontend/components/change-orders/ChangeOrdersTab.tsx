@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatCurrency } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface ChangeOrder {
   id: string;
@@ -28,8 +29,10 @@ export function ChangeOrdersTab({ projectId }: { projectId: string }) {
 
   const canWrite = role === "admin" || role === "project_manager";
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       const all: ChangeOrder[] = [];
       let cursor: string | null = null;
@@ -47,11 +50,12 @@ export function ChangeOrdersTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setChangeOrders(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoadAll, projectId]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => loadAll());

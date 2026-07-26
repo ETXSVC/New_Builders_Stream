@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { formatCurrency } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface CatalogItem {
   id: string;
@@ -20,8 +21,10 @@ export function CatalogPanel({ onAdd }: { onAdd: (item: CatalogItem) => void }) 
   const [search, setSearch] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       // Follows next_cursor to exhaustion — the catalog panel needs the
       // whole browsable set, not one page (same pagination-completeness
@@ -44,11 +47,12 @@ export function CatalogPanel({ onAdd }: { onAdd: (item: CatalogItem) => void }) 
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setItems(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, search]);
+  }, [accessToken, beginLoadAll, search]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => loadAll());

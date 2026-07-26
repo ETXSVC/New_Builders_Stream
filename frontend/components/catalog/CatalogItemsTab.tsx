@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency } from "@/lib/format";
 import { CsvImport } from "./CsvImport";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface CatalogItem {
   id: string;
@@ -31,8 +32,10 @@ export function CatalogItemsTab() {
 
   const canWrite = role === "admin" || role === "project_manager";
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       const all: CatalogItem[] = [];
       let cursor: string | null = null;
@@ -50,11 +53,12 @@ export function CatalogItemsTab() {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setItems(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoadAll]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => loadAll());

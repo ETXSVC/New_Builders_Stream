@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Branding {
   logo_storage_path: string | null;
@@ -23,13 +24,16 @@ export function BrandingTab() {
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch("/api/companies/branding", {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load branding");
         return;
@@ -40,7 +44,7 @@ export function BrandingTab() {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoad]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());
