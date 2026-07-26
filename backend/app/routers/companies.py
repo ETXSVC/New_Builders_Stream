@@ -143,7 +143,7 @@ async def list_company_users(
 
 
 @router.get("/{company_id}", response_model=CompanyResponse)
-async def get_company(company_id: uuid.UUID, current: CurrentUser = Depends(get_current_user)) -> CompanyResponse:
+async def get_company(company_id: uuid.UUID, current: CurrentUser = Depends(get_current_user, scope="function")) -> CompanyResponse:
     result = await current.session.execute(select(Company).where(Company.id == company_id))
     company = result.scalar_one_or_none()
     if company is None:
