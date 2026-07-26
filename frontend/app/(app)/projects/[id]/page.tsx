@@ -27,6 +27,11 @@ interface StaffProject {
   site_address: string;
   status: string;
   projected_start_date: string | null;
+  // Optimistic-concurrency token (backend: app/services/concurrency.py).
+  // Held as the raw string from the API and passed back VERBATIM — parsing it
+  // into a Date would truncate Postgres's microseconds to milliseconds and the
+  // comparison would never match again.
+  updated_at: string;
 }
 
 const TABS = ["Overview", "Phases & tasks", "Documents", "Daily logs", "Change orders", "Estimates", "Materials", "Subcontractors"] as const;
@@ -151,7 +156,15 @@ function OverviewTab({ project, onSaved }: { project: StaffProject; onSaved: () 
       const response = await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ name, site_address: siteAddress, projected_start_date: startDate || null }),
+        body: JSON.stringify({
+          name,
+          site_address: siteAddress,
+          projected_start_date: startDate || null,
+          // Rejects the save with a 409 (surfaced via data.detail below) if
+          // someone else changed this project since it was loaded, instead of
+          // silently overwriting their work.
+          expected_updated_at: project.updated_at,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {

@@ -26,6 +26,7 @@ from app.services.client_access import (
     revoke_client_access,
 )
 from app.services.lead_transitions import is_legal_transition
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -136,6 +137,10 @@ async def update_lead(
     _ro: None = Depends(block_if_read_only),
 ) -> LeadResponse:
     lead = await _get_lead_or_404(current, lead_id)
+    # First guard in the "validate before any setattr" sequence this handler
+    # already documents below, so a stale write is rejected on the same terms
+    # as an illegal status transition.
+    guard_stale_write(lead, payload.expected_updated_at, entity_name="lead")
 
     previous_status = lead.status
     requested_status = payload.status
@@ -165,7 +170,9 @@ async def update_lead(
             f"Illegal lead status transition: {previous_status} -> {requested_status}",
         )
 
-    update_fields = payload.model_dump(exclude_unset=True, exclude={"status"})
+    update_fields = payload.model_dump(
+        exclude_unset=True, exclude={"status", "expected_updated_at"}
+    )
     for field_name, value in update_fields.items():
         setattr(lead, field_name, value)
     if status_changing and requested_status is not None:

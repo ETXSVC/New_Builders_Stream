@@ -28,7 +28,12 @@ class BomLinePatchRequest(BaseModel):
 
     ordered: bool | None = None
     vendor_id: uuid.UUID | None = None
-
+    # Optimistic concurrency (app/services/concurrency.py): the `updated_at`
+    # the caller last read. Omit it and the write is unchecked, as before;
+    # send it and a 409 is raised if someone else changed the row meanwhile.
+    # Pass the value through verbatim — JS `Date` truncates to milliseconds
+    # and a re-serialized timestamp will never match.
+    expected_updated_at: datetime | None = None
 
 class BomLineReceiptCreateRequest(BaseModel):
     quantity: Decimal

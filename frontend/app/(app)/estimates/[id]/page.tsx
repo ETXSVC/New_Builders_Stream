@@ -35,6 +35,11 @@ interface Estimate {
   project_id: string | null;
   lead_id: string | null;
   line_items: LineItem[];
+  // Optimistic-concurrency token (backend: app/services/concurrency.py).
+  // Held as the raw string from the API and passed back VERBATIM — parsing it
+  // into a Date would truncate Postgres's microseconds to milliseconds and the
+  // comparison would never match again.
+  updated_at: string;
 }
 
 interface MarkupProfileOption {
@@ -143,7 +148,10 @@ export default function EstimateDetailPage() {
     const response = await fetch(`/api/estimates/${estimate.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ markup_profile_id: markupProfileId }),
+      body: JSON.stringify({
+        markup_profile_id: markupProfileId,
+        expected_updated_at: estimate.updated_at,
+      }),
     });
     if (response.ok) void load();
   }
@@ -263,6 +271,26 @@ export default function EstimateDetailPage() {
             </div>
           )}
           <EstimateBuilder
+            // `key` forces a fresh builder whenever the estimate identity
+            // changes. Without it, navigating between estimates without
+            // unmounting the page — which is exactly what "Duplicate as new
+            // draft" does, `router.push`ing to a new id on the same route —
+            // keeps the previous builder instance alive, and its `lines` come
+            // from a `useState` INITIALIZER that only ever runs on mount. A
+            // changed `initialLines` prop is therefore ignored, so whatever
+            // the builder was first seeded with is what it shows forever.
+            //
+            // That turns any transient bad read into a permanent one: mount
+            // once with an estimate whose `line_items` had not landed yet and
+            // the builder stays empty for good, with no amount of waiting or
+            // re-fetching recovering it.
+            //
+            // `key` rather than an effect that re-seeds on `initialLines`:
+            // re-seeding on the prop would also fire while someone is midway
+            // through editing quantities and would discard their input. The
+            // identity of the estimate is the only thing that should reset
+            // this state, and that is precisely what `key` expresses.
+            key={estimate.id}
             estimateId={estimate.id}
             initialLines={estimate.line_items}
             onSaved={(total, categoryBreakdown) => {
