@@ -25,6 +25,10 @@ const STATUS_TONES: Record<string, keyof typeof TONE_CLASSES> = {
   open: "slate",
   in_progress: "amber",
   done: "green",
+  needed: "slate",
+  ordered: "amber",
+  partially_received: "blue",
+  received: "green",
 };
 
 export function StatusBadge({ status }: { status: string }) {

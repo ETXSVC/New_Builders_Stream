@@ -606,6 +606,13 @@ def test_every_gated_module_mutating_route_has_the_correct_tier_gate():
             return "estimation"
         if "/change-orders" in path:
             return "estimation"
+        # BOM (migration 0022). `/vendors` and `/materials` are
+        # estimation-tier surfaces sharing no prefix with the rest of the
+        # module, so they need their own clause here: unclassified routes are
+        # skipped outright by this test, so without it the five BOM mutating
+        # routes would never be checked for carrying the gate at all.
+        if path.startswith("/vendors") or "/materials" in path:
+            return "estimation"
         if path.startswith("/subcontractors") or path.startswith("/compliance") or "/subcontractor-assignments" in path:
             return "compliance"
         if "/invoices" in path or path.startswith("/bills") or "/expenses" in path:
@@ -698,6 +705,13 @@ def test_tier_gating_classified_route_count_per_module_is_pinned():
             return "estimation"
         if "/change-orders" in path:
             return "estimation"
+        # BOM (migration 0022) — see the identical clause in
+        # test_every_gated_module_mutating_route_has_the_correct_tier_gate.
+        # Omitting it here would leave the pinned count below at its old value
+        # and still pass, which is exactly the silent-coverage-loss this
+        # assertion's own failure message warns about.
+        if path.startswith("/vendors") or "/materials" in path:
+            return "estimation"
         if path.startswith("/subcontractors") or path.startswith("/compliance") or "/subcontractor-assignments" in path:
             return "compliance"
         if "/invoices" in path or path.startswith("/bills") or "/expenses" in path:
@@ -725,7 +739,10 @@ def test_tier_gating_classified_route_count_per_module_is_pinned():
 
     assert counts == {
         "child_branches": 1,
-        "estimation": 21,
+        # 26 since the BOM module landed: +5 mutating routes — POST /vendors,
+        # PATCH /vendors/{id}, POST /projects/{id}/materials,
+        # PATCH /materials/{id}, POST /materials/{id}/receipts.
+        "estimation": 26,
         # 5 since PATCH /subcontractors/{id} was added: a subcontractor was
         # create-and-read-only, so a typo'd contact_email — the address
         # compliance-expiry notices are sent to — could never be corrected.
