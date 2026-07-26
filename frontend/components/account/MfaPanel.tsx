@@ -19,6 +19,24 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
   const [currentPassword, setCurrentPassword] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
+  // Set the moment /mfa/activate returns 200, and OR'd into `mfaActive`
+  // below.
+  //
+  // `mfaActive` is a prop derived from the auth context's
+  // `mfaEnrollmentRequired`, which is populated at login and never
+  // recomputed client-side. `router.refresh()` re-runs server components;
+  // it cannot change a value held in React context. So without this, a
+  // successful enrolment sent `step` back to "idle" with `mfaActive` still
+  // false and the panel rendered "Enable two-factor authentication" again
+  // — telling the user their enrolment had failed when it had in fact
+  // succeeded, and inviting them to enrol a second time.
+  //
+  // A dedicated "am I MFA-active" field on the session (which
+  // app/(app)/account/page.tsx's comment already anticipates) would let
+  // both this and the prop derive from one source; until then this is the
+  // narrower fix, local to the component that knows the activation
+  // happened.
+  const [justActivated, setJustActivated] = React.useState(false);
 
   async function startEnroll() {
     if (submitting) return;
@@ -63,6 +81,7 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
       }
       setStep("idle");
       setTotpCode("");
+      setJustActivated(true);
       router.refresh();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
@@ -110,6 +129,9 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
   // two-factor authentication" form — asking an unauthenticated visitor
   // for their password — with no guard once isHydrating flips to false.
   const hasConfirmedSession = !isHydrating && accessToken !== null;
+  // The prop is the login-time answer; `justActivated` is this session's
+  // more recent one. Either being true means MFA is on.
+  const isActive = mfaActive || justActivated;
 
   return (
     <Card className="max-w-md">
@@ -127,7 +149,7 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
           <p className="text-sm text-slate-500">Loading account status…</p>
         )}
 
-        {hasConfirmedSession && step === "idle" && !mfaActive && (
+        {hasConfirmedSession && step === "idle" && !isActive && (
           <Button onClick={startEnroll} disabled={submitting}>
             Enable two-factor authentication
           </Button>
@@ -164,7 +186,7 @@ export function MfaPanel({ mfaActive }: { mfaActive: boolean }) {
           </form>
         )}
 
-        {hasConfirmedSession && step === "idle" && mfaActive && (
+        {hasConfirmedSession && step === "idle" && isActive && (
           <form onSubmit={disableMfa} className="flex flex-col gap-3">
             <p className="text-sm text-slate-600">Two-factor authentication is on. Disabling it will log you out everywhere.</p>
             <div className="flex flex-col gap-1.5">
