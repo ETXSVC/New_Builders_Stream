@@ -67,6 +67,25 @@ jobs:
             exit 1
           }
 
+      # The compose files above are validated; the Caddyfiles they mount
+      # were not, so a syntax error or a misordered directive in the one
+      # component terminating TLS and enforcing the API's remote_ip
+      # allowlist would only surface when Caddy refused to start on the
+      # real box — after a deploy, with the old container already stopped.
+      # `caddy validate` runs the same adapter Caddy uses at boot.
+      - name: Caddyfiles are valid
+        env:
+          SITE_ADDRESS: app.ci.example.com
+          API_ADDRESS: api.ci.example.com
+          FRONTEND_SERVER_IP: 203.0.113.10
+        run: |
+          docker run --rm -v "$PWD/deploy:/deploy" \
+            -e SITE_ADDRESS -e API_ADDRESS -e FRONTEND_SERVER_IP \
+            caddy:2 caddy validate --adapter caddyfile --config /deploy/Caddyfile
+          docker run --rm -v "$PWD/deploy:/deploy" \
+            -e SITE_ADDRESS -e API_ADDRESS -e FRONTEND_SERVER_IP \
+            caddy:2 caddy validate --adapter caddyfile --config /deploy/Caddyfile.api
+
       - name: Backup scripts parse
         run: |
           bash -n deploy/backup/backup.sh

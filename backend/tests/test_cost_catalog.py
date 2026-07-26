@@ -592,3 +592,49 @@ async def test_list_catalog_items_rejects_malformed_cursor(client):
         "/catalogs/items", params={"cursor": "not-a-real-cursor"}, headers=admin["headers"]
     )
     assert response.status_code == 400
+
+
+async def test_create_response_agrees_with_what_was_stored(client):
+    """`unit_rate` is `Numeric(12, 2)`, so Postgres rounds a finer value on
+    INSERT — but this route builds its response from the in-memory ORM
+    object and never re-reads the row. Before quantizing on write, POSTing
+    `5.678` echoed `5.678` back while storing `5.68`, so the very next GET
+    disagreed with the response that created the item.
+
+    Same response-drift class M1 fixed for payment amounts, in a route M1
+    did not cover. Asserting the POST body and the GET body match is what
+    makes it a regression test rather than a restatement of the rounding.
+    """
+    admin = await _register_and_login(client, "Acme Construction", "rate-drift@acme.test")
+
+    payload = {**_item_payload(), "unit_rate": "5.678"}
+    created = await client.post("/catalogs/items", json=payload, headers=admin["headers"])
+    assert created.status_code == 201, created.text
+    item_id = created.json()["id"]
+
+    fetched = await client.get("/catalogs/items", headers=admin["headers"])
+    assert fetched.status_code == 200, fetched.text
+    stored = next(i for i in fetched.json()["items"] if i["id"] == item_id)
+
+    assert created.json()["unit_rate"] == stored["unit_rate"]
+    # ROUND_HALF_UP, matching Postgres NUMERIC — not Python's default
+    # banker's rounding, which would give "5.68" here by luck but "5.66"
+    # for 5.665.
+    assert stored["unit_rate"] == "5.68"
+
+
+async def test_patch_response_agrees_with_what_was_stored(client):
+    """Same drift on the edit path — `unit_rate` is the one mutable
+    monetary field on this table."""
+    admin = await _register_and_login(client, "Acme Construction", "rate-patch@acme.test")
+    created = await client.post("/catalogs/items", json=_item_payload(), headers=admin["headers"])
+    item_id = created.json()["id"]
+
+    patched = await client.patch(
+        f"/catalogs/items/{item_id}", json={"unit_rate": "9.005"}, headers=admin["headers"]
+    )
+    assert patched.status_code == 200, patched.text
+
+    fetched = await client.get("/catalogs/items", headers=admin["headers"])
+    stored = next(i for i in fetched.json()["items"] if i["id"] == item_id)
+    assert patched.json()["unit_rate"] == stored["unit_rate"] == "9.01"

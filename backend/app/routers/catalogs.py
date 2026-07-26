@@ -13,6 +13,7 @@ full reasoning.
 """
 
 import uuid
+from decimal import ROUND_HALF_UP, Decimal
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError
 from app.core.tier_gating import require_module
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
@@ -60,6 +62,28 @@ _READ_ROLES = ("admin", "project_manager", "accountant")
 # =============================================================================
 
 
+def _quantized_rate(rate: Decimal) -> Decimal:
+    """`unit_rate` at the column's own scale, before it is written.
+
+    `CostCatalogItem.unit_rate` is `Numeric(12, 2)`, so Postgres rounds
+    anything finer on INSERT — but every route below builds its response
+    from the in-memory ORM object and never re-reads the row. Writing
+    `45.678` therefore returned `45.678` to the caller while storing
+    `45.68`, and the next GET disagreed with the POST that created it.
+
+    That is the same response-drift M1 fixed for payment amounts
+    (`invoices.py`/`bills.py`), in the routes M1 did not cover. Same
+    remedy, same `CENTS`/ROUND_HALF_UP constant, so catalog rates round
+    the way every other monetary write in this codebase does.
+
+    Quantize rather than reject: `Decimal` request fields here carry no
+    `decimal_places=2` constraint, and adding one would start 422-ing
+    input this API has always accepted — the opposite of the call M1 made
+    deliberately (see docs/12-project-review.md §8's correction).
+    """
+    return rate.quantize(CENTS, rounding=ROUND_HALF_UP)
+
+
 @router.post(
     "/catalogs/items",
     response_model=CostCatalogItemResponse,
@@ -86,7 +110,7 @@ async def create_catalog_item(
         category=payload.category,
         name=payload.name,
         unit=payload.unit,
-        unit_rate=payload.unit_rate,
+        unit_rate=_quantized_rate(payload.unit_rate),
     )
     current.session.add(item)
     await current.session.flush()
@@ -171,7 +195,7 @@ async def create_catalog_item_override(
         category=payload.category,
         name=payload.name,
         unit=payload.unit,
-        unit_rate=payload.unit_rate,
+        unit_rate=_quantized_rate(payload.unit_rate),
     )
     current.session.add(item)
     await current.session.flush()
@@ -215,7 +239,7 @@ async def update_catalog_item(
     if payload.unit is not None:
         item.unit = payload.unit
     if payload.unit_rate is not None:
-        item.unit_rate = payload.unit_rate
+        item.unit_rate = _quantized_rate(payload.unit_rate)
 
     await current.session.flush()
     return CostCatalogItemResponse.model_validate(item)
@@ -312,7 +336,7 @@ async def bulk_create_catalog_items(
                     category=item_payload.category,
                     name=item_payload.name,
                     unit=item_payload.unit,
-                    unit_rate=item_payload.unit_rate,
+                    unit_rate=_quantized_rate(item_payload.unit_rate),
                 )
                 current.session.add(item)
                 await current.session.flush()
