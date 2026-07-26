@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/ui/confirm-button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -156,7 +157,6 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
 
   async function deletePhase(phaseId: string) {
     if (!accessToken) return;
-    if (!window.confirm("Delete this phase and all of its tasks? This cannot be undone.")) return;
     setError(null);
     try {
       const response = await fetch(`/api/projects/${projectId}/phases/${phaseId}`, {
@@ -176,7 +176,6 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
 
   async function deleteTask(taskId: string) {
     if (!accessToken || pendingTasks[taskId]) return;
-    if (!window.confirm("Delete this task? This cannot be undone.")) return;
     setError(null);
     setPendingTasks((prev) => ({ ...prev, [taskId]: true }));
     try {
@@ -280,14 +279,17 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
                       >
                         Rename
                       </Button>
-                      <Button
+                      <ConfirmButton
                         type="button"
                         size="sm"
                         variant="ghost"
-                        onClick={() => deletePhase(phase.id)}
+                        aria-label={`Delete phase ${phase.name}`}
+                        confirmLabel={`Yes, delete ${phase.name}`}
+                        confirmMessage="Delete this phase and all of its tasks?"
+                        onConfirm={() => deletePhase(phase.id)}
                       >
                         Delete
-                      </Button>
+                      </ConfirmButton>
                     </div>
                   )}
                 </>
@@ -318,15 +320,21 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
                       <StatusBadge status={task.status} />
                     )}
                     {canEdit && (
-                      <Button
+                      <ConfirmButton
                         type="button"
                         size="sm"
                         variant="ghost"
+                        // Every row renders a button captioned "Delete", so
+                        // the visible text alone identifies neither the row
+                        // for a screen reader nor the target for a test.
+                        aria-label={`Delete task ${task.name}`}
+                        confirmLabel={`Yes, delete ${task.name}`}
                         disabled={!!pendingTasks[task.id]}
-                        onClick={() => deleteTask(task.id)}
+                        confirmMessage="Delete this task?"
+                        onConfirm={() => deleteTask(task.id)}
                       >
                         Delete
-                      </Button>
+                      </ConfirmButton>
                     )}
                   </div>
                 ))}

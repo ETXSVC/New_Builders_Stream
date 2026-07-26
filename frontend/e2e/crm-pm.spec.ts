@@ -74,7 +74,12 @@ test("lead to won to drafted project through documents and daily logs", async ({
     await page.getByRole("tab", { name: "Phases & tasks" }).click();
     await page.getByLabel("New phase name").fill("Framing");
     await page.getByRole("button", { name: "Add phase" }).click();
-    await expect(page.getByRole("button", { name: /Framing/ })).toBeVisible({ timeout: 15_000 });
+    // Anchored with ^: the phase's expand/collapse toggle is named
+    // "Framing 0 tasks · 0 done", while its delete control is now named
+    // "Delete phase Framing" (each row's Delete needs the phase name to be
+    // distinguishable at all). A bare /Framing/ matches both and trips
+    // strict mode.
+    await expect(page.getByRole("button", { name: /^Framing/ })).toBeVisible({ timeout: 15_000 });
 
     await page.getByLabel("New task name").fill("Frame walls");
     await page.getByRole("button", { name: "Add task" }).click();
@@ -82,6 +87,48 @@ test("lead to won to drafted project through documents and daily logs", async ({
 
     await page.getByLabel("Status for Frame walls").selectOption("done");
     await expect(page.getByText("1 done")).toBeVisible({ timeout: 15_000 });
+  });
+
+  await test.step("cancelling a delete keeps the task; confirming removes it", async () => {
+    // Destructive actions used to call `window.confirm`, which Playwright
+    // auto-dismisses unless a spec registers a dialog handler — so a test
+    // that "covered" delete would have silently exercised the cancel path
+    // and passed. The inline two-step (components/ui/confirm-button.tsx)
+    // is why this step can exist at all, so it asserts BOTH branches:
+    // cancel must be a genuine no-op, not just a different way to delete.
+    await page.getByLabel("Delete task Frame walls").click();
+    await expect(page.getByText("Delete this task?")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByText("Delete this task?")).toBeHidden();
+    await expect(page.getByText("Frame walls")).toBeVisible();
+
+    await page.getByLabel("Delete task Frame walls").click();
+    await page.getByRole("button", { name: "Yes, delete Frame walls" }).click();
+    await expect(page.getByText("Frame walls")).toBeHidden({ timeout: 15_000 });
+  });
+
+  await test.step("tabs are navigable by keyboard", async () => {
+    // The tablist implements the WAI-ARIA pattern (components/ui/tabs.tsx):
+    // a roving tabindex plus arrow keys, rather than every tab sitting in
+    // the document tab order. Asserting `aria-controls` resolves to the
+    // rendered panel is the part that would have caught the original bug —
+    // the old markup had `role="tab"` and `aria-selected` but no panel for
+    // a screen reader to reach.
+    const documentsTab = page.getByRole("tab", { name: "Documents" });
+    await documentsTab.click();
+    await expect(documentsTab).toHaveAttribute("aria-selected", "true");
+
+    const panelId = await documentsTab.getAttribute("aria-controls");
+    expect(panelId).toBeTruthy();
+    await expect(page.locator(`#${panelId}`)).toHaveAttribute("role", "tabpanel");
+
+    // Right arrow moves selection to the next tab and takes focus with it.
+    await documentsTab.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Daily logs" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(documentsTab).toHaveAttribute("aria-selected", "false");
   });
 
   await test.step("upload a document and download it back", async () => {

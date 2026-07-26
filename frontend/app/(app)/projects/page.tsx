@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLatestOnly } from "@/lib/use-latest-only";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate } from "@/lib/format";
@@ -28,9 +29,11 @@ export default function ProjectsPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(
     async (cursor: string | null, replace: boolean) => {
       if (!accessToken) return;
+      const isCurrent = beginLoad();
       setLoading(true);
       setError(null);
       try {
@@ -40,6 +43,11 @@ export default function ProjectsPage() {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         const data = await response.json();
+        // ABOVE the !response.ok branch, not below it: putting the guard
+        // before the first setState would only cover the error path and
+        // leave the success write — the one that corrupts the list —
+        // exposed.
+        if (!isCurrent()) return;
         if (!response.ok) {
           setError(data.detail ?? "Failed to load projects");
           return;
@@ -52,7 +60,7 @@ export default function ProjectsPage() {
         setLoading(false);
       }
     },
-    [accessToken]
+    [accessToken, beginLoad]
   );
 
   React.useEffect(() => {

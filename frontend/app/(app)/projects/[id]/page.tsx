@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +18,6 @@ import { ChangeOrdersTab } from "@/components/change-orders/ChangeOrdersTab";
 import { MaterialsTab } from "@/components/materials/MaterialsTab";
 import { SubcontractorAssignments } from "@/components/projects/SubcontractorAssignments";
 import { formatCurrency, formatDate } from "@/lib/format";
-import { cn } from "@/lib/utils";
 import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface StaffProject {
@@ -104,33 +104,22 @@ export default function ProjectDetailPage() {
 
       <ProjectStatusActions projectId={project.id} status={project.status} onChanged={load} />
 
-      <div className="flex gap-1 border-b border-slate-200" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={cn(
-              "px-3 py-2 text-sm",
-              tab === t
-                ? "border-b-2 border-blue-600 font-medium text-slate-900"
-                : "text-slate-600 hover:text-slate-900"
-            )}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-
-      {tab === "Overview" && <OverviewTab project={project} onSaved={load} />}
-      {tab === "Phases & tasks" && <PhasesTasksTab projectId={project.id} />}
-      {tab === "Documents" && <DocumentsTab projectId={project.id} />}
-      {tab === "Daily logs" && <DailyLogsTab projectId={project.id} />}
-      {tab === "Change orders" && <ChangeOrdersTab projectId={project.id} />}
-      {tab === "Estimates" && <ProjectEstimatesTab projectId={project.id} />}
-      {tab === "Materials" && <MaterialsTab projectId={project.id} />}
-      {tab === "Subcontractors" && <SubcontractorAssignments projectId={project.id} />}
+      <Tabs
+        idPrefix="project"
+        tabs={TABS}
+        value={tab}
+        onChange={setTab}
+        panels={{
+          Overview: <OverviewTab project={project} onSaved={load} />,
+          "Phases & tasks": <PhasesTasksTab projectId={project.id} />,
+          Documents: <DocumentsTab projectId={project.id} />,
+          "Daily logs": <DailyLogsTab projectId={project.id} />,
+          "Change orders": <ChangeOrdersTab projectId={project.id} />,
+          Estimates: <ProjectEstimatesTab projectId={project.id} />,
+          Materials: <MaterialsTab projectId={project.id} />,
+          Subcontractors: <SubcontractorAssignments projectId={project.id} />,
+        }}
+      />
     </main>
   );
 }
