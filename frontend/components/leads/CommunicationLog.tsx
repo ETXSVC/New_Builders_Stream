@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLatestOnly } from "@/lib/use-latest-only";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -24,8 +25,11 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
+
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       // The backend pages at 25/entry ascending by created_at, so a
       // just-created entry lands on the LAST page — follow next_cursor to
@@ -44,12 +48,17 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      // Drop the result if another load started while this cursor walk was
+      // running — otherwise this pre-insert snapshot overwrites the list that
+      // handleAdd's own reload just populated, and the entry the user added
+      // vanishes from the screen despite having been created.
+      if (!isCurrent()) return;
       setEntries(all);
     } catch {
       // Non-blocking: the log section shows empty; the add-form's own error
       // handling covers the interactive path.
     }
-  }, [accessToken, leadId]);
+  }, [accessToken, beginLoad, leadId]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in loadAll's call path
