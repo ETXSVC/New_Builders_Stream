@@ -285,7 +285,18 @@ test("a client sees only the project they were granted, and sees it sanitized", 
     await page.getByLabel("Email").fill(clientEmail);
     await page.getByLabel("Password").fill(password);
     await page.getByRole("button", { name: /Log in|Sign in/ }).click();
-    await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 });
+    // `/projects`, not `/dashboard`. LoginForm pushes /dashboard for
+    // everyone, but app/(app)/dashboard/page.tsx immediately
+    // `router.replace`s a `client` to `/projects/{first project}` (or
+    // `/projects` when that lookup has not resolved yet) — a client has
+    // no dashboard of their own.
+    //
+    // So /dashboard is a TRANSIENT url for this role, and asserting it
+    // was a race on whether Playwright sampled before or after the
+    // replace: it passed locally and on the PR run, then flaked on main.
+    // The retry passing was luck, not evidence. This prefix matches both
+    // landing spots and is stable.
+    await expect(page).toHaveURL(/\/projects/, { timeout: 15_000 });
 
     await page.goto(`/projects/${grantedProjectId}`);
     await expect(page.getByText(`Granted ${suffix}`)).toBeVisible({ timeout: 15_000 });
