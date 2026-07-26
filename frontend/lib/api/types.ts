@@ -3143,6 +3143,8 @@ export interface components {
          *     aren't specified, so it's deliberately not built.
          */
         BomLinePatchRequest: {
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Ordered */
             ordered?: boolean | null;
             /** Vendor Id */
@@ -3753,6 +3755,8 @@ export interface components {
         CostCatalogItemPatchRequest: {
             /** Category */
             category?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Name */
             name?: string | null;
             /** Unit */
@@ -4285,6 +4289,8 @@ export interface components {
          *     "exactly one of project_id/lead_id, decided once at creation" framing.
          */
         EstimatePatchRequest: {
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /**
              * Markup Profile Id
              * Format: uuid
@@ -4716,6 +4722,8 @@ export interface components {
             email?: string | null;
             /** Estimated Value */
             estimated_value?: number | string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Notes */
             notes?: string | null;
             /** Phone */
@@ -5123,6 +5131,8 @@ export interface components {
          *     Task 1.18) and isn't meant to be editable after the fact.
          */
         ProjectPatchRequest: {
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Name */
             name?: string | null;
             /** Projected Start Date */
@@ -5642,6 +5652,8 @@ export interface components {
             contact_email?: string | null;
             /** Contact Phone */
             contact_phone?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
             /** Name */
             name?: string | null;
             /** Notes */

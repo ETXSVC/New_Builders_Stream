@@ -33,7 +33,12 @@ class CostCatalogItemPatchRequest(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     unit: str | None = Field(None, min_length=1, max_length=50)
     unit_rate: Decimal | None = None
-
+    # Optimistic concurrency (app/services/concurrency.py): the `updated_at`
+    # the caller last read. Omit it and the write is unchecked, as before;
+    # send it and a 409 is raised if someone else changed the row meanwhile.
+    # Pass the value through verbatim — JS `Date` truncates to milliseconds
+    # and a re-serialized timestamp will never match.
+    expected_updated_at: datetime | None = None
 
 class CostCatalogItemResponse(BaseModel):
     """Full model, plus `is_override` — a value trivially derivable from

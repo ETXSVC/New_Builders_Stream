@@ -19,7 +19,12 @@ class VendorPatchRequest(BaseModel):
     contact_email: str | None = Field(None, max_length=255)
     contact_phone: str | None = Field(None, max_length=50)
     notes: str | None = Field(None, max_length=2000)
-
+    # Optimistic concurrency (app/services/concurrency.py): the `updated_at`
+    # the caller last read. Omit it and the write is unchecked, as before;
+    # send it and a 409 is raised if someone else changed the row meanwhile.
+    # Pass the value through verbatim — JS `Date` truncates to milliseconds
+    # and a re-serialized timestamp will never match.
+    expected_updated_at: datetime | None = None
 
 class VendorResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

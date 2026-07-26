@@ -35,6 +35,11 @@ interface Estimate {
   project_id: string | null;
   lead_id: string | null;
   line_items: LineItem[];
+  // Optimistic-concurrency token (backend: app/services/concurrency.py).
+  // Held as the raw string from the API and passed back VERBATIM — parsing it
+  // into a Date would truncate Postgres's microseconds to milliseconds and the
+  // comparison would never match again.
+  updated_at: string;
 }
 
 interface MarkupProfileOption {
@@ -143,7 +148,10 @@ export default function EstimateDetailPage() {
     const response = await fetch(`/api/estimates/${estimate.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ markup_profile_id: markupProfileId }),
+      body: JSON.stringify({
+        markup_profile_id: markupProfileId,
+        expected_updated_at: estimate.updated_at,
+      }),
     });
     if (response.ok) void load();
   }

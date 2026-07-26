@@ -19,6 +19,7 @@ from app.schemas.bom_line import (
     BomLineResponse,
 )
 from app.services.audit import write_audit_log
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(tags=["bom"])
 
@@ -178,6 +179,7 @@ async def update_bom_line(
     _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> BomLineResponse:
     line = await _get_bom_line_or_404(current, bom_line_id)
+    guard_stale_write(line, payload.expected_updated_at, entity_name="material")
 
     if payload.vendor_id is not None:
         # 404, not 403, on a nonexistent/invisible vendor — RLS already

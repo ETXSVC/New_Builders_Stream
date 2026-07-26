@@ -40,6 +40,7 @@ from app.schemas.markup_profile import (
     MarkupProfileResponse,
 )
 from app.services.catalog_resolution import resolve_visible_catalog_items
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(tags=["catalogs"])
 
@@ -205,6 +206,7 @@ async def update_catalog_item(
     estimates.py); only future line-item adds/recalculates see the new
     rate."""
     item = await _get_catalog_item_or_404(current, item_id)
+    guard_stale_write(item, payload.expected_updated_at, entity_name="catalog item")
 
     if payload.category is not None:
         item.category = payload.category
