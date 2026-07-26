@@ -37,7 +37,12 @@ class EstimatePatchRequest(BaseModel):
     "exactly one of project_id/lead_id, decided once at creation" framing."""
 
     markup_profile_id: uuid.UUID
-
+    # Optimistic concurrency (app/services/concurrency.py): the `updated_at`
+    # the caller last read. Omit it and the write is unchecked, as before;
+    # send it and a 409 is raised if someone else changed the row meanwhile.
+    # Pass the value through verbatim — JS `Date` truncates to milliseconds
+    # and a re-serialized timestamp will never match.
+    expected_updated_at: datetime | None = None
 
 class EstimateResponse(BaseModel):
     """Full model, including the three PDF-tracking fields (`pdf_status`,

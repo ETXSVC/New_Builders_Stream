@@ -238,6 +238,11 @@ async def update_phase(
     await _get_project_or_404(current, project_id)
     phase = await _get_phase_or_404(current, project_id, phase_id)
 
+    # No stale-write guard here, unlike Project/Lead/Estimate: `phases` has no
+    # created_at/updated_at columns at all (docs/04-database-schema.md
+    # Section 4), so there is no value to compare a caller's token against.
+    # Guarding it would mean adding a timestamp column — see
+    # app/services/concurrency.py for why that was left out of scope.
     update_fields = payload.model_dump(exclude_unset=True)
     for field_name, value in update_fields.items():
         setattr(phase, field_name, value)

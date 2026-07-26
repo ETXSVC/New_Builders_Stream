@@ -38,6 +38,7 @@ from app.services.client_access import (
 from app.services.client_scope import require_client_access_to_project
 from app.services.document_storage import InvalidFileNameError, validate_file_name, write_document_file
 from app.services.project_transitions import is_legal_transition
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -292,8 +293,15 @@ async def patch_project(
     _ro: None = Depends(block_if_read_only),
 ) -> ProjectResponse:
     project = await _get_project_or_404(current, project_id)
+    # Before the first setattr, matching update_project's own ordering note:
+    # a rejected request must stage nothing for the single commit
+    # get_current_user performs after this handler returns.
+    guard_stale_write(project, payload.expected_updated_at, entity_name="project")
 
-    update_fields = payload.model_dump(exclude_unset=True)
+    # `exclude` is load-bearing, not tidiness: expected_updated_at is a
+    # concurrency token, not a column, and this loop setattr()s every key it
+    # is given straight onto the ORM object.
+    update_fields = payload.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
     for field_name, value in update_fields.items():
         setattr(project, field_name, value)
 

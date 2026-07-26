@@ -23,6 +23,11 @@ interface Lead {
   estimated_value: string | null;
   project_type: string;
   notes: string | null;
+  // Optimistic-concurrency token (backend: app/services/concurrency.py).
+  // Held as the raw string from the API and passed back VERBATIM — parsing it
+  // into a Date would truncate Postgres's microseconds to milliseconds and the
+  // comparison would never match again.
+  updated_at: string;
 }
 
 export default function LeadDetailPage() {
@@ -68,7 +73,9 @@ export default function LeadDetailPage() {
       const response = await fetch(`/api/leads/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify(body),
+        // Added centrally here so every patchLead() caller is guarded, rather
+        // than each remembering to include it.
+        body: JSON.stringify({ ...(body as object), expected_updated_at: lead?.updated_at }),
       });
       const data = await response.json();
       if (!response.ok) {

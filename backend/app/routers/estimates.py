@@ -57,6 +57,7 @@ from app.services.esignature import capture_esignature
 from app.services.estimate_calculation import calculate_estimate
 from app.tasks.estimate_pdf import generate_estimate_pdf
 from app.tasks.send_signature_request_email import send_signature_request_email
+from app.services.concurrency import guard_stale_write
 
 router = APIRouter(prefix="/estimates", tags=["estimates"])
 
@@ -287,6 +288,7 @@ async def update_estimate(
     `calculate_estimate_totals`'s own docstring establishes.
     """
     estimate = await _get_estimate_or_404(current, estimate_id)
+    guard_stale_write(estimate, payload.expected_updated_at, entity_name="estimate")
 
     if estimate.status != "draft":
         raise HTTPException(

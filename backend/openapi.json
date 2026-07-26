@@ -2669,6 +2669,18 @@
       "EstimatePatchRequest": {
         "description": "Body for `PATCH /estimates/{id}` \u2014 draft-only. Only `markup_profile_id`\nis editable (spec Decision 1, item 5): the project/lead binding is\nimmutable after creation, matching `EstimateCreateRequest`'s own\n\"exactly one of project_id/lead_id, decided once at creation\" framing.",
         "properties": {
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
           "markup_profile_id": {
             "format": "uuid",
             "title": "Markup Profile Id",
@@ -3631,6 +3643,18 @@
             ],
             "title": "Estimated Value"
           },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
           "notes": {
             "anyOf": [
               {
@@ -4410,6 +4434,18 @@
       "ProjectPatchRequest": {
         "description": "Body for `PATCH /projects/{id}` (Task 1.12), added beyond the\nliteral API spec route table per design decision #3 \u2014 a\n`LEAD_WON`-drafted Project has `site_address=''` and this is the only\nway to ever fill it in. PATCH semantics: every field optional,\nonly-set fields are applied.\n\nDeliberately has NO `status` field: Project's status changes go\nthrough the entirely separate `ProjectStatusUpdateRequest` /\n`PATCH /projects/{id}/status` route (Task 1.13), unlike Lead's single\ncombined PATCH route. There is no extra=ignore footgun to guard\nagainst here the way `LeadUpdateRequest` needed, because a caller\nsending `status` on this route simply has no schema field to land in \u2014\nit's silently ignored, but ignoring it is fully correct, not a risk,\nsince this route was never the sanctioned way to change status.\n\nAlso has no `lead_id` field: which Lead a Project was drafted from is\nfixed at creation (manual `POST /projects` or the `LEAD_WON` auto-draft,\nTask 1.18) and isn't meant to be editable after the fact.",
         "properties": {
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
           "name": {
             "anyOf": [
               {
