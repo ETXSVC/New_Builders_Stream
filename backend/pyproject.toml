@@ -74,7 +74,7 @@ dev = [
     # Coverage measurement. Not gated on a threshold in CI (see the
     # [tool.coverage] section below for why); the point is that a reviewer
     # can see which lines a change left untested rather than guessing.
-    "pytest-cov>=6.0,<8.0",
+    "pytest-cov>=7.1.0,<8.0",
     # Checks the installed dependency set against the Python advisory
     # database. Runs in backend-ci; dependabot (.github/dependabot.yml)
     # is the other half — this one reports, that one proposes the upgrade.
