@@ -522,6 +522,69 @@ async def test_list_catalog_items_pagination_combines_with_category_filter(clien
     assert len(seen_ids) == len(set(seen_ids))
 
 
+async def test_list_catalog_items_pagination_survives_a_concurrent_edit(client):
+    """Review finding M3. `_paginate_resolved_items` used to sort on
+    `(updated_at, id)`, and `updated_at` is mutable: a `PATCH` landing
+    between two page requests rewrites it to `now()`, moving that row to the
+    END of the ordering. A row already returned on page 1 then sorts *after*
+    the caller's cursor and comes back a second time — the same
+    see-a-row-twice instability `app/core/pagination.py` rejects offset
+    pagination for, arriving through the sort key instead.
+
+    So the edit here is deliberately mid-walk and deliberately targets an
+    already-seen row: a plain unit-rate change, which is the most ordinary
+    write this table takes. Against the `(updated_at, id)` key this test
+    fails with a duplicate id; against the `id`-only key it passes, because
+    no write can move a row's position.
+    """
+    admin = await _register_and_login(client, "Acme Construction", "editpage-admin@acme.test")
+
+    created_ids = []
+    for i in range(5):
+        response = await client.post(
+            "/catalogs/items", json=_item_payload(name=f"Item {i}"), headers=admin["headers"]
+        )
+        created_ids.append(response.json()["id"])
+
+    first_page = await client.get(
+        "/catalogs/items", params={"limit": 2}, headers=admin["headers"]
+    )
+    assert first_page.status_code == 200
+    body = first_page.json()
+    seen_ids = [item["id"] for item in body["items"]]
+    cursor = body["next_cursor"]
+    assert cursor is not None
+
+    # The concurrent write: re-price an item the caller has ALREADY been
+    # handed. Under the old sort key this is what teleports it to the end of
+    # the list, behind the cursor the caller is about to send back.
+    edited = await client.patch(
+        f"/catalogs/items/{seen_ids[0]}",
+        json={"unit_rate": "99.00"},
+        headers=admin["headers"],
+    )
+    assert edited.status_code == 200
+
+    pages = 1
+    while cursor is not None:
+        response = await client.get(
+            "/catalogs/items",
+            params={"limit": 2, "cursor": cursor},
+            headers=admin["headers"],
+        )
+        assert response.status_code == 200
+        body = response.json()
+        pages += 1
+        seen_ids.extend(item["id"] for item in body["items"])
+        cursor = body["next_cursor"]
+        assert pages < 10
+
+    # Exactly once each: no duplicate (the failure the mutable key caused)
+    # and no skip (which a key that could move a row EARLIER would cause).
+    assert len(seen_ids) == len(set(seen_ids))
+    assert sorted(seen_ids) == sorted(created_ids)
+
+
 async def test_list_catalog_items_rejects_malformed_cursor(client):
     admin = await _register_and_login(client, "Acme Construction", "badcursor-admin@acme.test")
 

@@ -7,7 +7,9 @@ pages over an already-materialized Python list rather than a `Select`
 pages over a table with no `created_at`/`updated_at` column for
 `paginate()`'s hardcoded cursor to order on (see `_paginate_markup_profiles`'s
 docstring). Both helpers keep `paginate()`'s limit+1-fetch-and-trim
-discipline; see each one for the full reasoning.
+discipline, and both order on `id` alone via the shared
+`_encode_id_cursor`/`_decode_id_cursor` pair below; see each one for the
+full reasoning.
 """
 
 import uuid
@@ -19,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from app.core.deps import CurrentUser, block_if_read_only, require_role
-from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError, decode_cursor, encode_cursor
+from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, InvalidCursorError
 from app.core.tier_gating import require_module
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 from app.schemas.cost_catalog_item import (
@@ -328,6 +330,35 @@ async def bulk_create_catalog_items(
     return CostCatalogItemBulkResponse(results=results)
 
 
+def _encode_id_cursor(id_: uuid.UUID) -> str:
+    """A bare-id cursor, deliberately not `app/core/pagination.py`'s
+    `encode_cursor` — that function's on-the-wire FORMAT (base64 of
+    `"{timestamp}|{id}"`) would be fine to reuse generically, but its
+    SIGNATURE requires a `datetime` positional argument that neither of this
+    module's two list routes has an *immutable* one to supply:
+    `markup_profiles` has no timestamp column at all, and
+    `cost_catalog_items` has only a mutable `updated_at` (see
+    `_paginate_resolved_items` and `_paginate_markup_profiles` below).
+    Rather than pass a placeholder — or a moving — datetime through
+    `encode_cursor` to force-fit its shape, this is its own tiny,
+    honestly-single-column cursor: opaque base64(str(id)), same "callers
+    pass it back verbatim, never construct or parse it themselves"
+    API-stability rationale `encode_cursor`'s own docstring gives, just for
+    one field instead of two."""
+    return urlsafe_b64encode(str(id_).encode("ascii")).decode("ascii")
+
+
+def _decode_id_cursor(cursor: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(urlsafe_b64decode(cursor.encode("ascii")).decode("ascii"))
+    except Exception as exc:  # noqa: BLE001 - deliberately broad, mirroring
+        # decode_cursor's own reasoning in app/core/pagination.py: any
+        # malformed input collapses to the same InvalidCursorError, which
+        # app/main.py's global exception handler already turns into a 400
+        # for every paginated route, this one included.
+        raise InvalidCursorError("Invalid pagination cursor") from exc
+
+
 def _paginate_resolved_items(
     items: list[CostCatalogItem], *, cursor: str | None, limit: int
 ) -> tuple[list[CostCatalogItem], str | None]:
@@ -347,22 +378,33 @@ def _paginate_resolved_items(
     same item twice or skipping one across two page requests, exactly the
     failure mode `paginate()`'s own module docstring identifies for offset
     pagination generally. An explicit, deterministic sort is required before
-    cursor pagination has any meaning at all — this uses `(updated_at, id)`,
-    ascending, the SAME composite-tiebreak shape (timestamp, then id) every
-    other paginated list route in this codebase already uses via
-    `paginate()`, just substituting `updated_at` for `created_at` since
-    `CostCatalogItem` has no `created_at` column (`app/models/cost_catalog_item.py`
-    — UpdatedAtMixin only, matching the schema doc). This was chosen over an
-    alternative "alphabetical by category then name" sort: staying
-    consistent with the (timestamp, id) shape already established elsewhere
-    in this codebase means `encode_cursor`/`decode_cursor`
-    (`app/core/pagination.py`) can be reused completely as-is below — their
-    signature (`datetime`, `uuid.UUID`) never actually references
-    "created_at" by name, it just serializes an opaque `(timestamp, id)`
-    pair, so passing `updated_at` in is a legitimate reuse, not a hack.
-    Reusing them also means every cursor this API ever hands back — across
-    every list route — decodes the same way, which a bespoke
-    business-field cursor scheme would have broken.
+    cursor pagination has any meaning at all.
+
+    **Why `id` alone, and not `(updated_at, id)`.** This originally sorted on
+    `(updated_at, id)` to echo the `(created_at, id)` composite `paginate()`
+    hardcodes, substituting `updated_at` because `CostCatalogItem` has no
+    `created_at` column (`app/models/cost_catalog_item.py` — UpdatedAtMixin
+    only, matching the schema doc). That substitution looked like a cosmetic
+    one and was not: `created_at` is immutable, `updated_at` is not. A
+    concurrent `PATCH /catalogs/items/{id}` — an ordinary unit-rate edit, the
+    single most likely write to land against this table while someone is
+    paging it — rewrites `updated_at` to `now()` and so moves that row to the
+    END of the ordering. A row already returned on page 1 therefore sorts
+    *after* the caller's cursor and is handed back a second time on a later
+    page. That is precisely the instability `app/core/pagination.py`'s module
+    docstring rejects offset pagination for, reintroduced through the sort
+    key instead of through the offset.
+
+    So the key is `id` alone — random (`uuid.uuid4()` via `UUIDPKMixin`), and
+    therefore carrying no calendar meaning, but unique and **immutable**,
+    which is the only property a cursor key actually needs: it guarantees a
+    strict total order that no concurrent write can perturb. That is the same
+    reasoning — and, via `_encode_id_cursor`/`_decode_id_cursor` above, the
+    same cursor format — `_paginate_markup_profiles` already applies to the
+    other list route in this module. The accepted cost is that a caller
+    walking this list sees every item exactly once but in no
+    human-meaningful order; the `category`/`search` filters, not the page
+    order, are how this API expects a caller to find a specific item.
 
     **Memory tradeoff, accepted deliberately.** This re-sorts (and, when a
     cursor is present, re-filters) the ENTIRE resolved list on every page
@@ -375,13 +417,11 @@ def _paginate_resolved_items(
     cost once it has been called. This function doesn't add a second,
     larger cost on top of that.
     """
-    ordered = sorted(items, key=lambda item: (item.updated_at, item.id))
+    ordered = sorted(items, key=lambda item: item.id)
 
     if cursor is not None:
-        cursor_updated_at, cursor_id = decode_cursor(cursor)
-        ordered = [
-            item for item in ordered if (item.updated_at, item.id) > (cursor_updated_at, cursor_id)
-        ]
+        cursor_id = _decode_id_cursor(cursor)
+        ordered = [item for item in ordered if item.id > cursor_id]
 
     # Same limit+1-fetch-and-trim trick paginate() uses, just against a
     # Python list slice instead of a SQL LIMIT — fetch one extra item to
@@ -390,8 +430,7 @@ def _paginate_resolved_items(
     next_cursor: str | None = None
     if len(page) > limit:
         page = page[:limit]
-        last = page[-1]
-        next_cursor = encode_cursor(last.updated_at, last.id)
+        next_cursor = _encode_id_cursor(page[-1].id)
 
     return page, next_cursor
 
@@ -546,33 +585,6 @@ async def delete_markup_profile(
     await current.session.flush()
 
 
-def _encode_id_cursor(id_: uuid.UUID) -> str:
-    """A bare-id cursor, deliberately not `app/core/pagination.py`'s
-    `encode_cursor` — that function's on-the-wire FORMAT (base64 of
-    `"{timestamp}|{id}"`) is fine to reuse generically (see
-    `_paginate_resolved_items` above), but its SIGNATURE requires a
-    `datetime` positional argument that `markup_profiles` simply has nothing
-    to supply (no `created_at`/`updated_at` column exists on this table at
-    all — see this module's top-of-file docstring). Rather than pass a fake
-    placeholder datetime through `encode_cursor` to force-fit its shape,
-    this is its own tiny, honestly-single-column cursor: opaque
-    base64(str(id)), same "callers pass it back verbatim, never construct or
-    parse it themselves" API-stability rationale `encode_cursor`'s own
-    docstring gives, just for one field instead of two."""
-    return urlsafe_b64encode(str(id_).encode("ascii")).decode("ascii")
-
-
-def _decode_id_cursor(cursor: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(urlsafe_b64decode(cursor.encode("ascii")).decode("ascii"))
-    except Exception as exc:  # noqa: BLE001 - deliberately broad, mirroring
-        # decode_cursor's own reasoning in app/core/pagination.py: any
-        # malformed input collapses to the same InvalidCursorError, which
-        # app/main.py's global exception handler already turns into a 400
-        # for every paginated route, this one included.
-        raise InvalidCursorError("Invalid pagination cursor") from exc
-
-
 async def _paginate_markup_profiles(
     session: AsyncSession,
     query: Select,
@@ -603,6 +615,11 @@ async def _paginate_markup_profiles(
     stable but not human-meaningful order — an accepted tradeoff, not a
     defect: a caller paging through markup profiles sees every profile
     exactly once across pages, just not in creation or alphabetical order.
+
+    `_paginate_resolved_items` above reaches the same `id`-only key from the
+    other direction: `cost_catalog_items` *does* have a timestamp column, but
+    a mutable one, and a cursor key a concurrent write can move is no better
+    than no key at all.
     """
     if cursor is not None:
         cursor_id = _decode_id_cursor(cursor)
