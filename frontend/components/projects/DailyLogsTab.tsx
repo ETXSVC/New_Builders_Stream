@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface DailyLog {
   id: string;
@@ -33,8 +34,10 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
 
   const canWrite = role === "admin" || role === "project_manager" || role === "field_crew";
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       // The backend pages at 25/entry ascending by created_at, so a
       // just-created log lands on the LAST page — follow next_cursor to
@@ -56,11 +59,12 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setLogs(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoadAll, projectId]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in loadAll's call path

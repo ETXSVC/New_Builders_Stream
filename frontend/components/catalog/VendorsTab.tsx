@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Vendor {
   id: string;
@@ -24,8 +25,10 @@ export function VendorsTab() {
 
   const canWrite = role === "admin" || role === "project_manager";
 
+  const beginLoadAll = useLatestOnly();
   const loadAll = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadAll();
     try {
       const all: Vendor[] = [];
       let cursor: string | null = null;
@@ -43,11 +46,12 @@ export function VendorsTab() {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setVendors(all);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoadAll]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => loadAll());

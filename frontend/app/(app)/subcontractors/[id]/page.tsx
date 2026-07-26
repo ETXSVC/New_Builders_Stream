@@ -10,6 +10,7 @@ import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { PlanUpgradeNotice, isPlanGateError } from "@/components/billing/PlanUpgradeNotice";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Subcontractor {
   id: string;
@@ -63,8 +64,10 @@ export default function SubcontractorDetailPage() {
   // Uploads are admin-only on the backend.
   const canUpload = role === "admin";
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const [subResponse, docsResponse] = await Promise.all([
         fetch(`/api/subcontractors/${id}`, {
@@ -75,6 +78,7 @@ export default function SubcontractorDetailPage() {
         }),
       ]);
       const subData = await subResponse.json();
+      if (!isCurrent()) return;
       if (!subResponse.ok) {
         setError(subData.detail ?? "Failed to load subcontractor");
         return;
@@ -85,7 +89,7 @@ export default function SubcontractorDetailPage() {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, id]);
+  }, [accessToken, beginLoad, id]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

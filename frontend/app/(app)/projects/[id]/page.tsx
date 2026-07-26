@@ -18,6 +18,7 @@ import { MaterialsTab } from "@/components/materials/MaterialsTab";
 import { SubcontractorAssignments } from "@/components/projects/SubcontractorAssignments";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface StaffProject {
   id: string;
@@ -38,13 +39,16 @@ export default function ProjectDetailPage() {
   const [tab, setTab] = React.useState<Tab>("Overview");
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch(`/api/projects/${id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load project");
         return;
@@ -53,7 +57,7 @@ export default function ProjectDetailPage() {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, id]);
+  }, [accessToken, beginLoad, id]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in load's call path
@@ -202,8 +206,10 @@ function ProjectEstimatesTab({ projectId }: { projectId: string }) {
   const { accessToken } = useAuth();
   const [estimates, setEstimates] = React.useState<{ id: string; status: string; total: string | null }[]>([]);
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     // Client-side filter: no ?project_id= query param exists on
     // GET /estimates (out of this plan's scope to add one). All pages
     // are fetched to exhaustion so the filter sees the full result set.
@@ -219,11 +225,12 @@ function ProjectEstimatesTab({ projectId }: { projectId: string }) {
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setEstimates(all.filter((e) => e.project_id === projectId));
     } catch {
       // Non-blocking — the list just stays empty if this fails.
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoad, projectId]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

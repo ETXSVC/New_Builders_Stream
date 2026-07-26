@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface MarkupProfileOption {
   id: string;
@@ -26,8 +27,10 @@ export function NewEstimateForm({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoadProfiles = useLatestOnly();
   const loadProfiles = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoadProfiles();
     try {
       const all: MarkupProfileOption[] = [];
       let cursor: string | null = null;
@@ -42,11 +45,12 @@ export function NewEstimateForm({
         all.push(...data.items);
         cursor = data.next_cursor ?? null;
       } while (cursor);
+      if (!isCurrent()) return;
       setProfiles(all);
     } catch {
       // Non-blocking — the Select just stays empty if this fails.
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoadProfiles]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => loadProfiles());

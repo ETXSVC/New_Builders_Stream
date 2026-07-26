@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface DashboardItem {
   compliance_document_id: string;
@@ -46,8 +47,13 @@ export default function CompliancePage() {
 
   const isAdmin = role === "admin";
 
+  const beginLoad = useLatestOnly();
+
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    // setLoading/setError above the awaits are pre-load resets, not results,
+    // so they stay unguarded — only what comes back from the network is.
+    const isCurrent = beginLoad();
     setLoading(true);
     setError(null);
     setNotificationsError(null);
@@ -56,6 +62,7 @@ export default function CompliancePage() {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const dashboardData = await dashboardResponse.json();
+      if (!isCurrent()) return;
       if (!dashboardResponse.ok) {
         setError(dashboardData.detail ?? "Failed to load compliance dashboard");
         return;
@@ -69,6 +76,7 @@ export default function CompliancePage() {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         const notificationsData = await notificationsResponse.json();
+        if (!isCurrent()) return;
         if (notificationsResponse.ok) {
           setNotifications(notificationsData.items ?? []);
         } else {
@@ -87,7 +95,7 @@ export default function CompliancePage() {
     } finally {
       setLoading(false);
     }
-  }, [accessToken, isAdmin]);
+  }, [accessToken, beginLoad, isAdmin]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

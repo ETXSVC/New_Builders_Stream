@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TASK_STATUSES, labelFor } from "@/lib/state-machines";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Task {
   id: string;
@@ -50,11 +51,14 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
     [accessToken]
   );
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch(`/api/projects/${projectId}/phases`, { headers: authHeaders });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load phases");
         return;
@@ -63,7 +67,7 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, authHeaders, projectId]);
+  }, [accessToken, authHeaders, beginLoad, projectId]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in load's call path

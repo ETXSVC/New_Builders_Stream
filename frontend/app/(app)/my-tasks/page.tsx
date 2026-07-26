@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Select } from "@/components/ui/select";
 import { TASK_STATUSES, labelFor } from "@/lib/state-machines";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface MyTask {
   id: string;
@@ -25,14 +26,20 @@ export default function MyTasksPage() {
   const [pendingTasks, setPendingTasks] = React.useState<Record<string, boolean>>({});
   const [error, setError] = React.useState<string | null>(null);
 
+  const beginLoad = useLatestOnly();
+
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    // setLoading/setError above the awaits are pre-load resets, not results,
+    // so they stay unguarded — only what comes back from the network is.
+    const isCurrent = beginLoad();
     setLoading(true);
     try {
       const response = await fetch("/api/my-tasks", {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load tasks");
         return;
@@ -43,7 +50,7 @@ export default function MyTasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoad]);
 
   React.useEffect(() => {
     // Deferred to a promise callback so no setState in load's call path

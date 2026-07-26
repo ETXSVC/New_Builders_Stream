@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PlanUpgradeNotice, isPlanGateError } from "@/components/billing/PlanUpgradeNotice";
 import { formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Assignment {
   id: string;
@@ -38,8 +39,10 @@ export function SubcontractorAssignments({ projectId }: { projectId: string }) {
   const canAssign = role === "admin" || role === "project_manager";
   const isAdmin = role === "admin";
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const [assignmentsResponse, subsResponse] = await Promise.all([
         fetch(`/api/projects/${projectId}/subcontractor-assignments`, {
@@ -50,6 +53,7 @@ export function SubcontractorAssignments({ projectId }: { projectId: string }) {
         }),
       ]);
       const assignmentsData = await assignmentsResponse.json();
+      if (!isCurrent()) return;
       if (!assignmentsResponse.ok) {
         setError(assignmentsData.detail ?? "Failed to load assignments");
         return;
@@ -60,7 +64,7 @@ export function SubcontractorAssignments({ projectId }: { projectId: string }) {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, projectId]);
+  }, [accessToken, beginLoad, projectId]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());

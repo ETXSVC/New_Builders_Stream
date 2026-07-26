@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { PlanUpgradeNotice, isPlanGateError } from "@/components/billing/PlanUpgradeNotice";
 import { formatCurrency, formatDate } from "@/lib/format";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Payment {
   id: string;
@@ -40,13 +41,16 @@ export default function InvoiceDetailPage() {
 
   const canAct = role === "admin" || role === "accountant";
 
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch(`/api/invoices/${id}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load invoice");
         return;
@@ -55,7 +59,7 @@ export default function InvoiceDetailPage() {
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
-  }, [accessToken, id]);
+  }, [accessToken, beginLoad, id]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());
