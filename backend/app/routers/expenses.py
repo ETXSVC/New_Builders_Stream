@@ -15,7 +15,7 @@ from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Expense
-from app.routers.projects import _get_project_or_404
+from app.services.project_lookup import get_project_or_404
 from app.schemas.expense import ExpenseCreateRequest, ExpenseListResponse, ExpenseResponse
 
 router = APIRouter(tags=["expenses"])
@@ -35,7 +35,7 @@ async def create_expense(
     _ro: None = Depends(block_if_read_only),
     _tier: CurrentUser = Depends(require_module("accounting")),
 ) -> ExpenseResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     # Quantized to 2 decimal places (ROUND_HALF_UP, matching Postgres's own
     # NUMERIC rounding — app/core/money.py's own module comment) BEFORE
@@ -77,7 +77,7 @@ async def list_expenses(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> ExpenseListResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     query = select(Expense).where(Expense.project_id == project.id)
     rows, next_cursor = await paginate(

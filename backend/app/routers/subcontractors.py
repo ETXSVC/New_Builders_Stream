@@ -38,6 +38,7 @@ from app.schemas.subcontractor import (
 )
 from app.services.audit import write_audit_log
 from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
+from app.services.subcontractor_lookup import get_subcontractor_or_404
 
 router = APIRouter(prefix="/subcontractors", tags=["subcontractors"])
 
@@ -49,20 +50,11 @@ _WRITE_ROLES = ("admin",)
 _READ_ROLES = ("admin", "project_manager", "accountant")
 
 
-async def _get_subcontractor_or_404(current: CurrentUser, subcontractor_id: uuid.UUID) -> Subcontractor:
-    """Shared existence/tenant check, same pattern as `_get_estimate_or_404`
-    (app/routers/estimates.py) — RLS makes another tenant's subcontractor
-    invisible, so this 404 covers both "doesn't exist" and "exists but isn't
-    yours" identically (Inherited Invariant #8), intentionally
-    indistinguishable from outside. No explicit `company_id` filter in the
-    query below — the tenant_isolation RLS policy already does that scoping."""
-    result = await current.session.execute(
-        select(Subcontractor).where(Subcontractor.id == subcontractor_id)
-    )
-    subcontractor = result.scalar_one_or_none()
-    if subcontractor is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Subcontractor not found")
-    return subcontractor
+# `get_subcontractor_or_404` used to live here, and `bills.py` /
+# `subcontractor_assignments.py` imported it across module boundaries by
+# its private name. It now lives in
+# `app/services/subcontractor_lookup.py` — see that module's docstring,
+# and `tests/test_module_boundaries.py` for the gate.
 
 
 @router.post("", response_model=SubcontractorResponse, status_code=status.HTTP_201_CREATED)
@@ -132,7 +124,7 @@ async def get_subcontractor(
     subcontractor_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_READ_ROLES)),
 ) -> SubcontractorResponse:
-    subcontractor = await _get_subcontractor_or_404(current, subcontractor_id)
+    subcontractor = await get_subcontractor_or_404(current, subcontractor_id)
     return SubcontractorResponse.model_validate(subcontractor)
 
 
@@ -154,7 +146,7 @@ async def upload_compliance_document(
     row this router's module docstring already cites: Compliance is "Full
     CRUD" for Admin only.
 
-    `_get_subcontractor_or_404` first, same ordering `upload_document`
+    `get_subcontractor_or_404` first, same ordering `upload_document`
     (app/routers/projects.py) uses: existence/tenant check before any
     semantic validation of the payload, so a cross-tenant/nonexistent
     `subcontractor_id` always 404s before the caller learns anything about
@@ -183,7 +175,7 @@ async def upload_compliance_document(
     does, since the compliance document's id is itself part of the storage
     path).
     """
-    subcontractor = await _get_subcontractor_or_404(current, subcontractor_id)
+    subcontractor = await get_subcontractor_or_404(current, subcontractor_id)
 
     if doc_type not in VALID_DOC_TYPES:
         raise HTTPException(
@@ -244,14 +236,14 @@ async def list_compliance_documents(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> ComplianceDocumentListResponse:
-    """Task 3.5. `_get_subcontractor_or_404` first — a nonexistent/
+    """Task 3.5. `get_subcontractor_or_404` first — a nonexistent/
     cross-tenant `subcontractor_id` in the path must 404, not just return an
     empty list (the RLS `compliance_documents` scan alone would silently
     return zero rows for a cross-tenant id, which would be indistinguishable
     from "this subcontractor genuinely has no compliance documents yet" —
     the explicit existence check up front avoids that ambiguity, same
     reasoning `list_documents`/other project-nested list routes already
-    apply via their own `_get_project_or_404` call).
+    apply via their own `get_project_or_404` call).
 
     Standard `paginate()` helper, `created_at_col=ComplianceDocument.created_at,
     id_col=ComplianceDocument.id`, same as `list_subcontractors` above — this
@@ -259,7 +251,7 @@ async def list_compliance_documents(
     in-memory/inheritance-resolution complications, so there's no reason to
     reach for `catalogs.py`'s bespoke pagination helpers.
     """
-    subcontractor = await _get_subcontractor_or_404(current, subcontractor_id)
+    subcontractor = await get_subcontractor_or_404(current, subcontractor_id)
 
     query = select(ComplianceDocument).where(ComplianceDocument.subcontractor_id == subcontractor.id)
 
@@ -296,7 +288,7 @@ async def update_subcontractor(
     the key leaves them alone. The two are indistinguishable under
     `exclude_none`, which would make clearing a field impossible.
     """
-    subcontractor = await _get_subcontractor_or_404(current, subcontractor_id)
+    subcontractor = await get_subcontractor_or_404(current, subcontractor_id)
 
     updates = payload.model_dump(exclude_unset=True)
     if not updates:

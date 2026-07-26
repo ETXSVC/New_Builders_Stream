@@ -75,8 +75,8 @@ async def get_compliance_dashboard(
     tenant_isolation RLS policy on both `compliance_documents` and
     `subcontractors` already scopes every row this query can see to the
     caller's active tenant, same pattern every other router in this
-    codebase relies on (see e.g. `_get_subcontractor_or_404`,
-    `app/routers/subcontractors.py`).
+    codebase relies on (see e.g. `get_subcontractor_or_404`,
+    `app/services/subcontractor_lookup.py`).
 
     No pagination: a company-wide compliance dashboard is expected to be a
     bounded, glanceable list. If this becomes a real scale problem later,
@@ -111,7 +111,7 @@ async def _get_notification_or_404(
     current: CurrentUser, notification_id: uuid.UUID
 ) -> ComplianceNotification:
     """Shared existence/tenant check, same pattern as
-    `_get_subcontractor_or_404` (app/routers/subcontractors.py) — RLS makes
+    `get_subcontractor_or_404` (app/services/subcontractor_lookup.py) — RLS makes
     another tenant's notification invisible, so this 404 covers both
     "doesn't exist" and "exists but isn't yours" identically (Inherited
     Invariant #8). No explicit `company_id` filter in the query below — the

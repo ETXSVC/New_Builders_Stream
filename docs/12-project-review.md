@@ -386,7 +386,8 @@ doc that still lists closed findings as open is worse than no list.
 | M9 | PR #41 | `retries: 1` + `trace: "on-first-retry"`. |
 | M5 | PR #42 | Separate `notificationsError` state, a Retry button, and an e2e spec that forces the 500 with `page.route`. |
 | M10 | — | Counts reconciled; CLAUDE.md documents `PROJECT_COMPLETED`, the `/health` vs `/ready` split, MFA, rate limiting, upload caps, and the split topology. |
-| M3 | this change | See below. |
+| M3 | PR #43 | Immutable cursor key. |
+| M2 | this change | See §8.2 — the finding understated it. |
 
 **M1's description above is wrong in one detail**, left in place rather than
 edited so the correction is visible: it says `10.004` "passes the guard and
@@ -425,3 +426,75 @@ to find a specific item; page order never was.
 Pinned by `test_list_catalog_items_pagination_survives_a_concurrent_edit`,
 which edits an already-returned row mid-walk. Against the old key it fails
 with the duplicate id in the seen-list; against the new one it passes.
+
+### 8.2 M2 — routers imported each other's private helpers
+
+Eight imports crossed module boundaries to reach two functions:
+
+```
+app/routers/bills.py                     -> projects, subcontractors
+app/routers/expenses.py                  -> projects
+app/routers/invoices.py                  -> projects
+app/routers/tasks.py                     -> projects
+app/routers/change_orders.py             -> projects
+app/routers/subcontractor_assignments.py -> projects, subcontractors
+```
+
+Each one was individually reasonable — `_get_project_or_404` is genuinely
+the right check to run, and duplicating it would have been worse. That is
+why review passed all eight: the cost is only visible in aggregate.
+`projects.py` had become a library six other modules linked against, so its
+"private" helpers could not be touched without auditing six routers, and
+importing a router to borrow one function drags in that router's entire
+import graph.
+
+`get_project_or_404` and `with_field_crew_scope` now live in
+`app/services/project_lookup.py`; `get_subcontractor_or_404` lives in
+`app/services/subcontractor_lookup.py`. Both lost the leading underscore,
+which was never accurate.
+
+**The finding understated the problem.** M2 was filed as coupling, and the
+fix is worth more than that, because `get_project_or_404` carries
+authorization: field_crew's assigned-only scope and the `client` role's row
+scope (migration 0019). A module that cannot conveniently import it writes
+its own — and one already had. `app/routers/bom_lines.py`, merged from
+`feature/bom` in PR #46, carried this:
+
+```python
+async def _get_project_or_404(current, project_id):
+    result = await current.session.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if project is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+    return project
+```
+
+Existence check only — no field_crew scope, no client scope. **Not
+exploitable**: `bom_lines.py`'s `_ROLES` is `("admin", "project_manager")`,
+and both scopes are no-ops for staff, so the copy behaved identically to the
+real one for every caller that could reach it. It was a hole waiting for
+that tuple to grow, in a module written against a pre-0019 branch. It now
+calls the shared function.
+
+`tests/test_module_boundaries.py` is the gate, and it has two halves
+because the obvious half is not sufficient:
+
+- **No router imports another router** — an AST sweep over `app/routers/`,
+  covering `import app.routers.x`, `from app.routers.x import y`, and the
+  relative `from .x import y` (the obvious way back in once the absolute
+  form is blocked). Docstrings that *discuss* another router are untouched,
+  which matters: several of them are worth reading.
+- **No router outside `projects.py` hand-rolls a `select(Project)` by-id
+  lookup** — because the import sweep alone cannot catch `bom_lines.py`. A
+  router that writes its own unscoped lookup imports nothing at all, so it
+  passes the boundary rule while committing the exact error the boundary
+  rule exists to prevent. Matching is on the AST shape (a `.where(...)`
+  chained off `select(Project)` comparing `Project.id`), so the many
+  legitimate Project queries that scope by something else are unaffected.
+
+Plus a non-vacuity test pinning a floor on how many routers were scanned —
+every assertion above passes trivially against an empty file list, and a
+renamed directory or changed glob would otherwise report green forever.
+
+CLAUDE.md's "a convention enforced by review, not tooling" has been updated;
+it is tooling now.

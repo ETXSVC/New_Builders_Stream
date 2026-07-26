@@ -11,7 +11,7 @@ from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, decode_cursor, encode_cursor, paginate
 from app.core.tier_gating import require_module
 from app.models import ChangeOrder, Project
-from app.routers.projects import _get_project_or_404
+from app.services.project_lookup import get_project_or_404
 from app.schemas.change_order import (
     ChangeOrderCreateRequest,
     ChangeOrderListResponse,
@@ -218,7 +218,7 @@ async def create_change_order(
     _ro: None = Depends(block_if_read_only),
     _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> ChangeOrderResponse:
-    """Task 2.21. `_get_project_or_404` first, same ordering as every other
+    """Task 2.21. `get_project_or_404` first, same ordering as every other
     project-nested write route in this codebase (existence/tenant check
     before any semantic validation of the payload) — a cross-tenant
     project_id and a not-`active` project both fail, but the caller learns
@@ -262,7 +262,7 @@ async def create_change_order(
     2.22's approve route is where an audit entry belongs for Change
     Orders, exactly like `Estimate.approved`.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     if project.status != "active":
         raise HTTPException(
@@ -306,13 +306,13 @@ async def list_change_orders(
     app/routers/projects.py): without a list route, a PM has no way to see
     a project's Change Order history at all.
 
-    `_get_project_or_404` first, then `paginate()` scoped to this project —
+    `get_project_or_404` first, then `paginate()` scoped to this project —
     copies `list_documents`'s exact structure (imports, `Query` params,
     the `paginate()` call itself with `created_at_col`/`id_col`).
 
     Uses `_READ_ROLES` (admin, project_manager, accountant, client — see
     that constant's own comment for `client`'s Task 2.22 addition and
-    scoping), not `_get_project_or_404`'s field_crew-scoping machinery:
+    scoping), not `get_project_or_404`'s field_crew-scoping machinery:
     field_crew has no read access to Change Orders at all per the RBAC
     matrix's Project Management row (field_crew's only granted verb there is
     "create Daily Logs"), so it's simply absent from `_READ_ROLES` and
@@ -325,7 +325,7 @@ async def list_change_orders(
     approve/reject action — never already-decided `approved`/`rejected`
     ones.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     # A client asking about a project they aren't on gets the same 404 the
     # project itself would give them — no "empty list" signal confirming the
     # project exists.

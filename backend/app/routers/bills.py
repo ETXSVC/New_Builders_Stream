@@ -18,8 +18,8 @@ from app.core.money import CENTS
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
 from app.models import Bill, BillPayment
-from app.routers.projects import _get_project_or_404
-from app.routers.subcontractors import _get_subcontractor_or_404
+from app.services.project_lookup import get_project_or_404
+from app.services.subcontractor_lookup import get_subcontractor_or_404
 from app.schemas.bill import (
     BillCreateRequest,
     BillDetailResponse,
@@ -102,13 +102,13 @@ async def create_bill(
     project_id: uuid.UUID | None = None
     project = None
     if body.project_id is not None:
-        project = await _get_project_or_404(current, body.project_id)
+        project = await get_project_or_404(current, body.project_id)
         project_id = project.id
         resolved_company_id = project.company_id
 
     vendor_name = body.vendor_name
     if body.subcontractor_id is not None:
-        subcontractor = await _get_subcontractor_or_404(current, body.subcontractor_id)
+        subcontractor = await get_subcontractor_or_404(current, body.subcontractor_id)
         vendor_name = vendor_name or subcontractor.name
         if project is None:
             resolved_company_id = subcontractor.company_id

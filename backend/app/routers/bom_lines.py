@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import CurrentUser, block_if_read_only, require_role
 from app.core.pagination import DEFAULT_LIMIT, MAX_LIMIT, paginate
 from app.core.tier_gating import require_module
-from app.models import BomLine, BomLineReceipt, Project, Vendor
+from app.models import BomLine, BomLineReceipt, Vendor
 from app.models.base import utcnow
 from app.schemas.bom_line import (
     BomLineListResponse,
@@ -20,6 +20,7 @@ from app.schemas.bom_line import (
 )
 from app.services.audit import write_audit_log
 from app.services.concurrency import guard_stale_write
+from app.services.project_lookup import get_project_or_404
 
 router = APIRouter(tags=["bom"])
 
@@ -75,12 +76,14 @@ def _bom_line_response(line: BomLine, quantity_received: Decimal) -> BomLineResp
     )
 
 
-async def _get_project_or_404(current: CurrentUser, project_id: uuid.UUID) -> Project:
-    result = await current.session.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
-    if project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
-    return project
+# This module used to carry its own four-line `get_project_or_404` that
+# did the bare existence check and nothing else — no field_crew
+# assigned-only scope, no `client` row scope. It was not exploitable,
+# because `_ROLES` above admits only admin and project_manager and both
+# scopes are no-ops for staff; it was a hole waiting for that tuple to
+# grow. `get_project_or_404` is the shared chokepoint, identical in
+# behaviour for the two roles that reach these routes today and correct by
+# construction for any role added later.
 
 
 async def _paginated_bom_lines(
@@ -123,7 +126,7 @@ async def create_manual_bom_line(
     _ro: None = Depends(block_if_read_only),
     _tier: CurrentUser = Depends(require_module("estimation")),
 ) -> BomLineResponse:
-    await _get_project_or_404(current, project_id)
+    await get_project_or_404(current, project_id)
 
     line = BomLine(
         company_id=current.company_id,
@@ -149,7 +152,7 @@ async def list_project_bom_lines(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     cursor: str | None = Query(None),
 ) -> BomLineListResponse:
-    await _get_project_or_404(current, project_id)
+    await get_project_or_404(current, project_id)
     return await _paginated_bom_lines(current, project_id=project_id, cursor=cursor, limit=limit)
 
 

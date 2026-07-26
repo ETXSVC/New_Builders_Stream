@@ -35,8 +35,8 @@ from app.services.client_access import (
     list_client_access,
     revoke_client_access,
 )
-from app.services.client_scope import require_client_access_to_project
 from app.services.document_storage import InvalidFileNameError, validate_file_name, write_document_file
+from app.services.project_lookup import get_project_or_404, with_field_crew_scope
 from app.services.project_transitions import is_legal_transition
 from app.services.concurrency import guard_stale_write
 
@@ -82,59 +82,11 @@ _GET_ROLES = (*_LIST_ROLES, "client")
 _DAILY_LOG_WRITE_ROLES = ("admin", "project_manager", "field_crew")
 
 
-def _with_field_crew_scope(query, current: CurrentUser):
-    """Field crew's assigned-only visibility predicate: a project qualifies
-    if ANY of its tasks, through ANY of its phases, is assigned to this
-    user. Shared by list_projects and _get_project_or_404 so the two
-    enforcement points can't drift apart — this is RBAC-enforcement logic
-    (docs/07-security-compliance.md Section 2: Field Crew gets "Read
-    assigned" for Project Management, an unqualified statement covering
-    both list and single-item read), so a future change to the predicate
-    (task status filtering, reassignment handling, etc.) only needs to
-    happen once. Expressed as a correlated EXISTS rather than a JOIN so a
-    field_crew user with multiple matching tasks on the same project
-    doesn't get duplicate rows for it."""
-    assigned_task_exists = (
-        select(Task.id)
-        .join(Phase, Phase.id == Task.phase_id)
-        .where(Phase.project_id == Project.id, Task.assignee_id == current.user.id)
-        .exists()
-    )
-    return query.where(assigned_task_exists)
-
-
-async def _get_project_or_404(current: CurrentUser, project_id: uuid.UUID) -> Project:
-    """Shared existence/tenant/RBAC-scope check, same pattern as leads.py's
-    _get_lead_or_404 — RLS makes another tenant's project invisible, so this
-    404 covers "doesn't exist" and "exists but isn't yours" identically,
-    intentionally indistinguishable from outside.
-
-    Also enforces field_crew's assigned-only read scope (_with_field_crew_scope)
-    here, not just on the list route — a field_crew user requesting a
-    project they have no task on gets the same 404 as a genuinely
-    nonexistent/cross-tenant one, for the same information-disclosure
-    reason every other 404 in this codebase is existence-indistinguishable.
-    Folded into the initial query (rather than a separate EXISTS round
-    trip after fetching the row) so this is one query, not two."""
-    query = select(Project).where(Project.id == project_id)
-    if current.role == "field_crew":
-        query = _with_field_crew_scope(query, current)
-
-    result = await current.session.execute(query)
-    project = result.scalar_one_or_none()
-    if project is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
-
-    # `client`'s equivalent of field_crew's assigned-only scope above
-    # (migration 0019). `GET /projects/{id}` doubles as the client dashboard
-    # (design decision #8), and before this a client could read the
-    # dashboard of any project in the company by id. A separate round trip
-    # rather than folded into the query: the membership tables are a
-    # different shape from field_crew's task-assignment EXISTS, and
-    # `client_scope` keeps that rule in one place for every router.
-    await require_client_access_to_project(current, project.id)
-
-    return project
+# `with_field_crew_scope` and `get_project_or_404` used to live here as
+# private helpers, and six other routers imported them across module
+# boundaries by their underscore names. They now live in
+# `app/services/project_lookup.py` — see that module's docstring, and
+# `tests/test_module_boundaries.py` for the gate that keeps them there.
 
 
 async def _client_dashboard_response(
@@ -230,7 +182,7 @@ async def list_projects(
     query = select(Project)
 
     if current.role == "field_crew":
-        query = _with_field_crew_scope(query, current)
+        query = with_field_crew_scope(query, current)
     # admin/project_manager: full company-scoped list (RLS-scoped, no extra
     # filter). accountant: same — Phase 1 has no financial fields on
     # `projects` yet (design decision #8), so "financial-fields-only" read
@@ -271,13 +223,13 @@ async def get_project(
     project_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_GET_ROLES)),
 ) -> ProjectResponse | ProjectClientDashboardResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     # Role-based response SHAPE, per design decision #8: `client` gets the
     # sanitized dashboard (no `lead_id`/`company_id`, plus computed progress
     # counts); every other read-capable role gets the full ProjectResponse.
     # (field_crew's ADDITIONAL restriction — which specific projects they
-    # can reach at all — is enforced upstream in _get_project_or_404, not
+    # can reach at all — is enforced upstream in get_project_or_404, not
     # here; this branch is shape-only.)
     if current.role == "client":
         return await _client_dashboard_response(current, project)
@@ -292,7 +244,7 @@ async def patch_project(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> ProjectResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     # Before the first setattr, matching update_project's own ordering note:
     # a rejected request must stage nothing for the single commit
     # get_current_user performs after this handler returns.
@@ -324,7 +276,7 @@ async def update_project_status(
     """Task 1.13: the Project status state machine, entirely separate from
     `patch_project` above (design decision #3 — Project splits field edits
     and status transitions into two routes/schemas, unlike Lead's combined
-    `PATCH /leads/{id}`). Reuses `_get_project_or_404` for the existence/
+    `PATCH /leads/{id}`). Reuses `get_project_or_404` for the existence/
     tenant check; field_crew can never reach this route at all (`_WRITE_ROLES`
     is admin/project_manager only), so the field_crew-scoping half of that
     helper is inert here — it's reused purely to avoid duplicating the
@@ -335,7 +287,7 @@ async def update_project_status(
     `current.company_id` — same rationale as `upload_document`'s/
     `create_daily_log`'s own fix (this router, above): a parent company's
     session can legitimately transition a descendant branch's Project
-    without switching `X-Tenant-ID` first (`_get_project_or_404` already
+    without switching `X-Tenant-ID` first (`get_project_or_404` already
     makes the descendant's Project reachable via RLS's
     `get_all_descendant_ids()` grant). Using `current.company_id` here
     would record the `project.status_changed` audit entry under the
@@ -343,7 +295,7 @@ async def update_project_status(
     a session later scoped directly to the descendant branch auditing its
     own Project's history.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     previous_status = project.status
     requested_status = payload.status
@@ -454,7 +406,7 @@ async def upload_document(
     2: Project Management is "Full CRUD" for Admin/PM only, matching
     _WRITE_ROLES's existing rationale above).
 
-    `_get_project_or_404` first, same order every other project-nested
+    `get_project_or_404` first, same order every other project-nested
     write route in this router/tasks.py uses (existence/tenant check
     before any semantic validation of the payload) — a cross-tenant
     project_id and an invalid file_name both fail, but the caller learns
@@ -476,7 +428,7 @@ async def upload_document(
     dedicated post-Phase-2 audit of this exact pattern across every
     nested-resource-creation route in this codebase.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     try:
         validate_file_name(file_name)
@@ -558,7 +510,7 @@ async def list_project_clients(
     project_id: uuid.UUID,
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
 ) -> ClientAccessListResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     return ClientAccessListResponse(
         items=await list_client_access(current, model=ProjectClient, parent_id=project.id)
     )
@@ -575,7 +527,7 @@ async def grant_project_client_access(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> ClientAccessResponse:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     granted = await grant_client_access(
         current,
         model=ProjectClient,
@@ -601,7 +553,7 @@ async def revoke_project_client_access(
     current: CurrentUser = Depends(require_role(*_WRITE_ROLES)),
     _ro: None = Depends(block_if_read_only),
 ) -> None:
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
     await revoke_client_access(
         current, model=ProjectClient, parent_id=project.id, user_id=user_id
     )
@@ -642,7 +594,7 @@ async def list_documents(
     reasoning list_projects's own docstring gives for excluding `client`
     from that route.
 
-    `_get_project_or_404` handles field_crew's assigned-only scoping here
+    `get_project_or_404` handles field_crew's assigned-only scoping here
     exactly as it does for phase/task creation: a field_crew caller whose
     project isn't theirs (no assigned task on it) gets a 404 before this
     function ever queries `documents`, so no separate per-document
@@ -650,7 +602,7 @@ async def list_documents(
     level, not the document level (documents have no assignee concept of
     their own).
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     # "Most recent version per file_name" is applied to the base query
     # BEFORE paginate() ever sees it (rather than, say, filtering the page
@@ -702,13 +654,13 @@ async def download_document(
     current: CurrentUser = Depends(require_role(*_LIST_ROLES)),
 ) -> FileResponse:
     """Streams the stored file (CRM+PM frontend spec, Decision 2 item 1).
-    Same visibility rules as the document list: _get_project_or_404 covers
+    Same visibility rules as the document list: get_project_or_404 covers
     tenant/role/project scope, and the document must belong to the path's
     project (a mismatched pair 404s — same id-pair discipline as every
     nested resource in this codebase). storage_path is always relative to
     settings.storage_root (document_storage.py's invariant), and file_name
     was traversal-validated at upload, so joining them is safe here."""
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     result = await current.session.execute(
         select(Document).where(Document.id == document_id, Document.project_id == project.id)
@@ -742,7 +694,7 @@ async def create_daily_log(
     row is the only place field_crew gets any write verb at all ("create
     Daily Logs"), so this route intentionally does NOT reuse _WRITE_ROLES.
 
-    `_get_project_or_404` first, same ordering as every other project-nested
+    `get_project_or_404` first, same ordering as every other project-nested
     write route in this router (existence/tenant/field-crew-assigned-scope
     check before touching the payload) — this doubles as field_crew's
     project-level scoping: a field_crew caller with no assigned task on
@@ -770,7 +722,7 @@ async def create_daily_log(
     switching `X-Tenant-ID`, must not stamp this child row with the
     parent's own company_id).
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     daily_log = DailyLog(
         project_id=project.id,
@@ -818,11 +770,11 @@ async def list_daily_logs(
     only)", which for Phase 1 collapses to plain read, same reasoning
     _LIST_ROLES's own comment gives above).
 
-    `_get_project_or_404` applies field_crew's assigned-only scoping here
+    `get_project_or_404` applies field_crew's assigned-only scoping here
     exactly as list_documents does: an unassigned field_crew caller gets a
     404 before any daily_logs query runs.
     """
-    project = await _get_project_or_404(current, project_id)
+    project = await get_project_or_404(current, project_id)
 
     query = select(DailyLog).where(DailyLog.project_id == project.id)
 
