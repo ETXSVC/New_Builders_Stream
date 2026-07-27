@@ -1,6 +1,6 @@
 # Builders Stream — Roadmap & Implementation Plan
 
-**Version:** 1.0
+**Version:** 1.0 — phase statuses annotated 2026-07-27
 **Date:** 2026-07-07
 **Related:** [PRD](01-prd.md) · [Functional Requirements](02-functional-requirements.md)
 
@@ -9,6 +9,8 @@ Pacing assumption: solo developer, no fixed external deadline. Phases are ordere
 ![Implementation roadmap phases 0 through 5](images/05-roadmap.png)
 
 ## Phase 0 — Foundation (Pre-MVP)
+
+**Status: shipped.**
 
 **Goal:** nothing else can be built safely without this.
 
@@ -22,6 +24,8 @@ Pacing assumption: solo developer, no fixed external deadline. Phases are ordere
 
 ## Phase 1 — CRM & Project Management (MVP core)
 
+**Status: shipped.**
+
 - CRM: Lead CRUD, pipeline status transitions, communication logs.
 - Project Management: Project CRUD/lifecycle state machine, Phases, Tasks, Documents, Daily Logs.
 - `LEAD_WON` → draft Project event wiring (see [Technical Architecture](03-technical-architecture.md), Section 4).
@@ -29,6 +33,8 @@ Pacing assumption: solo developer, no fixed external deadline. Phases are ordere
 - **Exit criteria:** a Lead can be created, moved to Won, and land as a Draft Project with client details carried over, end-to-end, with tests.
 
 ## Phase 2 — Estimation Engine + E-Signature (MVP completion)
+
+**Status: shipped.**
 
 - Cost Catalog, Markup Profiles (with parent/child override inheritance).
 - Estimate creation, line items, server-side calculation pipeline (fixed-point decimal, fixed order of operations).
@@ -41,6 +47,8 @@ Pacing assumption: solo developer, no fixed external deadline. Phases are ordere
 
 ## Phase 3 — Compliance Tracking + Accounting/Billing (Post-MVP)
 
+**Status: shipped.**
+
 Grouped together because both are needed before Enterprise-tier subscribers can be onboarded (see [Pricing Model](08-pricing-subscription-model.md), Section 3), and Billing's invoice generation is the natural consumer of the `ESTIMATE_APPROVED` event from Phase 2.
 
 - Subcontractor/Vendor records, compliance document upload + expiry notifications, compliance dashboard, assignment override + audit logging.
@@ -51,12 +59,16 @@ Grouped together because both are needed before Enterprise-tier subscribers can 
 
 ## Phase 4 — External Integrations (Post-MVP)
 
+**Status: shipped against fake provider clients.** The OAuth flow, token encryption, sync records and tier gating are real; no live QuickBooks/FreshBooks credentials are wired, so nothing moves real money. See `backend/app/services/accounting_client.py`.
+
 - QuickBooks OAuth connect + async sync of invoices/expenses.
 - FreshBooks OAuth connect + async sync (same pattern).
 - Sync status visibility and retry-on-failure handling.
 - **Exit criteria:** Enterprise-tier companies can connect and see a successful, monitored sync.
 
 ## Phase 5 — Open Items (Scope TBD, Not Yet Scheduled)
+
+**Status: not started.**
 
 These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Section 8, and are **not** part of any committed phase above:
 

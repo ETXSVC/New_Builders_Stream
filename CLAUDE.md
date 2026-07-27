@@ -10,6 +10,13 @@ accounting/billing, compliance tracking, QuickBooks/FreshBooks integration).
 Backend is FastAPI (Python 3.12); frontend is Next.js 16 (App Router,
 TypeScript). The full design doc set is in `docs/` — start with
 `docs/01-prd.md` (why) and `docs/03-technical-architecture.md` (how).
+`CONTRIBUTING.md` covers the mechanics of getting a change in — the CI
+gates and what each one is actually protecting, plus two environment
+footguns (Python 3.11 fails `pip install` while exiting 0; `caplog` cannot
+see app loggers). `docs/adr/` indexes the load-bearing decisions and points
+at the code that records each one. `docs/14-frontend-architecture.md`
+covers the frontend, which was previously undocumented.
+
 `docs/superpowers/plans/` and `docs/superpowers/specs/` hold the
 per-feature implementation plans and design specs actually built against;
 when a router/model/migration's docstring references one of these, read it
