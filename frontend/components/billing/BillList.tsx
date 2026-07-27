@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useAuth } from "@/contexts/AuthContext";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatCurrency } from "@/lib/format";
@@ -17,47 +17,13 @@ interface BillRow {
 }
 
 export function BillList() {
-  const { accessToken } = useAuth();
-  const [bills, setBills] = React.useState<BillRow[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const requestGenRef = React.useRef(0);
-
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken) return;
-      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/bills?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (generation !== requestGenRef.current) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load bills");
-          return;
-        }
-        setBills((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        if (generation === requestGenRef.current) {
-          setError("Unable to reach the server. Check your connection and try again.");
-        }
-      } finally {
-        if (generation === requestGenRef.current) setLoading(false);
-      }
-    },
-    [accessToken]
-  );
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => load(null, true));
-  }, [load]);
+  const {
+    items: bills,
+    nextCursor,
+    loading,
+    error,
+    loadMore,
+  } = useCursorList<BillRow>({ path: "/api/bills", label: "bills" });
 
   return (
     <div className="flex flex-col gap-4">
@@ -95,7 +61,7 @@ export function BillList() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}
