@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import * as Sentry from "@sentry/nextjs";
 import { Button } from "@/components/ui/button";
 
 // Route-segment error boundary: catches render/data errors anywhere under
@@ -14,6 +15,7 @@ export default function ErrorBoundary({
 }) {
   React.useEffect(() => {
     console.error(error);
+    Sentry.captureException(error);
   }, [error]);
 
   return (
