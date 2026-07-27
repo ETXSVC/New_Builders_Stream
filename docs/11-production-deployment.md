@@ -235,6 +235,50 @@ undoes it, and would additionally make the backend's
   restore from backup if data was corrupted) → notify affected tenants if
   data was exposed → post-mortem in `docs/`.
 
+## Error reporting
+
+Off by default. `SENTRY_DSN` unset means `sentry-sdk` is never imported and
+nothing leaves the box — that is the shipped default, not an oversight.
+
+To turn it on:
+
+1. Install the extra — the production image already does:
+   `pip install -e ".[observability]"`
+2. Set `SENTRY_DSN` in the server `.env`. Optionally
+   `SENTRY_TRACES_SAMPLE_RATE` (default `0.0`; errors are the need,
+   traces mostly spend quota on a single box).
+3. Restart. All three processes pick it up — the API, the Dramatiq worker
+   and the scheduler each initialise independently and tag themselves with
+   `component=api|worker|scheduler`, because they fail in different ways
+   and an event that cannot say which one it came from costs triage time.
+
+**What it sends.** `app_env` as the environment, so staging noise never
+lands in the production feed, and — on authenticated requests — the
+**verified** `company_id` and `role`. Verified matters: the tag is set
+after the membership check, not from the `X-Tenant-ID` header, which is
+attacker-controlled. A company UUID is not personal data, and it is the
+difference between "500s are up" and "one company cannot invoice".
+
+**What it does not send.** `send_default_pii=False`, set explicitly rather
+than relying on the SDK default, because that default silently changing in
+a future release would put an ESIGN IP address — legal evidence under
+docs/07 — into a third-party service. A `before_send` scrubber then strips
+the `Authorization`, `Cookie` and `X-Tenant-ID` headers, and this
+codebase's own secret names (`jwt_secret`,
+`integration_token_encryption_key`, `stripe_webhook_secret`,
+`smtp_password`, every database URL) out of stack-frame locals. Sentry's
+default denylist covers `password` and `token`; it has never heard of the
+Fernet key that decrypts every tenant's stored OAuth credentials.
+
+Verified end to end against a real `sentry_sdk.init` with a stub
+transport: the tags arrive, both secrets are redacted in the frame, and
+neither secret string appears anywhere in the serialized payload — while
+ordinary locals survive, so the traceback is still worth reading.
+
+**If the DSN is set but the package is missing**, the app logs a warning
+and carries on. Refusing to boot because telemetry is unavailable would
+make the monitoring into the outage.
+
 ## 8. Split deployment (backend / middleware / frontend on separate machines)
 
 `docker-compose.prod.yml` is the single-box default. When you want the
@@ -316,7 +360,7 @@ the OpenAPI snapshot workflow guarantees backward-compatible reads).
 
 | Item | Note |
 |---|---|
-| Sentry | `pip install sentry-sdk[fastapi]`, then in `app/main.py`: `if settings.sentry_dsn: sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)` + a `sentry_dsn` setting; same env-gated pattern in the frontend. |
+| Sentry (frontend) | The backend is done — see "Error reporting" below. The Next.js side still needs `@sentry/nextjs` and the same env-gated pattern. |
 | Prometheus/Grafana + alerting | docs/06 §5's full stack (service-down, backup-failure, disk >85%, queue-depth alerts). Until then: restart policies + cron mail + `docker compose ps`. |
 | PostHog | Product analytics, needs an account decision. |
 | Nonce-based strict CSP | Current CSP allows `'unsafe-inline'` scripts (Next.js bootstrap); a nonce pipeline removes it. |

@@ -45,6 +45,7 @@ from dramatiq.middleware import Middleware
 from dramatiq.middleware.asyncio import AsyncIO
 
 from app.config import settings
+from app.core.observability import init_error_reporting
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,12 @@ class DeadLetterLogging(Middleware):
             message.kwargs,
         )
 
+
+# The worker has no FastAPI startup of its own — the dramatiq CLI imports
+# the actor modules named on its command line, and every one of them
+# imports this module for the broker side effect. So this is the only
+# place that reliably runs once per worker process.
+init_error_reporting("worker")
 
 redis_broker = RedisBroker(url=settings.redis_url)
 redis_broker.add_middleware(AsyncIO())

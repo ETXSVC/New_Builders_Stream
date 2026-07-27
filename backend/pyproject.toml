@@ -65,6 +65,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Error reporting, off unless SENTRY_DSN is set (app/core/observability.py).
+# An extra rather than a hard dependency: a deployment that wants nothing
+# to do with a third-party error service should not have to install one,
+# and the code degrades to a logged warning if the DSN is set without it.
+observability = ["sentry-sdk[fastapi]>=2,<3"]
 dev = [
     "pytest>=8.3,<9.0",
     "pytest-asyncio>=0.24,<0.25",
@@ -153,3 +158,8 @@ exclude_also = [
 # coverage, tier gating, client scoping) earn their keep by failing when a
 # specific invariant breaks, not by moving a percentage. The report is here
 # to show a reviewer what a change left untested.
+
+[[tool.mypy.overrides]]
+# Optional dependency — CI type-checks without it installed.
+module = ["sentry_sdk.*"]
+ignore_missing_imports = true

@@ -88,8 +88,10 @@ def _run_flag_overdue_financial_records() -> None:
 
 if __name__ == "__main__":
     from app.core.logging import configure_logging
+    from app.core.observability import init_error_reporting
 
     configure_logging()
+    init_error_reporting("scheduler")
     scheduler = BlockingScheduler()
     scheduler.add_job(
         _run_check_compliance_expiry,

@@ -14,7 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev &
 # bind-mounted source tree.
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install --no-cache-dir --prefix=/opt/python .
+# `[observability]` is included so enabling Sentry is a pure environment
+# change — set SENTRY_DSN and restart, no image rebuild during whatever
+# incident made you want error reporting in the first place. The package
+# is inert without a DSN (app/core/observability.py returns before
+# importing it), so the only cost is image size.
+RUN pip install --no-cache-dir --prefix=/opt/python ".[observability]"
 
 FROM base AS dev
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*

@@ -25,6 +25,15 @@ _FAKE_WEBHOOK_SECRET = "fake_webhook_secret_for_tests"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_ENV_FILE, extra="ignore")
 
+    # Error reporting. Unset (the default) means OFF — app/core/observability.py
+    # returns immediately and sentry-sdk is never imported, so a deployment
+    # that wants nothing to do with a third-party service pays nothing.
+    # Setting this one variable turns it on for all three processes.
+    sentry_dsn: str | None = None
+    # Errors are the stated need; traces on a single-box deployment mostly
+    # spend quota. Raise deliberately if someone wants performance data.
+    sentry_traces_sample_rate: float = 0.0
+
     # Deployment environment. "production" is the only value that changes
     # behavior: dev-default secrets refuse to boot (validator below) and
     # the OpenAPI/docs endpoints are disabled (app/main.py). The default
