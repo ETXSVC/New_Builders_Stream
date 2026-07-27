@@ -91,7 +91,7 @@ dev = [
     # conftest's `@pytest_asyncio.fixture(loop_scope="function")` are both
     # unchanged API. Verified by running all 1049 tests, not by reading
     # the changelog.
-    "pytest>=9.0.3,<10.0",
+    "pytest>=9.1.1,<10.0",
     "pytest-asyncio>=1.0,<2.0",
     "httpx>=0.27,<0.28",
     "ruff>=0.8,<1.0",
