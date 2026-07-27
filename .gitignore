@@ -17,6 +17,12 @@ Thumbs.db
 .env
 .env*.local
 
+# Alertmanager's SMTP password. Alertmanager cannot expand environment
+# variables in its config, so the one secret it needs is read from a file
+# on the host (`auth_password_file`) rather than being pasted into
+# deploy/alertmanager/alertmanager.yml, which IS tracked.
+deploy/alertmanager/smtp_password
+
 # Python
 __pycache__/
 *.py[cod]

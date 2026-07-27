@@ -20,6 +20,10 @@ jobs:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: ci
+          # Declared `:?` in the compose file so the stack refuses to start
+          # on grafana's admin/admin default; that makes it mandatory here
+          # too, which is the point.
+          GRAFANA_ADMIN_PASSWORD: ci
         # The stub .env satisfies the services' `env_file: .env` reference —
         # compose requires the file to exist even for `config`; the
         # interpolation variables come from `env:` above.
@@ -86,11 +90,46 @@ jobs:
             -e SITE_ADDRESS -e API_ADDRESS -e FRONTEND_SERVER_IP \
             caddy:2 caddy validate --adapter caddyfile --config /deploy/Caddyfile.api
 
+      # Same reasoning as the Caddyfile step above: these files are mounted
+      # read-only into containers, so a syntax error or a bad PromQL
+      # expression only surfaces when the service refuses to start on the
+      # real box. `promtool check config` also resolves `rule_files`, which
+      # is why the directory is mounted at the path prometheus.yml names
+      # rather than somewhere convenient — a rules file that cannot be
+      # found is not a startup error, it is an empty rule set.
+      - name: Prometheus and Alertmanager config is valid
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            --entrypoint promtool prom/prometheus:v3.1.0 \
+            check config /etc/prometheus/prometheus.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            --entrypoint promtool prom/prometheus:v3.1.0 \
+            check rules /etc/prometheus/alerts.yml
+          docker run --rm -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" \
+            --entrypoint amtool prom/alertmanager:v0.28.0 \
+            check-config /etc/alertmanager/alertmanager.yml
+
       - name: Backup scripts parse
         run: |
           bash -n deploy/backup/backup.sh
           bash -n deploy/backup/restore.sh
           bash -n deploy/backup/restore-drill.sh
+
+      # `bash -n` above proves the scripts parse; this proves the half of
+      # backup.sh that nothing else can observe actually works. The
+      # backup-failure alert (docs/06 §5) reads a textfile metric this
+      # script writes from an EXIT trap — if that trap or its atomic
+      # rename is wrong, backups keep succeeding every night and the only
+      # symptom is that BackupFailed never fires on the one night it
+      # should. The harness stubs pg_dump, so no Postgres and no Docker.
+      - name: Backup failure metrics are actually emitted
+        run: bash deploy/backup/test-backup-metrics.sh
+        # The rest of the monitoring stack's config — alert expressions,
+        # scrape targets, Grafana datasource uids — is cross-checked
+        # against the app's live Prometheus registry by
+        # backend/tests/test_monitoring_config.py, which runs in the `test`
+        # job below (tests/conftest.py brings up a test database for the
+        # whole session, so it cannot run in this service-free job).
 
   # Builds the backend image and proves it can actually run. Until this job
   # existed, no Dockerfile in the repo was ever built anywhere in CI — the

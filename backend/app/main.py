@@ -1,12 +1,13 @@
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.core.event_handlers import register_event_handlers
 from app.core.logging import configure_logging
 from app.core.observability import init_error_reporting
+from app.core.metrics import metrics_content_type, metrics_middleware, render_metrics
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
 from app.core.readiness import probe_database, probe_redis
@@ -72,6 +73,11 @@ app = FastAPI(
 # integration), it needs an explicit allowlist and its own review, not a
 # wildcard.
 app.add_middleware(TenantMiddleware)
+# Registered AFTER TenantMiddleware, which means it runs OUTSIDE it —
+# Starlette applies middleware in reverse registration order — so the
+# timing includes tenant resolution and the counter sees requests that
+# TenantMiddleware rejects.
+app.middleware("http")(metrics_middleware)
 app.include_router(auth.router)
 # branding.router is registered BEFORE companies.router deliberately:
 # companies.router declares `GET/PUT /companies/{company_id}` (a generic,
@@ -132,6 +138,23 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     # response, so the traceback is captured here, not swallowed.
     logger.exception("unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> Response:
+    """Prometheus exposition. Deliberately NOT in the OpenAPI schema: it is
+    an operational surface, not part of the product API, and including it
+    would put it in the generated frontend types.
+
+    Unauthenticated, and that is safe only because of where this runs. The
+    production reverse proxy fronts the Next BFF alone and never routes the
+    backend (deploy/Caddyfile), so nothing outside the compose network can
+    reach this. In the split topology, deploy/Caddyfile.api additionally
+    pins a remote_ip allowlist. If the backend is ever published directly,
+    this route needs a guard before that happens — see
+    docs/11-production-deployment.md.
+    """
+    return Response(content=render_metrics(), media_type=metrics_content_type())
 
 
 @app.get("/health")

@@ -1,0 +1,242 @@
+# Alert rules for the single-box production stack.
+#
+# docs/06 §5 names four things that must page someone: **service down,
+# backup failure, disk usage above 85%, queue depth over a threshold**.
+# Those four are grouped first and tagged `nfr: docs/06 §5` — the label is
+# not decoration, `tests/test_monitoring_config.py` asserts all four are
+# still present, so deleting one fails CI rather than quietly shrinking the
+# on-call surface. Everything after them is additive.
+#
+# Every `buildersstream_*` metric referenced below is also checked against
+# the app's live Prometheus registry by that same test, because an alert
+# expression naming a metric that does not exist never fires and never
+# errors — it is the failure mode that looks exactly like "all clear".
+
+groups:
+  # ---------------------------------------------------------------- #
+  - name: docs-06-required
+    rules:
+      - alert: ServiceDown
+        # `up` is synthesized per target by Prometheus itself, so this one
+        # rule covers every scraped service — including Prometheus, which
+        # scrapes itself precisely so that a dead watcher is visible.
+        expr: up == 0
+        for: 3m
+        labels:
+          severity: critical
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "{{ $labels.job }} target {{ $labels.instance }} is down"
+          description: >-
+            Prometheus has failed to scrape {{ $labels.instance }} for 3
+            minutes. Check `docker compose -f docker-compose.prod.yml ps`
+            and the service's logs. Restart policies are `unless-stopped`,
+            so a target that stays down is crash-looping or wedged, not
+            merely restarting.
+
+      - alert: BackupFailed
+        # Written by deploy/backup/backup.sh into node-exporter's textfile
+        # collector directory. The script sets this to 0 from an EXIT trap,
+        # so a crash mid-dump reports failure just like a clean `exit 1`.
+        expr: buildersstream_backup_last_run_success == 0
+        for: 5m
+        labels:
+          severity: critical
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "Last nightly backup run failed"
+          description: >-
+            deploy/backup/backup.sh exited nonzero. Run it by hand
+            (`docker compose -f docker-compose.prod.yml run --rm db-backup`)
+            and read the output — the usual causes are a full backup
+            volume or a Postgres that was down at 01:30.
+
+      - alert: BackupStale
+        # The failure flag above cannot fire if the job never ran at all —
+        # a removed host crontab, a stopped Docker daemon, a box that was
+        # off overnight. Age since the last SUCCESS is what actually
+        # protects the RPO ≤ 24h in docs/06 §4; 36h allows one missed run
+        # plus the daily window's own jitter before paging.
+        expr: time() - buildersstream_backup_last_success_timestamp_seconds > 36 * 3600
+        for: 10m
+        labels:
+          severity: critical
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "No successful backup in over 36 hours"
+          description: >-
+            RPO is 24 hours (docs/06 §4) and the last successful dump is
+            older than that plus a grace window. Check the host crontab
+            entry documented in docs/11-production-deployment.md §6.
+
+      - alert: BackupMetricsMissing
+        # `absent()` is the third distinct failure: the textfile is gone
+        # entirely, so neither rule above has a series to evaluate and both
+        # sit silently at "no data". Without this, deleting the metrics
+        # volume would disable backup alerting altogether.
+        expr: absent(buildersstream_backup_last_success_timestamp_seconds)
+        for: 6h
+        labels:
+          severity: warning
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "Backup metrics have disappeared"
+          description: >-
+            node-exporter is exporting no backup textfile metrics. Either
+            the backup has never run since this stack was deployed, or the
+            `metrics_textfile` volume is not mounted into both the
+            `db-backup` and `node-exporter` services.
+
+      - alert: DiskUsageAbove85Percent
+        # docs/06 §5's literal threshold. Pseudo-filesystems are excluded:
+        # tmpfs and overlay mounts report sizes that have nothing to do
+        # with the disk anyone can free space on, and squashfs is 100% full
+        # by construction, which would page forever on day one.
+        expr: >-
+          100 * (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}
+          / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs|fuse.*"}) > 85
+        for: 15m
+        labels:
+          severity: warning
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "{{ $labels.mountpoint }} is over 85% full"
+          description: >-
+            Postgres data, document uploads, 30 days of backups and
+            Prometheus's own TSDB all share this box. `docker system prune`
+            and the backup retention window are the usual levers — see
+            docs/11-production-deployment.md §7.
+
+      - alert: DramatiqQueueDepthHigh
+        # "A defined threshold", per docs/06 §5, defined here. 100 is
+        # deliberately well above normal: the only routinely-enqueued jobs
+        # are PDF exports, invitation/signature emails and accounting
+        # syncs, so a hundred waiting messages means consumers have stopped
+        # keeping up rather than that a busy afternoon happened. The 10m
+        # window keeps a bulk import from paging anyone.
+        expr: buildersstream_dramatiq_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+          nfr: "docs/06 §5"
+        annotations:
+          summary: "Dramatiq queue {{ $labels.queue }} has {{ $value }} waiting messages"
+          description: >-
+            The worker is behind or stopped. Check `docker compose logs
+            worker`. docs/06 §2 also names sustained queue depth as the
+            trigger for extracting a module into its own service — this
+            firing repeatedly is that signal, not just an incident.
+
+  # ---------------------------------------------------------------- #
+  # Beyond the four required alerts: the conditions that make the four
+  # above lie, plus the saturation signals docs/06 §5 asks to *monitor*
+  # (pool, queue) at the point where they become incidents.
+  - name: application
+    rules:
+      - alert: QueueDepthScrapeFailing
+        # An unreachable Redis leaves the depth gauge frozen at its last
+        # value — usually zero, which reads as a perfectly healthy queue.
+        # This is the rule that stops DramatiqQueueDepthHigh from being
+        # silently disabled by the very outage it should catch.
+        expr: increase(buildersstream_dramatiq_queue_scrape_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue-depth probe cannot reach Redis"
+          description: >-
+            buildersstream_dramatiq_queue_depth is stale. Treat the queue
+            gauges and the DramatiqQueueDepthHigh alert as untrustworthy
+            until this clears.
+
+      - alert: DramatiqDeadLetters
+        # Retry exhaustion is otherwise only a log line (the
+        # DeadLetterLogging middleware in app/tasks/broker.py). Any nonzero
+        # value is worth a look: dead-lettered work is work that silently
+        # did not happen — an invitation email never sent, an accounting
+        # sync never applied.
+        expr: buildersstream_dramatiq_dead_letter_depth > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} dead-lettered messages on queue {{ $labels.queue }}"
+          description: >-
+            Jobs exhausted their retries. `docker compose logs worker |
+            grep dead-lettered` names the actor and arguments.
+
+      - alert: DatabasePoolSaturated
+        # docs/06 §5's "PostgreSQL connection pool saturation". This app
+        # holds a transaction open for the whole request (app/core/deps.py),
+        # so the pool size IS the concurrent-request ceiling — at
+        # saturation, requests stall on pool checkout and the symptom from
+        # outside is unexplained latency, not an error.
+        expr: >-
+          buildersstream_db_pool_connections_in_use
+          / buildersstream_db_pool_size > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres pool over 90% checked out"
+          description: >-
+            Raise DB_POOL_SIZE/DB_MAX_OVERFLOW (and Postgres's own
+            max_connections with it) or find the slow endpoint holding
+            connections. See app/db.py's sizing rationale.
+
+      - alert: BackendErrorRateHigh
+        # p95 latency and error rate are the two numbers docs/06 §1 sets
+        # targets for; this is the one that means something is broken
+        # rather than slow. 5% of requests over five minutes is well clear
+        # of the background rate of genuine 500s (which should be zero).
+        expr: >-
+          sum(rate(buildersstream_http_requests_total{status="5xx"}[5m]))
+          / clamp_min(sum(rate(buildersstream_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of API requests are returning 5xx"
+          description: >-
+            Check `docker compose logs backend` — app/main.py's global
+            handler logs every unhandled exception with its method and
+            path, and Sentry has the traceback if SENTRY_DSN is set.
+
+  # ---------------------------------------------------------------- #
+  - name: containers
+    rules:
+      - alert: ContainerRestartLoop
+        # `restart: unless-stopped` turns a hard crash into a quiet loop:
+        # `docker compose ps` shows "Up 4 seconds" forever and the
+        # ServiceDown alert may never hold for its full 3 minutes.
+        #
+        # Counting distinct container INSTANCES per name, not `changes()`
+        # or `increase()` on the start-time gauge. cAdvisor keys its series
+        # on the cgroup `id`, so a restarted container arrives as a brand
+        # new series rather than as a changed value — `changes()` would sit
+        # at zero through the loudest crash loop, and `increase()` on a
+        # gauge holding a unix timestamp would report thousands.
+        expr: count by (name) (count_over_time(container_start_time_seconds{name!=""}[15m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} keeps restarting"
+          description: >-
+            More than two starts in fifteen minutes. `docker compose logs
+            --tail=200 {{ $labels.name }}` should show the boot failure —
+            for the backend, a production-config refusal from
+            app/config.py's validator looks exactly like this.
+
+      - alert: HostMemoryPressure
+        expr: >-
+          node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10% of host memory available"
+          description: >-
+            The OOM killer picks its own victim, and on this box that is
+            usually Postgres or the worker. Reduce WEB_CONCURRENCY or give
+            the VM more RAM (docs/06 §6).

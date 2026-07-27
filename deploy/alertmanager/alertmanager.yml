@@ -1,0 +1,97 @@
+# Alertmanager routing for the single-box production stack.
+#
+# ## Why email is commented out rather than wired up
+#
+# docs/06 §5 asks for on-call notification, and Alertmanager is what turns
+# Prometheus's firing rules into one. It cannot expand environment
+# variables in this file (a long-standing, deliberate upstream position —
+# there is no `${VAR}` support in any released version), so the SMTP
+# smarthost, sender and recipient have to be literals here. Rather than
+# commit someone else's mail server as a placeholder that silently drops
+# every page, the default below routes everything to a receiver with no
+# notifier: alerts group, dedupe, and are visible in the Alertmanager UI
+# (docs/11-production-deployment.md §10 covers reaching it over an SSH
+# tunnel), but nothing is emailed until the block at the bottom is
+# uncommented and filled in. That is the same posture app/services/email.py
+# already takes — SMTP_HOST unset selects the recording fake client, and
+# setting it is the single switch that turns on real delivery.
+#
+# Backup failure specifically is NOT relying on this: deploy/backup/backup.sh
+# exits nonzero on failure, and host cron mails that output. The
+# BackupFailed/BackupStale rules are a second, independent path.
+#
+# tests/test_monitoring_config.py asserts this file parses and that every
+# route names a receiver that is actually defined — the two mistakes that
+# make Alertmanager refuse to start, which on this box means the alerting
+# path is down at exactly the moment it is needed.
+
+global:
+  # How long a firing alert may go without a refreshing evaluation before
+  # Alertmanager declares it resolved. Must exceed Prometheus's
+  # evaluation_interval by a comfortable margin or alerts flap resolved
+  # during a slow evaluation cycle.
+  resolve_timeout: 5m
+
+route:
+  # Alerts for the same problem on the same service arrive as separate
+  # series (one per mountpoint, per queue, per target). Grouping on
+  # alertname + job collapses "all four filesystems are full" into one
+  # notification instead of four.
+  group_by: ["alertname", "job"]
+  # A short initial wait lets related alerts from the same scrape cycle
+  # land in the same notification without meaningfully delaying the page.
+  group_wait: 30s
+  group_interval: 5m
+  # Twelve hours before re-notifying about something still firing. Long
+  # enough not to become noise a single operator learns to ignore, short
+  # enough that an unattended weekend incident resurfaces.
+  repeat_interval: 12h
+  receiver: default
+
+  routes:
+    # Critical alerts skip most of the batching delay. Everything else
+    # inherits the parent timings above.
+    - matchers:
+        - severity = "critical"
+      receiver: default
+      group_wait: 10s
+      repeat_interval: 4h
+
+inhibit_rules:
+  # A down service produces derivative alerts — its pool gauge stops
+  # updating, its queue depth freezes. Suppress the warnings while the
+  # critical cause is already firing for the same job, so the notification
+  # names the problem rather than its symptoms.
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ["job"]
+
+receivers:
+  # No notifier: alerts are visible in the UI and nothing is sent. See the
+  # header. Alertmanager requires the route's receiver to exist, so this
+  # cannot simply be omitted.
+  - name: default
+
+  # ------------------------------------------------------------------ #
+  # To turn on email: uncomment this receiver, replace the four literals,
+  # point the two `receiver:` keys in `route` above at `email`, put the
+  # mailbox password in ./deploy/alertmanager/smtp_password on the host
+  # (chmod 600 — it is gitignored), and restart the service:
+  #
+  #   docker compose -f docker-compose.prod.yml up -d --force-recreate alertmanager
+  #
+  # The password lives in a file rather than inline so that it is not in
+  # this repository, not in the container's environment, and not in
+  # `docker inspect` output.
+  #
+  # - name: email
+  #   email_configs:
+  #     - smarthost: smtp.example.com:587
+  #       from: alerts@example.com
+  #       to: oncall@example.com
+  #       auth_username: alerts@example.com
+  #       auth_password_file: /etc/alertmanager/smtp_password
+  #       require_tls: true
+  #       send_resolved: true

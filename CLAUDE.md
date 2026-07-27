@@ -80,6 +80,21 @@ the process serving at all — what a restart policy should act on) and
 balancer or compose healthcheck should gate on). Conflating them would
 make a database outage restart-loop the backend for no benefit.
 
+`/metrics` is the third operational endpoint (Prometheus exposition,
+`app/core/metrics.py`, excluded from the OpenAPI schema). Two invariants
+there are enforced by `tests/test_metrics.py` rather than left to review:
+**no series is ever labelled with a tenant** (cardinality, plus Grafana is
+a different trust boundary from the API), and **requests are labelled with
+the matched route template, never the raw path** — with everything
+unmatched collapsed into one `<unmatched>` bucket so a 404 scan cannot
+grow Prometheus's memory from outside. `tests/test_monitoring_config.py`
+additionally checks every metric name in `deploy/prometheus/alerts.yml`
+and the Grafana dashboard against the app's live registry, because an
+alert naming a metric that does not exist never fires and never errors.
+The stack itself (Prometheus, Grafana, Alertmanager, node-exporter,
+cAdvisor) lives in `docker-compose.prod.yml`, bound to loopback —
+`docs/11-production-deployment.md` §10.
+
 CI: `.github/workflows/backend-ci.yml` runs a `deploy-config` job
 (validates every compose file + parses the backup scripts), a
 `docker-build` job, and a `test` job running `ruff check .`, `mypy` (scoped
