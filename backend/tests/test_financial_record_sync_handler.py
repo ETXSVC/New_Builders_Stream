@@ -1,7 +1,6 @@
 """Task 4.11 (design spec Section 4): handle_financial_record_created —
 enqueues one sync_financial_record message per active connection, does no
 sync work itself."""
-import logging
 import uuid
 
 import asyncpg
