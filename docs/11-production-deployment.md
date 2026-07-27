@@ -178,9 +178,26 @@ pre-upgrade dump.
   ```
 - **Restore**: `./deploy/backup/restore.sh backups/db-<ts>.dump [backups/documents-<ts>.tar.gz]`.
 - **Drill**: `./deploy/backup/restore-drill.sh` **quarterly** — restores the
-  newest dump into a throwaway container and asserts real data + schema
-  head. Never touches the live database. This satisfies docs/06's "RTO
-  documented and tested via a real restore drill".
+  newest dump into a throwaway container and asserts, in order: non-zero
+  companies and users; that **RLS survived** (at least one policy, and no
+  table carrying `company_id` left with row security disabled); and that
+  the dump's `alembic_version` is a revision this repo actually contains.
+  Never touches the live database. This satisfies docs/06's "RTO documented
+  and tested via a real restore drill".
+
+  The RLS assertion is the one that earns the drill its place. Row counts
+  passing while policies are missing is not a partial restore — it is every
+  tenant reading every other tenant's data, from a backup that looked
+  healthy. Verified against a real dump: policies do survive `pg_dump -Fc`
+  today (39 of them, identical either side), and stripping them from a
+  restored copy makes both assertions fire while the row counts stay
+  perfect.
+
+  The revision check is deliberately *not* "must equal head" — a backup is
+  from the past, so the night after a migration deploys, last night's dump
+  is legitimately one behind. It fails only on a revision this codebase has
+  never heard of, and prints a NOTE (not a failure) when the dump is simply
+  older than head.
 - Retention note: the 7-year audit-log requirement (docs/07 §retention)
   rides on these database backups — the 30-day *file* rotation is fine
   because every dump contains the full, append-only audit_log table; do
