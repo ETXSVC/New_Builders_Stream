@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 
 interface SubcontractorRow {
@@ -13,50 +14,20 @@ interface SubcontractorRow {
 }
 
 export default function SubcontractorsPage() {
-  const { accessToken, role } = useAuth();
-  const [subcontractors, setSubcontractors] = React.useState<SubcontractorRow[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const requestGenRef = React.useRef(0);
+  const { role } = useAuth();
+  const {
+    items: subcontractors,
+    nextCursor,
+    loading,
+    error,
+    loadMore,
+  } = useCursorList<SubcontractorRow>({
+    path: "/api/subcontractors",
+    label: "subcontractors",
+  });
 
   // Creation is admin-only on the backend (POST /subcontractors).
   const canCreate = role === "admin";
-
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken) return;
-      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/subcontractors?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (generation !== requestGenRef.current) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load subcontractors");
-          return;
-        }
-        setSubcontractors((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        if (generation === requestGenRef.current) {
-          setError("Unable to reach the server. Check your connection and try again.");
-        }
-      } finally {
-        if (generation === requestGenRef.current) setLoading(false);
-      }
-    },
-    [accessToken]
-  );
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => load(null, true));
-  }, [load]);
 
   return (
     <main className="p-6 flex flex-col gap-4 max-w-3xl">
@@ -91,7 +62,7 @@ export default function SubcontractorsPage() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}

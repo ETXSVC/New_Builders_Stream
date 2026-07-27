@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -18,51 +19,21 @@ interface EstimateRow {
 }
 
 export default function EstimatesPage() {
-  const { accessToken, role } = useAuth();
-  const [estimates, setEstimates] = React.useState<EstimateRow[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
+  const { role } = useAuth();
   const [statusFilter, setStatusFilter] = React.useState("");
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const requestGenRef = React.useRef(0);
+  const {
+    items: estimates,
+    nextCursor,
+    loading,
+    error,
+    loadMore,
+  } = useCursorList<EstimateRow>({
+    path: "/api/estimates",
+    params: { status: statusFilter },
+    label: "estimates",
+  });
 
   const canCreate = role === "admin" || role === "project_manager";
-
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken) return;
-      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (statusFilter) params.set("status", statusFilter);
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/estimates?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (generation !== requestGenRef.current) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load estimates");
-          return;
-        }
-        setEstimates((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        if (generation === requestGenRef.current) {
-          setError("Unable to reach the server. Check your connection and try again.");
-        }
-      } finally {
-        if (generation === requestGenRef.current) setLoading(false);
-      }
-    },
-    [accessToken, statusFilter]
-  );
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => load(null, true));
-  }, [load]);
 
   return (
     <main className="p-6 flex flex-col gap-4 max-w-3xl">
@@ -110,7 +81,7 @@ export default function EstimatesPage() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}

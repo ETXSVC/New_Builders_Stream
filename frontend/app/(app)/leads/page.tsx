@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useAuth } from "@/contexts/AuthContext";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -19,55 +19,23 @@ interface Lead {
 }
 
 export default function LeadsPage() {
-  const { accessToken } = useAuth();
-  const [leads, setLeads] = React.useState<Lead[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   const [statusFilter, setStatusFilter] = React.useState("");
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  // Request generation: a replace load (fresh filter) starts a new
-  // generation, and any load resolving under an older one discards its
-  // result — otherwise an in-flight Load-more from the previous filter
-  // could append stale rows onto the new filter's list.
-  const requestGenRef = React.useRef(0);
-
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken) return;
-      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (statusFilter) params.set("status", statusFilter);
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/leads?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (generation !== requestGenRef.current) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load leads");
-          return;
-        }
-        setLeads((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        if (generation === requestGenRef.current) {
-          setError("Unable to reach the server. Check your connection and try again.");
-        }
-      } finally {
-        if (generation === requestGenRef.current) setLoading(false);
-      }
-    },
-    [accessToken, statusFilter]
-  );
-
-  React.useEffect(() => {
-    // Deferred to a promise callback so no setState in load's call path
-    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
-    void Promise.resolve().then(() => load(null, true));
-  }, [load]);
+  // The generation guard, the replace-or-append and the cursor bookkeeping
+  // now live in the hook (lib/use-cursor-list.ts). Changing `statusFilter`
+  // re-runs the load as a *replace*, which is what makes an in-flight
+  // Load-more from the previous filter discard itself rather than append
+  // stale rows onto the new list.
+  const {
+    items: leads,
+    nextCursor,
+    loading,
+    error,
+    loadMore,
+  } = useCursorList<Lead>({
+    path: "/api/leads",
+    params: { status: statusFilter },
+    label: "leads",
+  });
 
   return (
     <main className="p-6 flex flex-col gap-4 max-w-3xl">
@@ -116,7 +84,7 @@ export default function LeadsPage() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useAuth } from "@/contexts/AuthContext";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { ProjectScopeSelect } from "@/components/billing/ProjectScopeSelect";
@@ -18,54 +18,21 @@ interface InvoiceRow {
 }
 
 export function InvoiceList() {
-  const { accessToken } = useAuth();
   const [projectId, setProjectId] = React.useState("");
-  const [invoices, setInvoices] = React.useState<InvoiceRow[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const requestGenRef = React.useRef(0);
-
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken || !projectId) return;
-      const generation = replace ? ++requestGenRef.current : requestGenRef.current;
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects/${projectId}/invoices?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (generation !== requestGenRef.current) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load invoices");
-          return;
-        }
-        setInvoices((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        if (generation === requestGenRef.current) {
-          setError("Unable to reach the server. Check your connection and try again.");
-        }
-      } finally {
-        if (generation === requestGenRef.current) setLoading(false);
-      }
-    },
-    [accessToken, projectId]
-  );
-
-  React.useEffect(() => {
-    // Deferred so no setState runs synchronously inside the effect body
-    // (react-hooks/set-state-in-effect), same pattern as the estimates page.
-    void Promise.resolve().then(() => {
-      setInvoices([]);
-      setNextCursor(null);
-      if (projectId) void load(null, true);
-    });
-  }, [projectId, load]);
+  // `enabled` carries what the old effect did by hand: nothing is fetched
+  // until a project is chosen, and deselecting one clears the rows rather
+  // than leaving the previous project's invoices on screen.
+  const {
+    items: invoices,
+    nextCursor,
+    loading,
+    error,
+    loadMore,
+  } = useCursorList<InvoiceRow>({
+    path: `/api/projects/${projectId}/invoices`,
+    label: "invoices",
+    enabled: Boolean(projectId),
+  });
 
   return (
     <div className="flex flex-col gap-4">
@@ -106,7 +73,7 @@ export function InvoiceList() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}
