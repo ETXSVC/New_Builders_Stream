@@ -129,6 +129,73 @@ async def test_unmatched_paths_all_collapse_into_one_bucket(client):
     )
 
 
+@pytest.mark.asyncio
+async def test_a_drained_queue_reports_zero_rather_than_disappearing(client):
+    """An idle queue must read 0, not "No data".
+
+    Redis deletes a list key once it is empty, so a queue that has drained
+    leaves nothing for the namespace scan to find. Before this was fixed,
+    that meant no series at all — and Prometheus renders a missing series
+    as "No data", which on a dashboard is indistinguishable from a probe
+    that has stopped working. Distinguishing "healthy and idle" from
+    "broken" is the entire job of this gauge, so an empty declared queue
+    has to say zero out loud.
+    """
+    from app.tasks.broker import redis_broker
+
+    declared = redis_broker.get_declared_queues()
+    assert declared, (
+        "no queues declared in this process — the seeding below would be vacuous. "
+        "Importing any app.tasks.* actor module declares one."
+    )
+
+    # Drain, so the keys are genuinely absent rather than present-and-zero.
+    namespace = redis_broker.namespace
+    for queue_name in declared:
+        redis_broker.client.delete(f"{namespace}:{queue_name}")
+
+    await client.get("/metrics")
+
+    depths = _gauge_values("buildersstream_dramatiq_queue_depth")
+    for queue_name in declared:
+        assert depths.get(queue_name) == 0.0, (
+            f"drained queue {queue_name!r} exported {depths.get(queue_name)!r} "
+            f"instead of 0.0; present series: {sorted(depths)}"
+        )
+    # The dead-letter gauge has the same problem for the same reason.
+    dead = _gauge_values("buildersstream_dramatiq_dead_letter_depth")
+    for queue_name in declared:
+        assert queue_name in dead, f"no dead-letter series for declared queue {queue_name!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_queue_that_disappears_stops_being_exported(client):
+    """The flip side of seeding: a gauge must not freeze at a stale value.
+
+    A queue discovered by the scan — one this process never declared, so
+    nothing seeds it — has to stop being reported once it is gone, or the
+    dashboard shows a backlog that no longer exists and an operator chases
+    a queue nobody is writing to.
+    """
+    from app.tasks.broker import redis_broker
+
+    key = f"{redis_broker.namespace}:metrics-test-ephemeral"
+    redis_broker.client.delete(key)
+    redis_broker.client.rpush(key, "a", "b")
+    try:
+        await client.get("/metrics")
+        assert _gauge_values("buildersstream_dramatiq_queue_depth").get(
+            "metrics-test-ephemeral"
+        ) == 2.0, "the scan did not pick up an undeclared queue"
+    finally:
+        redis_broker.client.delete(key)
+
+    await client.get("/metrics")
+    assert "metrics-test-ephemeral" not in _gauge_values(
+        "buildersstream_dramatiq_queue_depth"
+    ), "a vanished queue is still being exported at its last value"
+
+
 def test_route_label_falls_back_when_routing_never_matched():
     """The unit-level counterpart: the middleware also observes requests
     that raised before Starlette set `scope['route']` at all."""
@@ -137,6 +204,18 @@ def test_route_label_falls_back_when_routing_never_matched():
         scope: dict = {}
 
     assert _route_label(_FakeRequest()) == "<unmatched>"  # type: ignore[arg-type]
+
+
+def _gauge_values(metric_name: str) -> dict[str, float]:
+    """A labelled gauge's current values, keyed by its `queue` label."""
+    values: dict[str, float] = {}
+    for metric in REGISTRY.collect():
+        if metric.name != metric_name:
+            continue
+        for sample in metric.samples:
+            if "queue" in sample.labels:
+                values[sample.labels["queue"]] = sample.value
+    return values
 
 
 def _request_counter_samples():
