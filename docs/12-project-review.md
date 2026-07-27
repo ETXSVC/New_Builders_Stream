@@ -355,13 +355,20 @@ leaves the role, matching migration 0001's treatment of `app_user`.
 
 ### 7.12 Open, deliberately
 
-- **`pip-audit` reports 21 advisories across 4 packages.** The two that
+- ~~**`pip-audit` reports 21 advisories across 4 packages.** The two that
   matter are `starlette` 0.46.2 (9 advisories; fixes require a **FastAPI
   major bump**, since FastAPI is pinned `>=0.115,<0.116`) and
   `cryptography` 43.0.3 (5 advisories; fixes in 44.0.1+, pinned `<44.0`).
   Both need a deliberate dependency upgrade with its own review and CI run,
   not a line buried in an audit-remediation commit. Dependabot will now
-  propose them.
+  propose them.~~
+  **CLOSED 2026-07-27 — see §9.** Both upgrades happened as described:
+  FastAPI is now `>=0.140,<0.141` (which accepts starlette 1.x, carrying
+  none of the nine) and `cryptography` is `>=49.0,<50.0`. A fresh
+  `pip-audit` reports **zero advisories against project dependencies**.
+  Left struck through rather than deleted because the reasoning — that a
+  dependency bump deserves its own review rather than riding along in an
+  audit-remediation commit — is still the standing rule.
 - **`SCANNER_DATABASE_URL` falls back to the owner URL when unset**, so an
   existing deployment survives the upgrade rather than failing to start its
   worker. An operator who ignores the new variables keeps running the
@@ -516,3 +523,61 @@ renamed directory or changed glob would otherwise report green forever.
 
 CLAUDE.md's "a convention enforced by review, not tooling" has been updated;
 it is tooling now.
+
+---
+
+## 9. Follow-up — 2026-07-27: dependency audit closed, and a doc that had gone stale
+
+Two small items, recorded together because the second is about the first.
+
+### 9.1 `pytest` was the last package with an open advisory
+
+`pytest` 8.4.2 carries PYSEC-2026-1845, first fixed in 9.0.3, and
+`pyproject.toml` pinned `<9.0`. Dev-only — pytest is not installed in the
+production image, which runs `pip install ".[observability]"` with no dev
+extra — so the exposure was to the test environment, not to anything that
+ships.
+
+That is a weak reason to leave it, though. `pip-audit` runs in CI
+(`continue-on-error: true`, deliberately: an advisory published overnight
+is not a reason to fail an unrelated PR), and an audit that always reports
+one finding nobody intends to action is an audit people stop reading.
+
+The bump had to be paired: `pytest-asyncio` 0.24 declares
+`pytest<9,>=8.2`, so the two pins were one decision. The 1.x line drops the
+`event_loop` fixture that 0.23 deprecated, which this suite never used —
+`pytest.ini`'s `asyncio_mode = auto` and conftest's
+`@pytest_asyncio.fixture(loop_scope="function")` are both unchanged API.
+Confirmed by running all 1049 tests under pytest 9.1.1 / pytest-asyncio
+1.4.0, not by reading the changelog.
+
+`pip-audit` now reports **zero advisories against project dependencies**.
+It still reports `pip` itself on some runners; `pip` is the installer, not
+a declared dependency of this project, and its version comes from whatever
+`actions/setup-python` provides.
+
+### 9.2 §7.12 claimed an open risk that had already been fixed
+
+The first bullet of §7.12 said `pip-audit` reported 21 advisories, naming
+`starlette` 0.46.2 and `cryptography` 43.0.3 as needing "a deliberate
+dependency upgrade with its own review". That upgrade had already happened
+— FastAPI moved to `>=0.140,<0.141` (accepting starlette 1.x, which has
+none of the nine) and `cryptography` to `>=49.0,<50.0` — and the bullet was
+never updated.
+
+Worth its own entry rather than a silent edit, because of *where* it was:
+a section headed **"Open, deliberately"** is exactly where someone looks to
+find out what is still outstanding. A closed item sitting there does not
+just fail to inform, it actively misdirects — and it costs the rest of the
+document its credibility, since a reader who catches one stale claim is
+right to wonder about the others.
+
+The bullet is struck through rather than deleted. It was true when it was
+written, and the reasoning it carries — that a dependency bump deserves its
+own review rather than riding along inside an audit-remediation commit — is
+still the standing rule, and is the rule §9.1 above followed.
+
+**Process note:** this was found by running `pip-audit` while answering
+"what's left to do", not by reading the document. Review docs describe a
+moment; the code moves on. The pattern worth keeping is to re-derive a
+status claim from the tooling before repeating it.

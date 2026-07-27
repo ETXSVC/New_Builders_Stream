@@ -79,8 +79,20 @@ dependencies = [
 # and the code degrades to a logged warning if the DSN is set without it.
 observability = ["sentry-sdk[fastapi]>=2,<3"]
 dev = [
-    "pytest>=8.3,<9.0",
-    "pytest-asyncio>=0.24,<0.25",
+    # 9.0.3+: the 8.x line carries PYSEC-2026-1845, first fixed in 9.0.3.
+    # Dev-only — pytest is not in the production image — but `pip-audit`
+    # runs against the dev install in CI, so leaving it pinned back means
+    # the audit job reports a finding nobody can action.
+    #
+    # pytest-asyncio moves with it, and had to: 0.24 declares
+    # `pytest<9,>=8.2`, so the two pins are one decision, not two. The 1.x
+    # line drops the `event_loop` fixture deprecated back in 0.23, which
+    # this suite never used — `pytest.ini`'s `asyncio_mode = auto` and
+    # conftest's `@pytest_asyncio.fixture(loop_scope="function")` are both
+    # unchanged API. Verified by running all 1049 tests, not by reading
+    # the changelog.
+    "pytest>=9.0.3,<10.0",
+    "pytest-asyncio>=1.0,<2.0",
     "httpx>=0.27,<0.28",
     "ruff>=0.8,<1.0",
     # tests/test_monitoring_config.py parses the Prometheus/Alertmanager/
