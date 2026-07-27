@@ -51,6 +51,7 @@ is loud, not silent.
 | `REDIS_URL` | `redis://redis:6379/0` |
 | `TZ` | your zone, e.g. `America/Chicago` |
 | `BACKUP_DIR` | host path for backups, e.g. `/opt/builders-stream-backups` |
+| `GRAFANA_ADMIN_PASSWORD` | `openssl rand -base64 24` — the monitoring stack (§10) will not start without it |
 | `APP_DB_PASSWORD` | `openssl rand -hex 24` — migration `0020` applies it to `app_user` (see below) |
 | `SCANNER_DB_PASSWORD` | `openssl rand -hex 24` — same, for the `scanner` role |
 | `SCANNER_DATABASE_URL` | `postgresql+asyncpg://scanner:<SCANNER_DB_PASSWORD>@postgres:5432/builders_stream` (the prod compose sets this per-service from the two values above) |
@@ -137,6 +138,9 @@ real-world verification of the production stack:
 10. **Backup + drill**: run the backup once by hand
     (`docker compose -f docker-compose.prod.yml run --rm db-backup`), then
     `./deploy/backup/restore-drill.sh "$BACKUP_DIR"` → `PASS`.
+11. **Monitoring**: see §10 — Prometheus `/targets` all `UP`, Grafana's
+    overview dashboard renders, and the backup tile shows an age rather
+    than `No data`.
 
 ## 5. Upgrades
 
@@ -227,7 +231,12 @@ undoes it, and would additionally make the backend's
   incident that taught this).
 - **Two most likely incidents**: (1) disk full — check `BACKUP_DIR` growth
   and `docker system df`; (2) certificate renewal failure — `logs caddy`,
-  confirm port 80 still reachable from the internet.
+  confirm port 80 still reachable from the internet. Both are alerted on
+  (§10): `DiskUsageAbove85Percent` gives warning on the first, and Caddy
+  failing to renew eventually shows as `ServiceDown` on the frontend path.
+- **Dashboards**: §10 — Prometheus `/alerts` for what is currently firing,
+  Grafana for what the box looked like when it started. Reachable over an
+  SSH tunnel only.
 - **Incident response skeleton** (docs/07 requires this in writing):
   detect (logs/user report) → assess scope (single tenant or all? data
   exposure?) → contain (`docker compose stop <svc>`; worst case `stop caddy`
@@ -394,9 +403,134 @@ the OpenAPI snapshot workflow guarantees backward-compatible reads).
 
 | Item | Note |
 |---|---|
-| Prometheus/Grafana + alerting | docs/06 §5's full stack (service-down, backup-failure, disk >85%, queue-depth alerts). Until then: restart policies + cron mail + `docker compose ps`. |
+| Alertmanager email delivery | The stack ships with alerts evaluating and grouping, but no notifier wired up — Alertmanager cannot read environment variables, so the SMTP details have to be literals someone fills in. Section 10 has the eight lines. Backup failure has an independent path (cron mail) regardless. |
+| Monitoring on the split topology | Section 10's stack is defined in `docker-compose.prod.yml` (single box) only. Scraping across machines needs the metrics endpoints exposed between tiers, which is a network-policy decision, not a config one. |
 | PostHog | Product analytics, needs an account decision. |
 | Nonce-based strict CSP | Current CSP allows `'unsafe-inline'` scripts (Next.js bootstrap); a nonce pipeline removes it. |
 | WAL archiving / pgBackRest | Only if RPO must shrink below 24h; adds archive monitoring burden. |
 | Real Stripe/QuickBooks/FreshBooks clients | Needs credentials; on Stripe arrival, route `/webhooks/stripe` in the Caddyfile and use Stripe's own `t=...,v1=...` signature scheme (timestamp/replay protection) in a `RealStripeClient`. |
 | Worker healthcheck | No HTTP surface today; would need a heartbeat file or queue-depth probe. |
+
+## 10. Monitoring & alerting (Prometheus + Grafana)
+
+docs/06 §5 asks for container health, host CPU/memory/disk, PostgreSQL
+pool saturation and Dramatiq queue depth, with alerts on **service down,
+backup failure, disk above 85%, and queue depth**. That is what this
+section covers. It comes up with the rest of the stack — no profile, no
+extra command — because monitoring you have to remember to start is
+monitoring that is off when it matters.
+
+### What runs, and what each part is for
+
+| Service | Port (loopback only) | Provides |
+|---|---|---|
+| `prometheus` | 9090 | Scrapes everything below; evaluates `deploy/prometheus/alerts.yml`; 30 days / 4 GB retention |
+| `grafana` | 3001 | The "Builders Stream — Overview" dashboard, provisioned read-only from `deploy/grafana/` |
+| `alertmanager` | 9093 | Groups, dedupes and inhibits firing alerts; delivery is opt-in (below) |
+| `node-exporter` | — | Host CPU, memory, disk, plus the backup textfile metrics |
+| `cadvisor` | — | Per-container CPU, memory and restart counts |
+| `backend` `/metrics` | — | Request rate/latency by **route template**, Postgres pool saturation, Dramatiq queue and dead-letter depth |
+
+### Reaching the UIs
+
+None of the three publish to the internet. They bind to `127.0.0.1`, so
+the only way in is a tunnel from your laptop:
+
+```bash
+ssh -N -L 3001:127.0.0.1:3001 \
+       -L 9090:127.0.0.1:9090 \
+       -L 9093:127.0.0.1:9093 you@your-box
+```
+
+Then Grafana is `http://localhost:3001` (user `admin`, password
+`GRAFANA_ADMIN_PASSWORD` from `.env`), Prometheus `http://localhost:9090`
+(`/alerts` shows rule state, `/targets` shows scrape health), Alertmanager
+`http://localhost:9093`.
+
+This is the whole access-control story and it is deliberate. Caddy is the
+only intended front door on this box; publishing Grafana would add a
+second login surface to keep patched, and publishing Prometheus would put
+an **unauthenticated** query API — one that can read every metric here —
+on the public interface. `backend/tests/test_monitoring_config.py` asserts
+all three stay bound to loopback, because the mistake is a one-character
+diff.
+
+### Turning on notifications
+
+Alerts evaluate and appear in the Alertmanager UI out of the box; nothing
+is emailed until you say where. Alertmanager does not expand environment
+variables in its config file (a long-standing upstream position), so the
+smarthost, sender and recipient have to be literals:
+
+1. Put the mailbox password in `deploy/alertmanager/smtp_password` on the
+   host (`chmod 600`; it is gitignored).
+2. Uncomment the `email` receiver at the bottom of
+   `deploy/alertmanager/alertmanager.yml` and fill in the four addresses.
+3. Point both `receiver:` keys in the `route` block at `email`.
+4. `docker compose -f docker-compose.prod.yml up -d --force-recreate alertmanager`
+
+The password goes in a file rather than inline so it is not in this
+repository, not in the container's environment, and not in `docker
+inspect` output.
+
+**Backup failure does not depend on this.** `deploy/backup/backup.sh`
+exits nonzero on failure and host cron mails that output — an independent
+path that keeps working when the monitoring stack itself is down.
+
+### How backup alerting works
+
+`backup.sh` writes three metrics into node-exporter's textfile collector
+(a volume shared between the short-lived backup container and the
+long-lived exporter), and three rules read them:
+
+- `BackupFailed` — the last run exited nonzero. Written from an `EXIT`
+  trap, so a killed `pg_dump` or a full disk reports failure too, not just
+  a clean `exit 1`.
+- `BackupStale` — no *successful* backup in 36 hours. This is the one that
+  protects the RPO ≤ 24h in docs/06 §4, and the one that catches the case
+  `BackupFailed` cannot: a cron entry someone removed, so the script never
+  ran at all. A failed run deliberately preserves the previous success
+  timestamp rather than resetting it — otherwise one bad night would hide
+  the outage.
+- `BackupMetricsMissing` — the textfile is gone entirely, which would
+  otherwise leave both rules above sitting silently at "no data".
+
+`deploy/backup/test-backup-metrics.sh` exercises all of this with a
+stubbed `pg_dump` and runs in CI, because a broken metrics path is
+invisible: backups keep succeeding and the alert simply never fires.
+
+### Adding a metric
+
+`backend/app/core/metrics.py` has the two rules that are not negotiable,
+with the reasoning:
+
+- **Never label a series with a tenant.** No `company_id`, no `user_id`.
+  Cardinality (one series per customer, forever, including churned ones)
+  and disclosure (Grafana is a different trust boundary; per-tenant request
+  counts tell anyone with dashboard access which customers are large and
+  which are failing). Sentry tagging events with `company_id` is
+  deliberately different — one bounded record a human reads during an
+  incident, not an unbounded time series.
+- **Label with the route template, never the raw path.**
+  `/projects/{project_id}` is one series; the paths behind it are one per
+  project. Unmatched requests collapse into a single `<unmatched>` bucket
+  so a 404 scan cannot grow Prometheus's memory from outside.
+
+`backend/tests/test_metrics.py` enforces both, and
+`backend/tests/test_monitoring_config.py` checks every metric name in the
+alert rules and the Grafana dashboard against the app's live registry —
+an alert naming a metric that does not exist never fires and never errors.
+
+### Smoke test (add to Section 4's checklist)
+
+11. **Monitoring**: over the tunnel above, Prometheus `/targets` shows all
+    five jobs `UP`; Grafana's "Builders Stream — Overview" renders request
+    rate and pool utilisation; after running the manual backup from item
+    10, the "Since last successful backup" tile shows minutes, not `No
+    data`.
+
+    If the `cadvisor` target is down or its panels are empty, add
+    `privileged: true` to that service and recreate it. The compose file
+    deliberately omits it — a privileged container would have more access
+    to this host than the database does — and this step is how you find
+    out whether your kernel needs it.

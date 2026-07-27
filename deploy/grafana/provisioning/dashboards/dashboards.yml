@@ -1,0 +1,22 @@
+# Loads every dashboard JSON under /var/lib/grafana/dashboards (bind
+# mounted from deploy/grafana/dashboards) at start and on change.
+#
+# `allowUiUpdates: false` is deliberate: dashboards are files in this
+# repository, reviewed like the rest of it. Editing one in the browser
+# would produce a change that survives until the next container restart
+# and then vanishes, which is a worse experience than being told the
+# dashboard is read-only. Use "Save As" for scratch work.
+
+apiVersion: 1
+
+providers:
+  - name: builders-stream
+    orgId: 1
+    folder: "Builders Stream"
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

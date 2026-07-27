@@ -1,0 +1,33 @@
+# Grafana datasource provisioning. Applied at container start, so the
+# stack comes up with a working datasource rather than needing someone to
+# click through the setup wizard after every fresh deploy.
+#
+# `deleteDatasources` first: provisioning updates by `name`, and an
+# operator who once added a datasource by hand under a different name
+# would otherwise end up with two, one of which silently backs the
+# dashboards. Declaring the removal makes this file the only source of
+# truth for what Grafana can query.
+
+apiVersion: 1
+
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Grafana queries Prometheus server-side over the internal compose
+    # network, so the browser never needs to reach port 9090 itself.
+    url: http://prometheus:9090
+    isDefault: true
+    # `uid` is pinned rather than generated because the dashboard JSON
+    # references it by uid. A generated uid would change on a fresh volume
+    # and every panel would come up "Datasource not found".
+    uid: builders-stream-prom
+    editable: false
+    jsonData:
+      # Matches prometheus.yml's scrape_interval, so Grafana's auto step
+      # never asks for resolution finer than the data actually has.
+      timeInterval: 15s

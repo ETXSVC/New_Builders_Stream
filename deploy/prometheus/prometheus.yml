@@ -1,0 +1,62 @@
+# Prometheus scrape configuration for the single-box production stack
+# (docs/06 §5). Mounted read-only by the `prometheus` service in
+# docker-compose.prod.yml; see docs/11-production-deployment.md §10 for how
+# to reach the UI (it is not published to the internet).
+#
+# Every job below targets a service on the `internal` compose network by
+# its service name. `tests/test_monitoring_config.py` asserts that each of
+# those names is a service actually defined in docker-compose.prod.yml, so
+# a renamed service cannot leave a job scraping into the void.
+
+global:
+  # 15s is Prometheus's own default and is the right trade here: the
+  # alerts below use `for:` windows measured in minutes, so a faster
+  # scrape would only buy resolution nobody looks at, at the cost of
+  # storage on a box that is also running the product.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    # Stamped onto every alert Alertmanager receives, so a notification
+    # says which deployment it came from once there is more than one.
+    deployment: builders-stream
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # The application's own metrics: request rate/latency by route template,
+  # Postgres pool saturation, Dramatiq queue and dead-letter depth.
+  # `/metrics` is unauthenticated and that is safe only because the backend
+  # has no published port and Caddy never routes it — app/core/metrics.py
+  # and app/main.py both carry the warning.
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+
+  # Host CPU, memory and — the one docs/06 §5 explicitly alerts on — disk.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Per-container CPU/memory/restarts. This is the "container health" half
+  # of docs/06 §5; node-exporter sees the host, not what runs on it.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Prometheus scrapes itself so `up{job="prometheus"}` exists — without
+  # it, a dead Prometheus is indistinguishable from a quiet one, since
+  # nothing else is watching the watcher on a single box.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

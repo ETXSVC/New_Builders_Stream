@@ -27,6 +27,8 @@ disagree, the code is right and this file is stale — say so in a PR.
 | 12 | **CI runs the Docker images, not just builds them** | Production installs non-editably; a file setuptools does not package exists everywhere except the artifact that ships. | `.github/workflows/backend-ci.yml` |
 | 13 | **A flaky Playwright test fails the job** | Passing-on-retry exits 0, so the check went green while hiding two real product bugs. | `frontend/playwright.config.ts` |
 | 14 | **WAL archiving deferred; daily `pg_dump` only** | Meets the stated RPO ≤ 24h. PITR buys a far more error-prone restore for archive plumbing not justified pre-revenue. | `docs/11-production-deployment.md` |
+| 15 | **No metric is ever labelled with a tenant; routes are labelled by template** | A `company_id` label is one series per customer forever (cardinality) and exports a per-tenant activity feed to a dashboard with a different trust boundary (disclosure). A raw path is one series per project id, and lets an outsider grow Prometheus's memory by scanning 404s. | `app/core/metrics.py`, `tests/test_metrics.py` |
+| 16 | **Monitoring UIs bind to loopback and are reached by SSH tunnel** | Caddy is the only intended front door; publishing Prometheus would put an unauthenticated query API on the public interface, and Grafana a second login surface to patch. | `docker-compose.prod.yml`, `tests/test_monitoring_config.py` |
 
 ## Adding one
 

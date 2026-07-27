@@ -178,12 +178,134 @@ services:
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
+      # Turns on the textfile metrics at the bottom of backup.sh. Same
+      # path node-exporter reads below, via the shared metrics_textfile
+      # volume — the two MUST agree or BackupStale alerts on a backup that
+      # is running fine every night.
+      TEXTFILE_COLLECTOR_DIR: /metrics
     volumes:
       - ./deploy/backup/backup.sh:/backup.sh:ro
       - documents_data:/data/documents:ro
       - ${BACKUP_DIR:-./backups}:/backups
+      - metrics_textfile:/metrics
     networks: [internal]
     entrypoint: ["bash", "/backup.sh"]
+
+  # ------------------------------------------------------------------ #
+  # Monitoring (docs/06 §5). None of these publish to the internet: the
+  # three human-facing UIs bind to 127.0.0.1 only, so reaching them means
+  # an SSH tunnel — see docs/11-production-deployment.md §10. That is the
+  # whole access-control story, deliberately: Grafana and Prometheus would
+  # otherwise be two more login surfaces to keep patched on a box whose
+  # only intended front door is Caddy.
+  # ------------------------------------------------------------------ #
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 30 days matches the backup retention window in docs/06 §4, so
+      # "what did the box look like when that dump was taken" is always
+      # answerable for any backup still on disk. Also bounded by size:
+      # retention time alone lets a metrics explosion fill the same disk
+      # Postgres lives on, which is the failure this stack should catch,
+      # not cause.
+      - --storage.tsdb.retention.time=30d
+      - --storage.tsdb.retention.size=4GB
+      - --web.enable-lifecycle
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    networks: [internal]
+    depends_on:
+      - backend
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./deploy/alertmanager:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    networks: [internal]
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      # Bound to loopback above, so the admin password protects against
+      # someone already on the box rather than the internet. Still not
+      # left at grafana's "admin/admin" default, which prompts for a change
+      # and then persists it into the volume where nobody can find it.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Nobody should be signing up for an account on an internal
+      # dashboard, and anonymous access would make the loopback binding
+      # the only control left.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Grafana phones home for plugin/version listings by default. This
+      # box has no reason to.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks: [internal]
+    depends_on:
+      - prometheus
+
+  # Host CPU, memory and disk. `pid: host` plus the root bind mount are
+  # what let a container report on the machine underneath it rather than
+  # on its own namespace.
+  node-exporter:
+    image: prom/node-exporter:v1.9.0
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/metrics
+    volumes:
+      - /:/host:ro,rslave
+      - metrics_textfile:/metrics:ro
+    networks: [internal]
+
+  # Per-container CPU, memory and restart counts — the "container health"
+  # half of docs/06 §5. The mounts are cAdvisor's documented read-only set;
+  # it needs the Docker socket to name containers rather than report
+  # cgroup ids.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    restart: unless-stopped
+    # cAdvisor's own documentation reaches for `privileged: true`, and it is
+    # deliberately absent here: a privileged container on this box would
+    # have more access to the host than anything else in the stack,
+    # including the database. The read-only mounts below plus /dev/kmsg are
+    # enough on current kernels. If cAdvisor fails to start or reports
+    # nothing on your host, adding `privileged: true` is the documented
+    # fallback — and smoke-test item 11 (docs/11-production-deployment.md
+    # §10) is what tells you, since a cAdvisor that never scrapes looks
+    # exactly like a stack with nothing to report.
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [internal]
 
 networks:
   edge:
@@ -195,3 +317,10 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+  # Shared by db-backup (writes) and node-exporter (reads). The only way
+  # a backup run that happens in a short-lived container can leave a
+  # metric behind for a scraper that runs continuously.
+  metrics_textfile:
