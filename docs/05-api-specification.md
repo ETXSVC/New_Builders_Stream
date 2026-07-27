@@ -6,6 +6,17 @@
 
 This document describes API contracts conceptually. The authoritative, machine-readable contract is FastAPI's auto-generated `openapi.json`, from which frontend TypeScript types are generated (see [Technical Architecture](03-technical-architecture.md), Section 2). Nothing here should be hand-transcribed into frontend types — always regenerate from the live schema.
 
+> **Coverage.** This document is dated 2026-07-07 and does not enumerate
+> every route that now exists. Modules shipped afterwards — BOM/materials
+> (`/vendors`, `/materials`), MFA (`/mfa/*`), client access grants
+> (`/projects/{id}/clients`, `/leads/{id}/clients`), branding
+> (`/companies/branding`), readiness (`/ready`) — are covered by the
+> committed `backend/openapi.json` snapshot and its generated types, not
+> here. That is the intended division of labour rather than a backlog
+> item: this file explains *why* a contract has the shape it does, and the
+> snapshot is the shape. Where the two disagree, the snapshot wins, and CI's
+> schema-diff gate is what keeps the snapshot honest.
+
 ## 1. Conventions
 
 - **Base URL:** `https://api.buildersstream.app/v1` (self-hosted equivalent in non-prod environments).

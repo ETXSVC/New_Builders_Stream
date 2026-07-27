@@ -28,16 +28,16 @@
 
 ## 4. Backup & Disaster Recovery
 
-- PostgreSQL: automated daily full backups + continuous WAL archiving, retained 30 days, stored off the Proxmox host (a separate physical or cloud location).
+- PostgreSQL: automated daily full backups, retained 30 days, stored off the Proxmox host (a separate physical or cloud location). **WAL archiving is deliberately deferred** — daily `pg_dump` already meets the RPO below, and PITR buys a far more error-prone restore path in exchange for archive plumbing that is not justified pre-revenue. See `docs/11-production-deployment.md`, which owns the decision and the backup scripts that implement it.
 - Document/file storage: mirrored to a secondary location on the same backup cadence.
-- Recovery Point Objective (RPO): ≤ 24 hours (bounded by backup cadence; WAL archiving can reduce this further once implemented).
+- Recovery Point Objective (RPO): ≤ 24 hours (bounded by backup cadence; WAL archiving would reduce this further, and is tracked as a deferred follow-up rather than a gap).
 - Recovery Time Objective (RTO): documented and tested via an actual restore drill before the platform accepts its first paying subscriber — not assumed to work untested.
 
 ## 5. Observability
 
 - **Error tracking:** Sentry (self-hosted or cloud) on both frontend and backend.
 - **Product analytics:** PostHog for feature usage, funnel tracking (Lead → Won → Estimate Approved).
-- **Infrastructure monitoring:** container health, CPU/memory/disk on the Proxmox host, PostgreSQL connection pool saturation, Redis/Celery queue depth — minimum viable setup is Prometheus + Grafana or an equivalent self-hosted stack, since there is no managed-cloud dashboard to rely on.
+- **Infrastructure monitoring:** container health, CPU/memory/disk on the Proxmox host, PostgreSQL connection pool saturation, Redis/Dramatiq queue depth (**Dramatiq**, not Celery — see `docs/03`'s stack table) — minimum viable setup is Prometheus + Grafana or an equivalent self-hosted stack, since there is no managed-cloud dashboard to rely on.
 - **Alerting:** on-call notification (email/SMS/push) for: service down, backup failure, disk usage above 85%, queue depth exceeding a defined threshold.
 
 ## 6. Self-Hosted Infrastructure Requirements

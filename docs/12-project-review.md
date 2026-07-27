@@ -387,7 +387,25 @@ doc that still lists closed findings as open is worse than no list.
 | M5 | PR #42 | Separate `notificationsError` state, a Retry button, and an e2e spec that forces the 500 with `page.route`. |
 | M10 | — | Counts reconciled; CLAUDE.md documents `PROJECT_COMPLETED`, the `/health` vs `/ready` split, MFA, rate limiting, upload caps, and the split topology. |
 | M3 | PR #43 | Immutable cursor key. |
-| M2 | this change | See §8.2 — the finding understated it. |
+| M2 | PR #53 | See §8.2 — the finding understated it. |
+| M6 | PR #54 | `components/ui/confirm-button.tsx`: one inline two-step confirm, replacing `window.confirm` (which Playwright auto-dismisses, so a delete test would have silently exercised *cancel* and passed). |
+| M7 | PR #54 | `components/ui/tabs.tsx`: the WAI-ARIA tabs pattern once — roving tabindex, arrow keys, and the `aria-controls`/`role="tabpanel"` pair that was missing entirely. |
+| M8 | PR #55 | `e2e/account-and-integrations.spec.ts`: MFA enrolment with a real RFC 6238 code, my-tasks, integrations, branding, and the client-role view (two projects in ONE company, so migration 0019's row scoping is actually exercised). |
+
+### Low findings closed
+
+| Finding | Closed by | Note |
+|---|---|---|
+| Money schemas / catalog `unit_rate` unquantized | PR #56 | Quantized on write rather than constrained in the schema — a `decimal_places=2` backstop would start 422-ing input the API has always accepted, contradicting M1's deliberate quantize-don't-reject call. |
+| Config validator: Fernet key ≠ JWT secret, SMTP STARTTLS | PR #56 | The first was required by `config.py`'s own comment and enforced by nothing. |
+| `Caddyfile.api` missing `request_body` cap / bare `respond 403` | PR #56 | Plus a new `caddy validate` CI step — the Caddyfiles were previously validated by nothing at all. |
+| `projects/page.tsx` missing the stale-response guard | PR #54 | That loader APPENDS, so a superseded response duplicated rows rather than merely overwriting state. |
+| `financial_record_sync_handler` enqueues inside the request transaction | PR #65 | `app/core/after_commit.py`. A full transactional outbox is deliberately **not** built; the residual window and its cost are documented in that module. |
+| `send_invitation_email` has no failure surface | PR #65 | Fixed one level up: a `DeadLetterLogging` broker middleware covering **every** actor. That actor's docstring deliberately rejects a bookkeeping table, and it was not the only actor lacking one. |
+| Eight list components duplicate fetch/guard boilerplate | PR #66 | `lib/use-cursor-list.ts`. `integrations/page.tsx` deliberately not converted — different envelope, and a 404 there means "not connected", not an error. |
+| `_register_and_login` redefined across test files | PR #67 | 53 of 90 files, in **24 distinct bodies**. The drift was the finding; the copy-paste was how it happened. |
+| Five module-level owner engines in `app/tasks/` | — | **Already closed** before this pass by the worker-role work; only `scanner_db.py` creates an engine now. Listed here because the Low list still carried it. |
+| Design-doc drift (`docs/03`/`05`/`06`/`09`) | this change | Rows marked *as built* rather than silently rewritten — which of the two moved is worth knowing. |
 
 **M1's description above is wrong in one detail**, left in place rather than
 edited so the correction is visible: it says `10.004` "passes the guard and
