@@ -177,6 +177,7 @@ def _refresh_pool_gauges() -> None:
 # message) or report something that is not a queue at all.
 _QUEUE_BOOKKEEPING_SUFFIX = ".msgs"
 _QUEUE_INTERNAL_PREFIXES = ("__acks__", "__heartbeats__")
+_DEAD_LETTER_SUFFIX = ".XQ"
 
 
 def _refresh_queue_depth() -> None:
@@ -186,24 +187,42 @@ def _refresh_queue_depth() -> None:
     Redis's own health, and what docs/06 §5 asks for is *queue depth*,
     which means knowing Dramatiq's key naming. The app already does.
 
-    Queues are discovered by scanning the namespace rather than read from
-    `broker.get_declared_queues()`, and that is the whole point. A broker
-    only declares the queues of actors the *importing process* loaded, so
-    the API — which imports four of the eight actor modules — would report
-    depth for those four and silently omit the rest. The failure mode is
-    the same one the compose files' actor-module discipline guards against
-    (an unwatched queue backing up while the dashboard reads zero), so the
-    probe is made independent of this process's import graph.
+    ## Two sources, because each covers the other's blind spot
 
-    A failure here increments a counter instead of raising. A scrape that
-    500s loses every other metric in this file, and an unreachable Redis
-    would otherwise present as a queue that is reassuringly empty.
+    **The namespace SCAN** finds queues regardless of what this process
+    imported. A broker only declares the queues of actors the *importing
+    process* loaded, and the API imports four of the eight actor modules —
+    so a declared-queues-only probe would report depth for those four and
+    silently omit the rest. That is the same failure the compose files'
+    actor-module discipline guards against: an unwatched queue backing up
+    while the dashboard reads zero.
+
+    **The declared queues** cover what the scan cannot see: Redis deletes
+    a list key when it becomes empty, so a queue that has drained has no
+    key at all. Scanning alone therefore exports *no series* for an idle
+    queue, and Prometheus renders that as "No data" rather than 0 — the
+    exact ambiguity between "healthy and idle" and "the probe is broken"
+    that this module exists to remove. Seeding the declared queues at zero
+    means a drained queue reports a confident 0.
+
+    Both gauges are cleared and rebuilt on each successful scrape, so a
+    queue that genuinely disappears stops being exported instead of
+    freezing at its last value forever.
+
+    A failure here increments a counter instead of raising, and leaves the
+    previous values in place rather than publishing a misleading zero. A
+    scrape that 500s loses every other metric in this file, and an
+    unreachable Redis would otherwise present as a queue that is
+    reassuringly empty.
     """
     try:
         from app.tasks.broker import redis_broker
 
         client = redis_broker.client
         namespace = redis_broker.namespace
+        depths: dict[str, int] = {}
+        dead_letters: dict[str, int] = {}
+
         for raw_key in client.scan_iter(match=f"{namespace}:*", count=100):
             key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
             name = key[len(namespace) + 1 :]
@@ -211,16 +230,35 @@ def _refresh_queue_depth() -> None:
                 _QUEUE_INTERNAL_PREFIXES
             ):
                 continue
-            if name.endswith(".XQ"):
-                dead_letter_depth.labels(name[: -len(".XQ")]).set(client.zcard(key))
+            if name.endswith(_DEAD_LETTER_SUFFIX):
+                dead_letters[name[: -len(_DEAD_LETTER_SUFFIX)]] = client.zcard(key)
             else:
                 # Both `<queue>` and `<queue>.DQ` are lists. The delay
                 # queue keeps its own series rather than being folded into
                 # the main one: a growing .DQ means retries are piling up,
                 # which is a different incident from "workers are behind".
-                queue_depth.labels(name).set(client.llen(key))
+                depths[name] = client.llen(key)
+
+        # `queues` holds the canonical names; the `.DQ` delay queues live
+        # in a separate set (dramatiq's Broker.declare_queue populates
+        # both). Only canonical queues get a dead-letter series — Dramatiq
+        # strips `.DQ` before naming an `.XQ`, so `default.DQ.XQ` is not a
+        # thing that can exist.
+        for queue_name in redis_broker.get_declared_queues():
+            depths.setdefault(queue_name, 0)
+            dead_letters.setdefault(queue_name, 0)
+        for delay_queue_name in redis_broker.delay_queues:
+            depths.setdefault(delay_queue_name, 0)
     except Exception:
         queue_depth_scrape_failures.inc()
+        return
+
+    queue_depth.clear()
+    dead_letter_depth.clear()
+    for name, depth in depths.items():
+        queue_depth.labels(name).set(depth)
+    for name, depth in dead_letters.items():
+        dead_letter_depth.labels(name).set(depth)
 
 
 def render_metrics() -> bytes:
