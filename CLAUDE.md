@@ -14,8 +14,14 @@ TypeScript). The full design doc set is in `docs/` — start with
 gates and what each one is actually protecting, plus two environment
 footguns (Python 3.11 fails `pip install` while exiting 0; `caplog` cannot
 see app loggers). `docs/adr/` indexes the load-bearing decisions and points
-at the code that records each one. `docs/14-frontend-architecture.md`
-covers the frontend, which was previously undocumented.
+at the code that records each one — read that index before "fixing"
+anything that looks odd in auth, tenancy, pagination or deployment.
+`docs/14-frontend-architecture.md` covers the frontend, which was
+previously undocumented. `docs/12-project-review.md` is a dated audit
+trail rather than current-state documentation: useful for *why* something
+is the way it is, but its "open findings" are only accurate as of each
+dated follow-up section — re-derive any status claim from the code or the
+tooling before repeating it.
 
 `docs/superpowers/plans/` and `docs/superpowers/specs/` hold the
 per-feature implementation plans and design specs actually built against;
@@ -34,7 +40,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (970+ tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (1049 tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test
@@ -94,6 +100,27 @@ alert naming a metric that does not exist never fires and never errors.
 The stack itself (Prometheus, Grafana, Alertmanager, node-exporter,
 cAdvisor) lives in `docker-compose.prod.yml`, bound to loopback —
 `docs/11-production-deployment.md` §10.
+
+Error reporting is Sentry, **off unless `SENTRY_DSN` is set** —
+`app/core/observability.py` returns immediately and `sentry-sdk` is never
+imported, which is why it is an optional extra (`.[observability]`) rather
+than a dependency. One variable turns it on for all three processes.
+Two things there are deliberate and easy to undo by accident:
+
+- **Everything outbound is scrubbed** — `_scrub` strips every secret in
+  `_SECRET_NAMES` plus the `authorization`/`cookie`/`x-tenant-id` headers,
+  and `send_default_pii=False` is set explicitly rather than relied on.
+  The frontend has its own copy of this (`frontend/sentry.shared.ts`)
+  because query strings carry credentials there: `SENSITIVE_QUERY_KEYS`
+  includes a bare `id` precisely because the invitation-accept page reads
+  its one-time credential from `?id=`, which a scrubber written from
+  memory misses.
+- **Sentry events ARE tagged with `company_id`** (`tag_current_tenant`,
+  called from `get_current_user` only after membership is verified — never
+  from the attacker-controlled header). That is the opposite of the rule
+  for metrics above, and the difference is the point: an error event is one
+  bounded record a human reads during an incident, not an unbounded time
+  series exported to a dashboard.
 
 CI: `.github/workflows/backend-ci.yml` runs a `deploy-config` job
 (validates every compose file + parses the backup scripts), a
@@ -185,7 +212,9 @@ or migrations:
   membership for (migration 0019). The rule lives in
   `app/services/client_scope.py` and is applied at the by-id chokepoints
   (`_get_estimate_or_404`, `_get_change_order_or_404`,
-  `_get_invoice_or_404`, `_get_project_or_404`) so `approve`/`reject`
+  `_get_invoice_or_404`, and `app.services.project_lookup.get_project_or_404`
+  — the last one moved out of `projects.py` when six routers turned out to
+  be importing it) so `approve`/`reject`
   inherit it by construction. It raises 404, never 403, so a client cannot
   enumerate another client's document ids. A new client-facing surface must
   go through one of those helpers or apply `client_scope` itself.
@@ -227,6 +256,16 @@ every test. Current/planned events: `LEAD_WON` → drafts a Project,
 `EXPENSE_CREATED` / `BILL_CREATED` → enqueue accounting-integration syncs,
 `PROJECT_COMPLETED` → drafts a final invoice for the uninvoiced remainder.
 
+**Enqueue background work AFTER the commit, never inside the handler.**
+The bus runs inside the request transaction; Redis does not roll back with
+it. A handler that calls `.send()` directly queues a job naming a row that
+a later rollback means will never exist — and the worker then burns all
+three retries on it. `app/core/after_commit.py`'s `enqueue_after_commit`
+parks the call on the session and `get_current_user` fires it immediately
+after `session.commit()`, inside the same `try`, so a rollback path can
+never reach it. `financial_record_sync_handler.py` is the current caller
+and the pattern to copy.
+
 Dramatiq actors are registered ONLY from the modules named on the worker's
 command line, so a new actor must be added to all three compose files
 (`docker-compose.yml`, `docker-compose.prod.yml`,
@@ -248,7 +287,18 @@ rounding. List endpoints use opaque, base64-encoded cursor pagination
 (`app/core/pagination.py`) over `(created_at, id)`, not offset pagination —
 offset scans get slower as tables grow and are unstable under concurrent
 inserts; `id` is the tiebreaker because `created_at` alone isn't unique
-enough under bulk inserts or same-tick requests.
+enough under bulk inserts or same-tick requests. The cursor key must be
+**immutable**: paginating on `updated_at` lets a concurrently-edited row
+move to the end of the ordering and be returned twice, which is the same
+instability offset paging was rejected for.
+
+Optimistic concurrency is opt-in via an `expected_updated_at` field **in
+the request body**, not an `If-Match` header (`app/services/concurrency.py`
+— `guard_stale_write`). The header form would be more RESTful and does not
+work here: the Next BFF forwards a fixed allowlist (`Content-Type`,
+`Authorization`, `X-Tenant-ID`, `X-Forwarded-For`), so a custom header
+would be silently dropped on the hop and every stale write would sail
+through.
 
 ### Documented, deliberate substitutions vs. the design docs
 
@@ -274,6 +324,18 @@ after a backend route/schema change, regenerate the snapshot
 (`backend/scripts/export_openapi.py`) and then the types (CI's schema-diff
 gate fails if the snapshot drifts from the code). `marketing-site/` (static HTML/CSS/JS) and `marketing/` (copy docs)
 are a separate, pre-existing marketing site, unrelated to the Next.js app.
+
+`lib/use-cursor-list.ts` is the shared loader for cursor-paginated lists,
+and the one to reach for in new code. It carries the stale-response guard
+— a generation ref checked **above** `if (!response.ok)`, so a superseded
+request can write neither data nor an error — which one of eight
+copy-pasted loaders had silently been missing.
+
+**Six surfaces use it today** (leads, estimates, subcontractors, and the
+three billing panels); roughly seventeen others still hand-roll the fetch,
+so do not assume a list page you are editing is on the hook — check.
+`integrations/page.tsx` is a deliberate permanent exception: different
+response envelope, and a 404 there means "not connected", not an error.
 
 ## Tests
 
@@ -308,6 +370,17 @@ suites that matter architecturally:
   back to `head` on a scratch database. The re-upgrade is the half that
   matters: it proves a downgrade actually removed things rather than merely
   not raising.
+- `test_module_boundaries.py`, `test_metrics.py`, `test_monitoring_config.py`
+  — described in their sections above. All three share a shape worth
+  copying: they assert against something the code *generates* (the AST, the
+  live Prometheus registry, the compose file) rather than against a
+  transcribed list, and each carries a non-vacuity floor, because every one
+  of these sweeps passes trivially over an empty set.
+
+Shared setup lives in `tests/conftest.py` — `register_and_login`,
+`set_subscription_tier`, `grant_client_access`. `register_and_login` in
+particular replaced 24 divergent per-file copies; prefer a two-line
+wrapper in your own file over adding a parameter to it.
 
 When adding a new tenant-owned table or a new mutating route in a
 tier-gated module, add/extend the corresponding isolation or gating test,
