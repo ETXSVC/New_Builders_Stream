@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import * as Sentry from "@sentry/nextjs";
 
 // Last-resort boundary: replaces the ROOT layout when it crashes, so it
 // must render its own <html>/<body> and cannot rely on app components or
@@ -14,6 +15,9 @@ export default function GlobalError({
 }) {
   React.useEffect(() => {
     console.error(error);
+    // The root layout has crashed, so this is the only place this class of
+    // error is observable at all. A no-op when Sentry is unconfigured.
+    Sentry.captureException(error);
   }, [error]);
 
   return (

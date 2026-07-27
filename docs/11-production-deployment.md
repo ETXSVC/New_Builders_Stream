@@ -275,6 +275,40 @@ transport: the tags arrive, both secrets are redacted in the frame, and
 neither secret string appears anywhere in the serialized payload — while
 ordinary locals survive, so the traceback is still worth reading.
 
+### The frontend half
+
+Same defaults, one asymmetry worth knowing before an incident rather than
+during one.
+
+The Next **server** runtime reads `SENTRY_DSN` at run time, so it behaves
+exactly like the backend — set it, restart, done. The **browser** runtime
+cannot: `NEXT_PUBLIC_SENTRY_DSN` is inlined into the client bundle at build
+time, so turning client-side reporting on needs a rebuild. That is inherent
+to shipping a DSN to a browser, not a choice made here. (A Sentry DSN is a
+write-only ingest key and is public by design, so being in the bundle is
+not a leak.)
+
+Browser events **tunnel through the app's own origin** (`/monitoring`,
+configured in `next.config.ts`). This is load-bearing: the CSP pins
+`connect-src 'self'`, so a direct POST to ingest.sentry.io would be
+blocked, and the alternative — widening `connect-src` for every page — is
+a worse trade than routing telemetry through a rewrite. It also survives
+ad blockers, which routinely block known telemetry hosts. Cost: a total
+frontend outage reports nothing through the tunnel; server-side errors
+still report directly.
+
+**Session Replay is deliberately off.** Replay records the DOM, and the
+screens it would capture here are the e-signature flow, client names and
+addresses, invoice amounts, and subcontractor compliance documents —
+exactly what docs/07 treats as sensitive. Turning it on needs
+`maskAllText` + `blockAllMedia` at minimum, and a decision written down.
+
+URLs are scrubbed before events leave: the invitation-accept link's `id`
+(which *is* the authorisation to join a company), and OAuth `code`/`state`.
+`e2e/sentry-scrubbing.spec.ts` pins this, and found a real defect on its
+first run — the key list had been written from memory as
+`token`/`invitation`, so the actual `?id=` credential survived.
+
 **If the DSN is set but the package is missing**, the app logs a warning
 and carries on. Refusing to boot because telemetry is unavailable would
 make the monitoring into the outage.
@@ -360,7 +394,6 @@ the OpenAPI snapshot workflow guarantees backward-compatible reads).
 
 | Item | Note |
 |---|---|
-| Sentry (frontend) | The backend is done — see "Error reporting" below. The Next.js side still needs `@sentry/nextjs` and the same env-gated pattern. |
 | Prometheus/Grafana + alerting | docs/06 §5's full stack (service-down, backup-failure, disk >85%, queue-depth alerts). Until then: restart policies + cron mail + `docker compose ps`. |
 | PostHog | Product analytics, needs an account decision. |
 | Nonce-based strict CSP | Current CSP allows `'unsafe-inline'` scripts (Next.js bootstrap); a nonce pipeline removes it. |
