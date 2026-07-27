@@ -24,30 +24,12 @@ import io
 import asyncpg
 
 from app.tasks.estimate_pdf import _generate_estimate_pdf
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    assert login.status_code == 200, login.text
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 def _project_payload(**overrides):
@@ -145,7 +127,7 @@ async def _create_child_with_membership(client, parent, name, role="admin"):
 
 
 async def test_pdf_download_404_before_export(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-download-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-download-admin@acme.test")
     markup = await _create_markup_profile(client, admin["headers"])
     project = await _create_project(client, admin["headers"])
     estimate = await _create_estimate(
@@ -159,7 +141,7 @@ async def test_pdf_download_404_before_export(client):
 
 
 async def test_pdf_download_streams_bytes_once_ready(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "pdf-download-ready-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin["headers"])
@@ -186,7 +168,7 @@ async def test_pdf_download_streams_bytes_once_ready(client):
 
 
 async def test_pdf_download_cross_tenant_404(client):
-    admin_a = await _register_and_login(
+    admin_a = await register_and_login(
         client, "Acme Construction", "pdf-download-a-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin_a["headers"])
@@ -195,7 +177,7 @@ async def test_pdf_download_cross_tenant_404(client):
         client, admin_a["headers"], project_id=project["id"], markup_profile_id=markup["id"]
     )
 
-    admin_b = await _register_and_login(client, "Beta Builders", "pdf-download-b-admin@acme.test")
+    admin_b = await register_and_login(client, "Beta Builders", "pdf-download-b-admin@acme.test")
 
     response = await client.get(f"/estimates/{estimate['id']}/pdf", headers=admin_b["headers"])
     assert response.status_code == 404
@@ -207,7 +189,7 @@ async def test_pdf_download_cross_tenant_404(client):
 
 
 async def test_patch_catalog_item_updates_rate(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-catalog-item-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-catalog-item-admin@acme.test")
     item = await _create_catalog_item(client, admin["headers"])
 
     response = await client.patch(
@@ -219,12 +201,12 @@ async def test_patch_catalog_item_updates_rate(client):
 
 
 async def test_patch_catalog_item_cross_tenant_404(client):
-    admin_a = await _register_and_login(
+    admin_a = await register_and_login(
         client, "Acme Construction", "patch-catalog-item-a-admin@acme.test"
     )
     item = await _create_catalog_item(client, admin_a["headers"])
 
-    admin_b = await _register_and_login(client, "Beta Builders", "patch-catalog-item-b-admin@acme.test")
+    admin_b = await register_and_login(client, "Beta Builders", "patch-catalog-item-b-admin@acme.test")
 
     response = await client.patch(
         f"/catalogs/items/{item['id']}", json={"unit_rate": "9.00"}, headers=admin_b["headers"]
@@ -233,7 +215,7 @@ async def test_patch_catalog_item_cross_tenant_404(client):
 
 
 async def test_delete_catalog_item_blocked_when_referenced(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-catalog-item-referenced-admin@acme.test"
     )
     item = await _create_catalog_item(client, admin["headers"])
@@ -268,7 +250,7 @@ async def test_delete_catalog_item_blocked_when_overridden(client):
     Child-branch creation is Enterprise-gated (Task 5.7), hence the
     `set_subscription_tier` call registration alone wouldn't satisfy.
     """
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-catalog-item-overridden-admin@acme.test"
     )
     await set_subscription_tier(admin["company_id"], "enterprise")
@@ -288,7 +270,7 @@ async def test_delete_catalog_item_blocked_when_overridden(client):
 
 
 async def test_delete_catalog_item_succeeds_when_unreferenced(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-catalog-item-unreferenced-admin@acme.test"
     )
     item = await _create_catalog_item(client, admin["headers"])
@@ -306,7 +288,7 @@ async def test_delete_catalog_item_succeeds_when_unreferenced(client):
 
 
 async def test_patch_markup_profile(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-markup-profile-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-markup-profile-admin@acme.test")
     profile = await _create_markup_profile(
         client, admin["headers"], overhead_pct="10.00", profit_pct="15.00"
     )
@@ -320,7 +302,7 @@ async def test_patch_markup_profile(client):
 
 
 async def test_delete_markup_profile_blocked_when_referenced(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-markup-profile-referenced-admin@acme.test"
     )
     profile = await _create_markup_profile(client, admin["headers"])
@@ -334,7 +316,7 @@ async def test_delete_markup_profile_blocked_when_referenced(client):
 
 
 async def test_delete_markup_profile_succeeds_when_unreferenced(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-markup-profile-unreferenced-admin@acme.test"
     )
     profile = await _create_markup_profile(client, admin["headers"])
@@ -349,7 +331,7 @@ async def test_delete_markup_profile_succeeds_when_unreferenced(client):
 
 
 async def test_patch_estimate_changes_markup_profile_while_draft(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "patch-estimate-admin@acme.test"
     )
     markup_a = await _create_markup_profile(client, admin["headers"], name="A")
@@ -369,7 +351,7 @@ async def test_patch_estimate_changes_markup_profile_while_draft(client):
 
 
 async def test_patch_estimate_409_once_sent(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "patch-estimate-sent-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin["headers"])
@@ -391,7 +373,7 @@ async def test_patch_estimate_409_once_sent(client):
 
 
 async def test_delete_estimate_while_draft(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-estimate-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin["headers"])
@@ -408,7 +390,7 @@ async def test_delete_estimate_while_draft(client):
 
 
 async def test_delete_estimate_409_once_sent(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "delete-estimate-sent-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin["headers"])
@@ -455,7 +437,7 @@ async def _create_change_order(client, headers, *, project_id, **overrides):
 
 
 async def test_get_single_change_order(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "get-single-change-order-admin@acme.test"
     )
     project = await _create_project(client, admin["headers"])
@@ -468,14 +450,14 @@ async def test_get_single_change_order(client):
 
 
 async def test_get_single_change_order_cross_tenant_404(client):
-    admin_a = await _register_and_login(
+    admin_a = await register_and_login(
         client, "Acme Construction", "get-single-change-order-a-admin@acme.test"
     )
     project = await _create_project(client, admin_a["headers"])
     await _advance_project_to_active(client, admin_a["headers"], project["id"])
     change_order = await _create_change_order(client, admin_a["headers"], project_id=project["id"])
 
-    admin_b = await _register_and_login(
+    admin_b = await register_and_login(
         client, "Beta Builders", "get-single-change-order-b-admin@acme.test"
     )
 
@@ -484,7 +466,7 @@ async def test_get_single_change_order_cross_tenant_404(client):
 
 
 async def test_list_all_change_orders_scoped_to_pending_for_client(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "list-all-change-orders-admin@acme.test"
     )
     project = await _create_project(client, admin["headers"])
@@ -522,7 +504,7 @@ async def _create_lead(client, headers, **overrides):
 
 
 async def test_estimate_list_includes_parent_name_for_project_and_lead(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "parent-name-admin@acme.test"
     )
     markup = await _create_markup_profile(client, admin["headers"])
@@ -591,7 +573,7 @@ async def test_estimate_list_includes_parent_name_for_project_and_lead(client):
 
 
 async def test_bulk_import_partial_failure_reports_per_row(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "bulk-import-partial-admin@acme.test"
     )
     response = await client.post(
@@ -624,7 +606,7 @@ async def test_bulk_import_schema_invalid_row_422s_whole_request(client):
     Pydantic rejects the ENTIRE request with a 422 before
     `bulk_create_catalog_items` ever runs, so nothing is created — not even
     the first, otherwise-valid row."""
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "bulk-import-schema-invalid-admin@acme.test"
     )
     response = await client.post(
@@ -644,7 +626,7 @@ async def test_bulk_import_schema_invalid_row_422s_whole_request(client):
 
 
 async def test_bulk_import_rejects_over_500_rows(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "bulk-import-over-500-admin@acme.test"
     )
     items = [
@@ -703,7 +685,7 @@ async def _register_pm_in_company(client, admin, email):
 
 
 async def test_get_branding_defaults_when_no_row_exists(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-defaults-admin@acme.test"
     )
     response = await client.get("/companies/branding", headers=admin["headers"])
@@ -714,7 +696,7 @@ async def test_get_branding_defaults_when_no_row_exists(client):
 
 
 async def test_put_branding_creates_and_updates(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-put-admin@acme.test"
     )
     response = await client.put(
@@ -738,7 +720,7 @@ async def test_put_branding_creates_and_updates(client):
 
 
 async def test_put_branding_forbidden_for_pm(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-forbidden-pm-admin@acme.test"
     )
     pm_headers = await _register_pm_in_company(
@@ -754,7 +736,7 @@ async def test_put_branding_forbidden_for_pm(client):
 
 
 async def test_upload_branding_logo(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-upload-admin@acme.test"
     )
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
@@ -771,7 +753,7 @@ async def test_upload_branding_logo(client):
 
 
 async def test_upload_branding_logo_rejects_oversized_file(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-oversized-admin@acme.test"
     )
     oversized = b"\x00" * (2 * 1024 * 1024 + 1)
@@ -787,7 +769,7 @@ async def test_upload_branding_logo_rejects_oversized_file(client):
 
 
 async def test_upload_branding_logo_rejects_wrong_content_type(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "branding-wrong-type-admin@acme.test"
     )
     response = await client.post(

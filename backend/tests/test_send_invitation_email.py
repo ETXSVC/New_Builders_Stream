@@ -5,25 +5,10 @@ handler-adjacent tests use for Dramatiq enqueues.
 """
 from app.services.email import FakeEmailClient, fake_email_client, get_email_client
 from app.tasks.send_invitation_email import _send_invitation_email, send_invitation_email
+from tests.conftest import register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    assert login.status_code == 200, login.text
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
-    }
+
 
 
 def test_unconfigured_smtp_selects_the_recording_fake():
@@ -54,7 +39,7 @@ async def test_actor_sends_via_the_email_client(monkeypatch):
 
 
 async def test_create_invitation_enqueues_the_email(client, monkeypatch):
-    admin = await _register_and_login(client, "Email Invite Co", "email-invite-admin@acme.test")
+    admin = await register_and_login(client, "Email Invite Co", "email-invite-admin@acme.test")
 
     calls = []
     monkeypatch.setattr(send_invitation_email, "send", lambda *a, **kw: calls.append((a, kw)))

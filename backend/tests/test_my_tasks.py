@@ -2,28 +2,12 @@
 cross-project task list behind the frontend's My Tasks view."""
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -69,7 +53,7 @@ async def _project_with_phase(client, admin, name):
 
 
 async def test_my_tasks_returns_only_own_tasks_with_project_context(client):
-    admin = await _register_and_login(client, "My Tasks Co", "my-tasks-admin@acme.test")
+    admin = await register_and_login(client, "My Tasks Co", "my-tasks-admin@acme.test")
     crew = await _invite_and_login_as(client, admin, "field_crew", "my-tasks-crew@acme.test")
     project, phase = await _project_with_phase(client, admin, "Crew Project")
 
@@ -95,6 +79,6 @@ async def test_my_tasks_returns_only_own_tasks_with_project_context(client):
 
 
 async def test_my_tasks_rejects_unsupported_assignee_value(client):
-    admin = await _register_and_login(client, "My Tasks Val Co", "my-tasks-val@acme.test")
+    admin = await register_and_login(client, "My Tasks Val Co", "my-tasks-val@acme.test")
     response = await client.get("/tasks?assignee=someone-else", headers=admin["headers"])
     assert response.status_code == 422

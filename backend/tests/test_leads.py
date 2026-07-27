@@ -1,24 +1,9 @@
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -59,7 +44,7 @@ def _lead_payload(**overrides):
 
 
 async def test_admin_can_create_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin@acme.test")
 
     response = await client.post("/leads", json=_lead_payload(), headers=admin["headers"])
     assert response.status_code == 201, response.text
@@ -71,7 +56,7 @@ async def test_admin_can_create_lead(client):
 
 
 async def test_project_manager_can_create_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "pm@acme.test")
 
     response = await client.post("/leads", json=_lead_payload(), headers=pm["headers"])
@@ -79,7 +64,7 @@ async def test_project_manager_can_create_lead(client):
 
 
 async def test_create_lead_writes_an_audit_log_entry(client):
-    admin = await _register_and_login(client, "Acme Construction", "audit-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "audit-admin@acme.test")
 
     response = await client.post("/leads", json=_lead_payload(), headers=admin["headers"])
     lead_id = response.json()["id"]
@@ -99,7 +84,7 @@ async def test_create_lead_writes_an_audit_log_entry(client):
 
 
 async def test_create_lead_rejects_invalid_payload(client):
-    admin = await _register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
 
     response = await client.post(
         "/leads",
@@ -110,7 +95,7 @@ async def test_create_lead_rejects_invalid_payload(client):
 
 
 async def test_non_admin_pm_cannot_create_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "crew@acme.test")
 
     response = await client.post("/leads", json=_lead_payload(), headers=field_crew["headers"])
@@ -118,7 +103,7 @@ async def test_non_admin_pm_cannot_create_lead(client):
 
 
 async def test_non_admin_pm_cannot_list_leads(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin2@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin2@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "client@acme.test")
 
     response = await client.get("/leads", headers=client_role["headers"])
@@ -126,7 +111,7 @@ async def test_non_admin_pm_cannot_list_leads(client):
 
 
 async def test_non_admin_pm_cannot_get_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin3@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin3@acme.test")
     create = await client.post("/leads", json=_lead_payload(), headers=admin["headers"])
     lead_id = create.json()["id"]
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "crew2@acme.test")
@@ -136,7 +121,7 @@ async def test_non_admin_pm_cannot_get_lead(client):
 
 
 async def test_list_leads_returns_created_leads(client):
-    admin = await _register_and_login(client, "Acme Construction", "list-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "list-admin@acme.test")
     await client.post("/leads", json=_lead_payload(project_name="Kitchen"), headers=admin["headers"])
     await client.post("/leads", json=_lead_payload(project_name="Bathroom"), headers=admin["headers"])
 
@@ -150,7 +135,7 @@ async def test_list_leads_returns_created_leads(client):
 
 
 async def test_list_leads_filters_by_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "filter-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "filter-admin@acme.test")
     await client.post("/leads", json=_lead_payload(project_name="A"), headers=admin["headers"])
     await client.post("/leads", json=_lead_payload(project_name="B"), headers=admin["headers"])
 
@@ -166,7 +151,7 @@ async def test_list_leads_filters_by_status(client):
 
 
 async def test_list_leads_rejects_invalid_status_filter(client):
-    admin = await _register_and_login(client, "Acme Construction", "badstatus-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "badstatus-admin@acme.test")
 
     response = await client.get("/leads", params={"status": "not_a_status"}, headers=admin["headers"])
     assert response.status_code == 422
@@ -178,7 +163,7 @@ async def test_list_leads_pagination_walks_every_row_exactly_once(client):
     every seeded lead exactly once — no skips, no duplicates — which is the
     property offset-based pagination can silently violate under concurrent
     inserts (see app/core/pagination.py's module docstring)."""
-    admin = await _register_and_login(client, "Acme Construction", "page-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "page-admin@acme.test")
 
     created_ids = []
     for i in range(5):
@@ -218,7 +203,7 @@ async def test_list_leads_pagination_breaks_ties_on_identical_created_at(client)
     requests almost always get distinct microsecond timestamps, which would
     let a created_at-only cursor pass this suite by accident; this test
     removes that accident by construction."""
-    admin = await _register_and_login(client, "Acme Construction", "tie-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "tie-admin@acme.test")
 
     first = await client.post(
         "/leads", json=_lead_payload(project_name="Tie A"), headers=admin["headers"]
@@ -275,7 +260,7 @@ async def test_list_leads_pagination_resumes_after_cursor_row_deleted(client):
     API by business rule, so this uses the RLS-exempt owner connection, the
     same pattern the tie-breaker test above uses) and confirms the second
     page still returns the remaining row rather than erroring or skipping."""
-    admin = await _register_and_login(client, "Acme Construction", "resume-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "resume-admin@acme.test")
 
     first = await client.post(
         "/leads", json=_lead_payload(project_name="Will Be Deleted"), headers=admin["headers"]
@@ -306,7 +291,7 @@ async def test_list_leads_pagination_resumes_after_cursor_row_deleted(client):
 
 
 async def test_list_leads_pagination_default_limit_and_max(client):
-    admin = await _register_and_login(client, "Acme Construction", "limit-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "limit-admin@acme.test")
     await client.post("/leads", json=_lead_payload(), headers=admin["headers"])
 
     over_max = await client.get("/leads", params={"limit": 101}, headers=admin["headers"])
@@ -317,14 +302,14 @@ async def test_list_leads_pagination_default_limit_and_max(client):
 
 
 async def test_list_leads_rejects_malformed_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "cursor-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cursor-admin@acme.test")
 
     response = await client.get("/leads", params={"cursor": "not-a-real-cursor"}, headers=admin["headers"])
     assert response.status_code == 400
 
 
 async def test_get_own_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "get-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "get-admin@acme.test")
     create = await client.post("/leads", json=_lead_payload(), headers=admin["headers"])
     lead_id = create.json()["id"]
 
@@ -334,7 +319,7 @@ async def test_get_own_lead(client):
 
 
 async def test_get_nonexistent_lead_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "nonexistent-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "nonexistent-admin@acme.test")
 
     response = await client.get(
         "/leads/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
@@ -345,8 +330,8 @@ async def test_get_nonexistent_lead_returns_404(client):
 async def test_get_cross_tenant_lead_returns_404(client):
     """Mirrors test_tenant_isolation.py's
     test_company_a_cannot_read_company_b_by_direct_id pattern exactly."""
-    a = await _register_and_login(client, "Company A", "cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "cross-b@acme.test")
 
     create = await client.post("/leads", json=_lead_payload(), headers=b["headers"])
     lead_id = create.json()["id"]
@@ -356,8 +341,8 @@ async def test_get_cross_tenant_lead_returns_404(client):
 
 
 async def test_list_leads_is_tenant_scoped(client):
-    a = await _register_and_login(client, "Company A", "list-tenant-a@acme.test")
-    b = await _register_and_login(client, "Company B", "list-tenant-b@acme.test")
+    a = await register_and_login(client, "Company A", "list-tenant-a@acme.test")
+    b = await register_and_login(client, "Company B", "list-tenant-b@acme.test")
 
     await client.post("/leads", json=_lead_payload(project_name="A's Lead"), headers=a["headers"])
     await client.post("/leads", json=_lead_payload(project_name="B's Lead"), headers=b["headers"])

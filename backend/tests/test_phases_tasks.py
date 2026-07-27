@@ -7,28 +7,12 @@ test_leads.py, test_projects.py) rather than sharing them via conftest.py.
 """
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login, set_subscription_tier
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -129,7 +113,7 @@ async def _create_task(client, admin, project_id, phase_id, name="Pour footings"
 
 
 async def test_admin_can_create_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.post(
@@ -146,7 +130,7 @@ async def test_admin_can_create_phase(client):
 
 
 async def test_project_manager_can_create_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "phase-pm@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -161,7 +145,7 @@ async def test_project_manager_can_create_phase(client):
 
 
 async def test_field_crew_cannot_create_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "phase-fc@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -174,7 +158,7 @@ async def test_field_crew_cannot_create_phase(client):
 
 
 async def test_accountant_and_client_cannot_create_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-acct-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "phase-acct@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "phase-client@acme.test")
     project_id = await _create_project(client, admin)
@@ -189,8 +173,8 @@ async def test_accountant_and_client_cannot_create_phase(client):
 
 
 async def test_create_phase_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "phase-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "phase-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "phase-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "phase-cross-b@acme.test")
     project_id = await _create_project(client, b)
 
     response = await client.post(
@@ -202,7 +186,7 @@ async def test_create_phase_cross_tenant_project_returns_404(client):
 
 
 async def test_create_phase_rejects_invalid_payload(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-invalid-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-invalid-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.post(
@@ -217,7 +201,7 @@ async def test_create_phase_rejects_invalid_payload(client):
 
 
 async def test_admin_can_update_phase_name_and_sequence(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id, name="Foundation", sequence=0)
 
@@ -233,7 +217,7 @@ async def test_admin_can_update_phase_name_and_sequence(client):
 
 
 async def test_project_manager_can_update_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "phase-update-pm@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -249,7 +233,7 @@ async def test_project_manager_can_update_phase(client):
 
 async def test_update_phase_only_touches_supplied_fields(client):
     """PATCH semantics: omitting `sequence` must leave it unchanged."""
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-partial@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-partial@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id, name="Foundation", sequence=5)
 
@@ -265,7 +249,7 @@ async def test_update_phase_only_touches_supplied_fields(client):
 
 
 async def test_field_crew_cannot_update_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "phase-update-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -279,8 +263,8 @@ async def test_field_crew_cannot_update_phase(client):
 
 
 async def test_update_phase_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "phase-update-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "phase-update-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "phase-update-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "phase-update-cross-b@acme.test")
     project_id = await _create_project(client, b)
     phase_id = await _create_phase(client, b, project_id)
 
@@ -297,7 +281,7 @@ async def test_update_phase_belonging_to_a_different_project_returns_404(client)
     the URL — must 404, not silently update a phase the URL doesn't
     actually name (same "path must match the exact resource" convention
     _get_phase_or_404's own docstring establishes)."""
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-wrongproj@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-wrongproj@acme.test")
     project_a = await _create_project(client, admin, name="Project A")
     project_b = await _create_project(client, admin, name="Project B", site_address="2 Main St")
     phase_id = await _create_phase(client, admin, project_a)
@@ -311,7 +295,7 @@ async def test_update_phase_belonging_to_a_different_project_returns_404(client)
 
 
 async def test_update_nonexistent_phase_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-noexist@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-noexist@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.patch(
@@ -323,7 +307,7 @@ async def test_update_nonexistent_phase_returns_404(client):
 
 
 async def test_update_phase_rejects_invalid_payload(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-update-invalid@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-update-invalid@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
 
@@ -339,7 +323,7 @@ async def test_update_phase_rejects_invalid_payload(client):
 
 
 async def test_admin_can_delete_phase_and_its_tasks_cascade(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-delete-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-delete-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
     await _create_task(client, admin, project_id, phase_id, name="Pour footings")
@@ -361,7 +345,7 @@ async def test_admin_can_delete_phase_and_its_tasks_cascade(client):
 
 
 async def test_project_manager_can_delete_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-delete-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-delete-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "phase-delete-pm@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -373,7 +357,7 @@ async def test_project_manager_can_delete_phase(client):
 
 
 async def test_field_crew_cannot_delete_phase(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-delete-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-delete-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "phase-delete-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -385,8 +369,8 @@ async def test_field_crew_cannot_delete_phase(client):
 
 
 async def test_delete_phase_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "phase-delete-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "phase-delete-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "phase-delete-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "phase-delete-cross-b@acme.test")
     project_id = await _create_project(client, b)
     phase_id = await _create_phase(client, b, project_id)
 
@@ -397,7 +381,7 @@ async def test_delete_phase_cross_tenant_project_returns_404(client):
 
 
 async def test_delete_nonexistent_phase_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "phase-delete-noexist@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "phase-delete-noexist@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.delete(
@@ -411,7 +395,7 @@ async def test_delete_nonexistent_phase_returns_404(client):
 
 
 async def test_admin_can_create_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
 
@@ -431,7 +415,7 @@ async def test_admin_can_create_task(client):
 
 
 async def test_project_manager_can_create_task_with_assignee(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "task-pm@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "task-pm-fc@acme.test")
     project_id = await _create_project(client, admin)
@@ -447,7 +431,7 @@ async def test_project_manager_can_create_task_with_assignee(client):
 
 
 async def test_field_crew_cannot_create_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "task-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -466,7 +450,7 @@ async def test_create_task_rejects_cross_project_phase_id(client):
     tenant. Seeds a phase under project B, then attempts to create a task
     under project A referencing project B's phase — both projects are in
     the SAME company, so this can't be caught by tenant isolation alone."""
-    admin = await _register_and_login(client, "Acme Construction", "task-xproj-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-xproj-admin@acme.test")
     project_a = await _create_project(client, admin, name="Project A")
     project_b = await _create_project(client, admin, name="Project B")
     phase_b = await _create_phase(client, admin, project_b)
@@ -480,7 +464,7 @@ async def test_create_task_rejects_cross_project_phase_id(client):
 
 
 async def test_create_task_rejects_nonexistent_phase_id(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-noexist-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-noexist-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.post(
@@ -492,8 +476,8 @@ async def test_create_task_rejects_nonexistent_phase_id(client):
 
 
 async def test_create_task_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "task-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "task-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "task-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "task-cross-b@acme.test")
     project_id = await _create_project(client, b)
     phase_id = await _create_phase(client, b, project_id)
 
@@ -506,7 +490,7 @@ async def test_create_task_cross_tenant_project_returns_404(client):
 
 
 async def test_create_task_rejects_invalid_payload(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-invalid-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-invalid-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
 
@@ -522,7 +506,7 @@ async def test_create_task_rejects_invalid_payload(client):
 
 
 async def test_admin_can_patch_any_task_field(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-admin-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -540,7 +524,7 @@ async def test_admin_can_patch_any_task_field(client):
 
 
 async def test_admin_can_patch_task_name_and_due_date(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-namedue-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-namedue-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
     task_id = await _create_task(client, admin, project_id, phase_id, name="Pour footings")
@@ -561,7 +545,7 @@ async def test_field_crew_cannot_patch_task_name_even_on_own_task(client):
     even_on_own_task exercises for `assignee_id`, extended to the newer
     `name` field — adding fields to TaskUpdateRequest must not widen
     field_crew's own allowed set past `status`."""
-    admin = await _register_and_login(client, "Acme Construction", "patch-namefc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-namefc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-namefc-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -578,7 +562,7 @@ async def test_field_crew_cannot_patch_task_name_even_on_own_task(client):
 
 
 async def test_project_manager_can_patch_any_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "patch-pm@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -594,7 +578,7 @@ async def test_project_manager_can_patch_any_task(client):
 
 
 async def test_patch_task_rejects_invalid_status_value(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-badstatus-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-badstatus-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
     task_id = await _create_task(client, admin, project_id, phase_id)
@@ -608,7 +592,7 @@ async def test_patch_task_rejects_invalid_status_value(client):
 
 
 async def test_field_crew_can_patch_status_on_own_assigned_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-fc-own-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-fc-own-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-own@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -630,7 +614,7 @@ async def test_field_crew_cannot_patch_assignee_id_even_on_own_task(client):
     isn't a field they're permitted to touch — this router's chosen design
     is an explicit 403, not a silent drop of the disallowed field (see
     patch_task's docstring in app/routers/tasks.py)."""
-    admin = await _register_and_login(client, "Acme Construction", "patch-fc-assignee-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-fc-assignee-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-assignee@acme.test")
     other_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-assignee-other@acme.test")
     project_id = await _create_project(client, admin)
@@ -671,7 +655,7 @@ async def test_field_crew_cannot_patch_task_not_assigned_to_them(client):
     """A task not assigned to this field_crew user is invisible to them —
     same 404 as a genuinely nonexistent task, not a 403 (see
     _get_task_or_404's docstring)."""
-    admin = await _register_and_login(client, "Acme Construction", "patch-fc-notmine-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-fc-notmine-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-notmine@acme.test")
     other_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-notmine-other@acme.test")
     project_id = await _create_project(client, admin)
@@ -691,7 +675,7 @@ async def test_field_crew_cannot_patch_task_not_assigned_to_them(client):
 async def test_field_crew_cannot_patch_unassigned_task(client):
     """A task with no assignee at all is also invisible to field_crew —
     same reasoning as the "not assigned to them" case above."""
-    admin = await _register_and_login(client, "Acme Construction", "patch-fc-unassigned-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-fc-unassigned-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "patch-fc-unassigned@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -711,7 +695,7 @@ async def test_accountant_and_client_cannot_patch_task(client):
     neither role appears in PATCH /tasks/{id}'s require_role list at all,
     so both are blocked at the dependency layer before any ownership/field
     logic even runs."""
-    admin = await _register_and_login(client, "Acme Construction", "patch-blocked-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-blocked-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "patch-blocked-acct@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "patch-blocked-client@acme.test")
     project_id = await _create_project(client, admin)
@@ -728,8 +712,8 @@ async def test_accountant_and_client_cannot_patch_task(client):
 
 
 async def test_patch_task_cross_tenant_returns_404(client):
-    a = await _register_and_login(client, "Company A", "patch-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "patch-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "patch-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "patch-cross-b@acme.test")
     project_id = await _create_project(client, b)
     phase_id = await _create_phase(client, b, project_id)
     task_id = await _create_task(client, b, project_id, phase_id)
@@ -743,7 +727,7 @@ async def test_patch_task_cross_tenant_returns_404(client):
 
 
 async def test_patch_nonexistent_task_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-noexist-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-noexist-admin@acme.test")
 
     response = await client.patch(
         "/tasks/00000000-0000-0000-0000-000000000000",
@@ -757,7 +741,7 @@ async def test_patch_nonexistent_task_returns_404(client):
 
 
 async def test_admin_can_delete_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-delete-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-delete-admin@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
     task_id = await _create_task(client, admin, project_id, phase_id)
@@ -775,7 +759,7 @@ async def test_admin_can_delete_task(client):
 
 
 async def test_project_manager_can_delete_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-delete-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-delete-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "task-delete-pm@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -789,7 +773,7 @@ async def test_field_crew_cannot_delete_task_even_their_own(client):
     """Narrower than patch_task's RBAC: field_crew's only grant is updating
     `status` on a task assigned to them — deleting isn't part of that
     grant, even for a task genuinely assigned to the caller."""
-    admin = await _register_and_login(client, "Acme Construction", "task-delete-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-delete-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "task-delete-fc@acme.test")
     project_id = await _create_project(client, admin)
     phase_id = await _create_phase(client, admin, project_id)
@@ -802,7 +786,7 @@ async def test_field_crew_cannot_delete_task_even_their_own(client):
 
 
 async def test_accountant_and_client_cannot_delete_task(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-delete-acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-delete-acct-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "task-delete-acct@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "task-delete-client@acme.test")
     project_id = await _create_project(client, admin)
@@ -815,8 +799,8 @@ async def test_accountant_and_client_cannot_delete_task(client):
 
 
 async def test_delete_task_cross_tenant_returns_404(client):
-    a = await _register_and_login(client, "Company A", "task-delete-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "task-delete-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "task-delete-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "task-delete-cross-b@acme.test")
     project_id = await _create_project(client, b)
     phase_id = await _create_phase(client, b, project_id)
     task_id = await _create_task(client, b, project_id, phase_id)
@@ -826,7 +810,7 @@ async def test_delete_task_cross_tenant_returns_404(client):
 
 
 async def test_delete_nonexistent_task_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "task-delete-noexist-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "task-delete-noexist-admin@acme.test")
 
     response = await client.delete(
         "/tasks/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
@@ -838,7 +822,7 @@ async def test_delete_nonexistent_task_returns_404(client):
 
 
 async def test_list_phases_returns_phases_with_nested_tasks_in_sequence_order(client):
-    admin = await _register_and_login(client, "Phase List Co", "phase-list@acme.test")
+    admin = await register_and_login(client, "Phase List Co", "phase-list@acme.test")
     project_id = await _create_project(
         client, admin, name="Phase List Project", site_address="2 Main St"
     )
@@ -875,7 +859,7 @@ async def test_creating_phase_under_child_branch_project_uses_child_company_id(c
     what makes the child's Project visible/writable to this session, which
     is the only way current.company_id (parent) and project.company_id
     (child) genuinely diverge without an explicit header switch."""
-    parent = await _register_and_login(client, "Parent Co", "phase-parent-co@acme.test")
+    parent = await register_and_login(client, "Parent Co", "phase-parent-co@acme.test")
     await set_subscription_tier(parent["company_id"], "enterprise")
     child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
     child_headers = {**parent["headers"], "X-Tenant-ID": child_id}
@@ -911,7 +895,7 @@ async def test_creating_task_under_child_branch_project_uses_child_company_id(cl
     above, for the sibling create_task route: the new Task's company_id
     must come from project.company_id (the CHILD), never
     current.company_id (the PARENT acting session)."""
-    parent = await _register_and_login(client, "Parent Co", "task-parent-co@acme.test")
+    parent = await register_and_login(client, "Parent Co", "task-parent-co@acme.test")
     await set_subscription_tier(parent["company_id"], "enterprise")
     child_id = await _create_child_with_membership(client, parent, "Seattle Branch")
     child_headers = {**parent["headers"], "X-Tenant-ID": child_id}

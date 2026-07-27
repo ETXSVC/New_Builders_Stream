@@ -294,3 +294,64 @@ async def grant_client_access(http_client, admin, *, project_id=None, lead_id=No
     granted = await http_client.post(path, json={"user_id": user_id}, headers=admin["headers"])
     assert granted.status_code == 201, granted.text
     return granted.json()
+
+
+async def register_and_login(client, company_name, email, *, tier=None) -> dict:
+    """Register a company, log its admin in, hand back what tests need.
+
+    53 of the 90 test files had grown their own copy of this, in **24
+    distinct variants** — the drift is the finding, not the duplication.
+    They differed along four axes:
+
+      * whether `user_id` came back in the dict (some callers need it);
+      * whether the register/login responses were status-asserted at all;
+      * whether a subscription tier was set afterwards, and to what;
+      * cosmetics (`body['access_token']` vs `login.json()[...]`).
+
+    This is the union, deliberately, rather than the intersection:
+
+      * `user_id` is ALWAYS returned. An extra key costs a caller nothing;
+        omitting it is what forced a second variant to exist.
+      * both responses are ALWAYS asserted. This is the only behavioural
+        change, and it is strictly better — without it a 500 during setup
+        surfaced as a confusing `KeyError: 'company_id'` several frames
+        later, in a test that had nothing to do with the real failure.
+      * `tier` is the ONE knob, because registration can only ever produce
+        trialing/pro (docs/08 Section 5) and a test exercising an
+        Enterprise-gated module genuinely has to say so. It delegates to
+        `set_subscription_tier` above rather than reimplementing it.
+
+    One optional keyword, not four booleans. Variants that need something
+    genuinely different keep a two-line wrapper in their own file, which
+    is honest about being a local exception rather than growing this
+    signature to cover it.
+
+    Lives in conftest because that is already where this suite's shared
+    setup lives (`set_subscription_tier`, `grant_client_access`) and 65
+    files already import from here. A pytest fixture would avoid the
+    import entirely, but would mean touching the signature of every test
+    that uses it — a far larger and more error-prone diff for a smaller
+    gain.
+    """
+    register = await client.post(
+        "/auth/register",
+        json={
+            "company_name": company_name,
+            "admin_full_name": "Test Admin",
+            "admin_email": email,
+            "admin_password": "supersecret123",
+        },
+    )
+    assert register.status_code == 201, register.text
+    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
+    assert login.status_code == 200, login.text
+
+    if tier is not None:
+        await set_subscription_tier(register.json()["company_id"], tier)
+
+    return {
+        "company_id": register.json()["company_id"],
+        "user_id": register.json()["user_id"],
+        "email": email,
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+    }

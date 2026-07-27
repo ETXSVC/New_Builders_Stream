@@ -26,26 +26,10 @@ test_change_orders.py, which itself copied `_advance_project_to`'s shape
 from test_project_state_machine.py's `_advance_to`.
 """
 
-from tests.conftest import grant_client_access
+from tests.conftest import grant_client_access, register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -169,7 +153,7 @@ async def _complete_project(client, admin, project_id):
 
 
 async def test_project_with_no_change_orders_can_complete_from_active(client):
-    admin = await _register_and_login(client, "Acme Construction", "coblock-noco-active@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-noco-active@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
 
@@ -179,7 +163,7 @@ async def test_project_with_no_change_orders_can_complete_from_active(client):
 
 
 async def test_project_with_no_change_orders_can_complete_from_suspended(client):
-    admin = await _register_and_login(client, "Acme Construction", "coblock-noco-suspended@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-noco-suspended@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active", "suspended"])
 
@@ -192,7 +176,7 @@ async def test_project_with_no_change_orders_can_complete_from_suspended(client)
 
 
 async def test_pending_change_order_blocks_completion_from_active(client):
-    admin = await _register_and_login(client, "Acme Construction", "coblock-pending-active@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-pending-active@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
     change_order = await _create_change_order(client, admin, project_id)
@@ -209,7 +193,7 @@ async def test_pending_change_order_blocks_completion_from_active(client):
 
 
 async def test_pending_change_order_blocks_completion_from_suspended(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "coblock-pending-suspended@acme.test"
     )
     project_id = await _create_project(client, admin)
@@ -232,7 +216,7 @@ async def test_pending_change_order_blocks_completion_from_suspended(client):
 
 
 async def test_project_with_only_approved_change_orders_can_complete(client):
-    admin = await _register_and_login(client, "Acme Construction", "coblock-approved-only@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-approved-only@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "coblock-approved-only-c@acme.test"
     )
@@ -262,7 +246,7 @@ async def test_project_with_only_rejected_change_orders_can_complete_from_active
     implemented as the more literal `status != "approved"` (which the plan
     text's own bullet describes before its "reconsider this" correction),
     this test would fail with a 409 it should not get."""
-    admin = await _register_and_login(client, "Acme Construction", "coblock-rejected-only@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-rejected-only@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "coblock-rejected-only-c@acme.test"
     )
@@ -280,7 +264,7 @@ async def test_project_with_only_rejected_change_orders_can_complete_from_active
 
 
 async def test_project_with_only_rejected_change_orders_can_complete_from_suspended(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "coblock-rejected-only-susp@acme.test"
     )
     client_role = await _invite_and_login_as(
@@ -304,7 +288,7 @@ async def test_project_with_only_rejected_change_orders_can_complete_from_suspen
 
 
 async def test_project_with_mix_of_approved_and_rejected_change_orders_can_complete(client):
-    admin = await _register_and_login(client, "Acme Construction", "coblock-mix-noblock@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-mix-noblock@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "coblock-mix-noblock-c@acme.test"
     )
@@ -332,7 +316,7 @@ async def test_project_with_pending_among_approved_and_rejected_change_orders_is
     presence of other, non-blocking (`approved`/`rejected`) rows on the same
     project — the count in the error message must reflect just the one
     truly-open Change Order, not all three."""
-    admin = await _register_and_login(client, "Acme Construction", "coblock-mix-blocked@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-mix-blocked@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "coblock-mix-blocked-c@acme.test"
     )
@@ -365,7 +349,7 @@ async def test_pending_count_in_error_message_is_accurate_for_multiple_pending(c
     miscounts (e.g. counting approved+pending together, or always reporting
     `1`). This test creates 3 pending Change Orders plus 1 approved and 1
     rejected (noise) and asserts the reported count is exactly `3`."""
-    admin = await _register_and_login(client, "Acme Construction", "coblock-count-accurate@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-count-accurate@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "coblock-count-accurate-c@acme.test"
     )
@@ -399,7 +383,7 @@ async def test_change_order_block_message_differs_from_illegal_transition_messag
     but blocked by open Change Orders specifically — not that `completed`
     isn't reachable from `active` at all. Confirms the two 409 messages are
     textually distinguishable."""
-    admin = await _register_and_login(client, "Acme Construction", "coblock-msg-diff@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "coblock-msg-diff@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, ["pre_construction", "active"])
     await _create_change_order(client, admin, project_id)

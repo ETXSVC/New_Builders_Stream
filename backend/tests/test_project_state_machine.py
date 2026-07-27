@@ -17,27 +17,12 @@ import asyncpg
 import pytest
 
 from app.services.project_transitions import PROJECT_TRANSITIONS
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -141,7 +126,7 @@ def test_transition_table_matches_the_documented_business_decision():
 
 @pytest.mark.parametrize("from_status,to_status", sorted(_EXPECTED_LEGAL_EDGES))
 async def test_legal_transition_succeeds_and_is_audited(client, from_status, to_status):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", f"legal-{from_status}-{to_status}@acme.test"
     )
     project = await _create_project(client, admin["headers"])
@@ -189,7 +174,7 @@ async def test_legal_transition_succeeds_and_is_audited(client, from_status, to_
     ],
 )
 async def test_illegal_transition_returns_409_with_no_state_change(client, from_status, to_status):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", f"illegal-{from_status}-{to_status}@acme.test"
     )
     project = await _create_project(client, admin["headers"])
@@ -219,7 +204,7 @@ async def test_suspend_resume_round_trip(client):
     round-trip, not just a one-way parametrized case. Confirms both hops
     succeed, the project ends up back in "active", and both transitions are
     independently audited (two distinct audit rows, not one)."""
-    admin = await _register_and_login(client, "Acme Construction", "suspend-resume@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "suspend-resume@acme.test")
     project = await _create_project(client, admin["headers"])
     await _advance_to(client, admin["headers"], project["id"], ["pre_construction", "active"])
 
@@ -264,7 +249,7 @@ async def test_suspend_resume_round_trip(client):
 
 
 async def test_status_resubmission_is_a_noop(client):
-    admin = await _register_and_login(client, "Acme Construction", "resubmit-noop@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "resubmit-noop@acme.test")
     project = await _create_project(client, admin["headers"])
 
     response = await client.patch(
@@ -283,7 +268,7 @@ async def test_status_resubmission_is_a_noop(client):
 
 
 async def test_audit_log_entry_includes_reason(client):
-    admin = await _register_and_login(client, "Acme Construction", "audit-reason@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "audit-reason@acme.test")
     project = await _create_project(client, admin["headers"])
 
     response = await client.patch(
@@ -308,7 +293,7 @@ async def test_audit_log_entry_includes_reason(client):
 
 
 async def test_audit_log_entry_reason_defaults_to_null_when_omitted(client):
-    admin = await _register_and_login(client, "Acme Construction", "audit-no-reason@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "audit-no-reason@acme.test")
     project = await _create_project(client, admin["headers"])
 
     response = await client.patch(
@@ -333,7 +318,7 @@ async def test_audit_log_entry_reason_defaults_to_null_when_omitted(client):
 
 
 async def test_updated_at_actually_bumps_after_a_status_change(client):
-    admin = await _register_and_login(client, "Acme Construction", "updated-at@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "updated-at@acme.test")
     project = await _create_project(client, admin["headers"])
     original_updated_at = datetime.fromisoformat(project["updated_at"])
 
@@ -349,7 +334,7 @@ async def test_updated_at_actually_bumps_after_a_status_change(client):
 
 
 async def test_invalid_status_value_returns_422(client):
-    admin = await _register_and_login(client, "Acme Construction", "invalid-status@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "invalid-status@acme.test")
     project = await _create_project(client, admin["headers"])
 
     response = await client.patch(
@@ -368,7 +353,7 @@ async def test_field_crew_cannot_patch_project_status(client):
     blocked, not just "some non-admin role" — field_crew has read-assigned
     access to Project Management per the RBAC matrix, which makes it the
     most plausible role to accidentally over-grant write access to."""
-    admin = await _register_and_login(client, "Acme Construction", "rbac-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "rbac-fc-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "rbac-fc@acme.test")
 
@@ -381,7 +366,7 @@ async def test_field_crew_cannot_patch_project_status(client):
 
 
 async def test_accountant_cannot_patch_project_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "rbac-acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "rbac-acct-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     accountant = await _invite_and_login_as(client, admin, "accountant", "rbac-acct@acme.test")
 
@@ -394,7 +379,7 @@ async def test_accountant_cannot_patch_project_status(client):
 
 
 async def test_client_cannot_patch_project_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "rbac-client-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "rbac-client-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     client_role = await _invite_and_login_as(client, admin, "client", "rbac-client@acme.test")
 
@@ -407,7 +392,7 @@ async def test_client_cannot_patch_project_status(client):
 
 
 async def test_project_manager_can_patch_project_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "pm-status-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pm-status-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     pm = await _invite_and_login_as(client, admin, "project_manager", "pm-status@acme.test")
 
@@ -423,7 +408,7 @@ async def test_project_manager_can_patch_project_status(client):
 
 
 async def test_patch_status_nonexistent_project_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "status-404@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "status-404@acme.test")
 
     response = await client.patch(
         "/projects/00000000-0000-0000-0000-000000000000",
@@ -434,8 +419,8 @@ async def test_patch_status_nonexistent_project_returns_404(client):
 
 
 async def test_patch_status_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "status-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "status-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "status-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "status-cross-b@acme.test")
 
     project = await _create_project(client, b["headers"])
 

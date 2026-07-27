@@ -4,23 +4,7 @@ concept — see `MarkupProfile`'s own model docstring and design decision #1's
 closing note. Same real-HTTP-call discipline as `test_leads.py`.
 """
 
-
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+from tests.conftest import register_and_login
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -47,7 +31,7 @@ def _profile_payload(**overrides):
 
 
 async def test_admin_can_create_markup_profile(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin@acme.test")
 
     response = await client.post("/markup-profiles", json=_profile_payload(), headers=admin["headers"])
     assert response.status_code == 201, response.text
@@ -59,7 +43,7 @@ async def test_admin_can_create_markup_profile(client):
 
 
 async def test_project_manager_can_create_markup_profile(client):
-    admin = await _register_and_login(client, "Acme Construction", "pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "pm@acme.test")
 
     response = await client.post("/markup-profiles", json=_profile_payload(), headers=pm["headers"])
@@ -67,7 +51,7 @@ async def test_project_manager_can_create_markup_profile(client):
 
 
 async def test_create_markup_profile_uses_defaults_when_omitted(client):
-    admin = await _register_and_login(client, "Acme Construction", "default-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "default-admin@acme.test")
 
     response = await client.post(
         "/markup-profiles", json={"name": "No Markup"}, headers=admin["headers"]
@@ -79,7 +63,7 @@ async def test_create_markup_profile_uses_defaults_when_omitted(client):
 
 
 async def test_non_admin_pm_cannot_create_markup_profile(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "crew@acme.test")
 
     response = await client.post(
@@ -89,7 +73,7 @@ async def test_non_admin_pm_cannot_create_markup_profile(client):
 
 
 async def test_accountant_cannot_create_markup_profile(client):
-    admin = await _register_and_login(client, "Acme Construction", "acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "acct-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "acct@acme.test")
 
     response = await client.post(
@@ -99,7 +83,7 @@ async def test_accountant_cannot_create_markup_profile(client):
 
 
 async def test_accountant_can_list_markup_profiles(client):
-    admin = await _register_and_login(client, "Acme Construction", "acctlist-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "acctlist-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "acctlist@acme.test")
     await client.post("/markup-profiles", json=_profile_payload(), headers=admin["headers"])
 
@@ -112,7 +96,7 @@ async def test_client_role_cannot_list_markup_profiles(client):
     """The RBAC matrix's Estimation row gives `client` only "Approve/reject
     own estimate (e-sign)" — an estimate-specific grant, not a blanket Read
     of Cost Catalog/Markup Profile data."""
-    admin = await _register_and_login(client, "Acme Construction", "client-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "client-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "client@acme.test")
 
     response = await client.get("/markup-profiles", headers=client_role["headers"])
@@ -120,7 +104,7 @@ async def test_client_role_cannot_list_markup_profiles(client):
 
 
 async def test_create_markup_profile_rejects_invalid_payload(client):
-    admin = await _register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
 
     response = await client.post(
         "/markup-profiles", json=_profile_payload(name=""), headers=admin["headers"]
@@ -129,7 +113,7 @@ async def test_create_markup_profile_rejects_invalid_payload(client):
 
 
 async def test_list_markup_profiles_returns_empty_page_when_none_created(client):
-    admin = await _register_and_login(client, "Acme Construction", "empty-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "empty-admin@acme.test")
 
     response = await client.get("/markup-profiles", headers=admin["headers"])
     assert response.status_code == 200
@@ -139,7 +123,7 @@ async def test_list_markup_profiles_returns_empty_page_when_none_created(client)
 
 
 async def test_list_markup_profiles_returns_created_profiles(client):
-    admin = await _register_and_login(client, "Acme Construction", "list-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "list-admin@acme.test")
     await client.post(
         "/markup-profiles", json=_profile_payload(name="Residential"), headers=admin["headers"]
     )
@@ -157,8 +141,8 @@ async def test_list_markup_profiles_returns_created_profiles(client):
 
 
 async def test_list_markup_profiles_is_tenant_scoped(client):
-    a = await _register_and_login(client, "Company A", "list-tenant-a@acme.test")
-    b = await _register_and_login(client, "Company B", "list-tenant-b@acme.test")
+    a = await register_and_login(client, "Company A", "list-tenant-a@acme.test")
+    b = await register_and_login(client, "Company B", "list-tenant-b@acme.test")
 
     await client.post("/markup-profiles", json=_profile_payload(name="A's Profile"), headers=a["headers"])
     await client.post("/markup-profiles", json=_profile_payload(name="B's Profile"), headers=b["headers"])
@@ -175,7 +159,7 @@ async def test_list_markup_profiles_pagination_walks_every_row_exactly_once(clie
     the same "every row exactly once, no skips or duplicates" property
     test_leads.py's equivalent test asserts for the (created_at, id)
     composite cursor, just for a single-column cursor instead."""
-    admin = await _register_and_login(client, "Acme Construction", "page-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "page-admin@acme.test")
 
     created_ids = []
     for i in range(5):
@@ -208,7 +192,7 @@ async def test_list_markup_profiles_pagination_walks_every_row_exactly_once(clie
 
 
 async def test_list_markup_profiles_pagination_default_limit_and_max(client):
-    admin = await _register_and_login(client, "Acme Construction", "limit-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "limit-admin@acme.test")
     await client.post("/markup-profiles", json=_profile_payload(), headers=admin["headers"])
 
     over_max = await client.get("/markup-profiles", params={"limit": 101}, headers=admin["headers"])
@@ -219,7 +203,7 @@ async def test_list_markup_profiles_pagination_default_limit_and_max(client):
 
 
 async def test_list_markup_profiles_rejects_malformed_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "cursor-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cursor-admin@acme.test")
 
     response = await client.get(
         "/markup-profiles", params={"cursor": "not-a-real-cursor"}, headers=admin["headers"]

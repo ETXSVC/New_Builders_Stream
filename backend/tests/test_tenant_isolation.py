@@ -1,26 +1,11 @@
-from tests.conftest import set_subscription_tier
+from tests.conftest import register_and_login
 
 
 async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    # Tier gating (Task 5.7): child-branch creation is Enterprise-gated;
-    # registration can only produce trialing/pro.
-    await set_subscription_tier(register.json()["company_id"], "enterprise")
-    return {
-        "company_id": register.json()["company_id"],
-        "token": body["access_token"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+    """Thin wrapper: this module's tests need the enterprise tier.
+    See tests/conftest.py's register_and_login."""
+    return await register_and_login(client, company_name, email, tier="enterprise")
+
 
 
 async def test_company_a_can_read_its_own_company(client):

@@ -31,30 +31,13 @@ task's own real `approve`/`reject` routes.
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, grant_client_access
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, grant_client_access, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "email": email,
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -139,7 +122,7 @@ async def _create_change_order(client, actor, project_id, **overrides):
 
 
 async def test_admin_can_create_change_order_against_active_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-admin-active@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-admin-active@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
 
@@ -157,7 +140,7 @@ async def test_admin_can_create_change_order_against_active_project(client):
 
 
 async def test_project_manager_can_create_change_order_against_active_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-pm-active@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-pm-active@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "co-pm@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -170,7 +153,7 @@ async def test_project_manager_can_create_change_order_against_active_project(cl
 async def test_create_change_order_negative_cost_delta_is_allowed(client):
     # US-3.6: a Change Order can be a credit (negative cost_delta) as well
     # as an add — no sign validation anywhere in the stack.
-    admin = await _register_and_login(client, "Acme Construction", "co-credit@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-credit@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
 
@@ -180,7 +163,7 @@ async def test_create_change_order_negative_cost_delta_is_allowed(client):
 
 
 async def test_create_change_order_schedule_impact_days_defaults_to_zero(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-default-days@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-default-days@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
 
@@ -198,7 +181,7 @@ async def test_cannot_spoof_status_via_request_payload(client):
     should be structurally impossible — verified empirically by passing an
     unexpected `status` in the raw JSON body and confirming it's ignored
     (Pydantic drops unknown fields by default) rather than accepted."""
-    admin = await _register_and_login(client, "Acme Construction", "co-spoof-status@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-spoof-status@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
 
@@ -215,7 +198,7 @@ async def test_cannot_spoof_status_via_request_payload(client):
 
 
 async def test_create_change_order_against_draft_project_returns_409(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-draft-409@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-draft-409@acme.test")
     project_id = await _create_project(client, admin)
     # Freshly created project is "draft" — no transition applied.
 
@@ -224,7 +207,7 @@ async def test_create_change_order_against_draft_project_returns_409(client):
 
 
 async def test_create_change_order_against_completed_project_returns_409(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-completed-409@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-completed-409@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "completed")
 
@@ -240,7 +223,7 @@ async def test_create_change_order_against_pre_construction_project_returns_409(
     coverage of every remaining status in Project.VALID_STATUSES
     (app/models/project.py) so the blanket check is exercised at each of
     its non-active values, not just two of five."""
-    admin = await _register_and_login(client, "Acme Construction", "co-preconstr-409@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-preconstr-409@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "pre_construction")
 
@@ -249,7 +232,7 @@ async def test_create_change_order_against_pre_construction_project_returns_409(
 
 
 async def test_create_change_order_against_suspended_project_returns_409(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-suspended-409@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-suspended-409@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "suspended")
 
@@ -258,7 +241,7 @@ async def test_create_change_order_against_suspended_project_returns_409(client)
 
 
 async def test_create_change_order_against_archived_project_returns_409(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-archived-409@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-archived-409@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "archived")
 
@@ -270,7 +253,7 @@ async def test_create_change_order_against_archived_project_returns_409(client):
 
 
 async def test_field_crew_cannot_create_change_order(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "co-fc@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -280,7 +263,7 @@ async def test_field_crew_cannot_create_change_order(client):
 
 
 async def test_accountant_cannot_create_change_order(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-acct-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-acct-403@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "co-acct@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -290,7 +273,7 @@ async def test_accountant_cannot_create_change_order(client):
 
 
 async def test_client_cannot_create_change_order(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-client-403@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "co-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -303,8 +286,8 @@ async def test_client_cannot_create_change_order(client):
 
 
 async def test_create_change_order_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "co-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "co-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "co-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "co-cross-b@acme.test")
     project_id = await _create_project(client, b)
     await _advance_project_to(client, b, project_id, "active")
 
@@ -313,7 +296,7 @@ async def test_create_change_order_cross_tenant_project_returns_404(client):
 
 
 async def test_create_change_order_nonexistent_project_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-nonexistent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-nonexistent@acme.test")
     nonexistent_project_id = "00000000-0000-0000-0000-000000000000"
 
     response = await _create_change_order(client, admin, nonexistent_project_id)
@@ -324,7 +307,7 @@ async def test_create_change_order_nonexistent_project_returns_404(client):
 
 
 async def test_list_change_orders_scoped_to_correct_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-scope@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-scope@acme.test")
     project_a = await _create_project(client, admin, name="Project A")
     project_b = await _create_project(client, admin, name="Project B")
     await _advance_project_to(client, admin, project_a, "active")
@@ -349,7 +332,7 @@ async def test_list_change_orders_scoped_to_correct_project(client):
 
 
 async def test_list_change_orders_empty_project_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-empty@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.get(f"/projects/{project_id}/change-orders", headers=admin["headers"])
@@ -358,7 +341,7 @@ async def test_list_change_orders_empty_project_returns_empty_list(client):
 
 
 async def test_list_change_orders_paginates_with_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-page@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-page@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
 
@@ -397,7 +380,7 @@ async def test_list_change_orders_paginates_with_cursor(client):
 
 
 async def test_admin_pm_accountant_can_list_change_orders(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-rbac@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-rbac@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "co-list-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "co-list-rbac-acct@acme.test")
     project_id = await _create_project(client, admin)
@@ -412,7 +395,7 @@ async def test_admin_pm_accountant_can_list_change_orders(client):
 
 
 async def test_field_crew_cannot_list_change_orders(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "co-list-fc@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -429,7 +412,7 @@ async def test_client_can_list_change_orders_scoped_to_pending(client):
     `test_list_estimates_as_client_shows_sent_only` (test_estimates.py)
     proves for Estimate's own analogous `status="sent"` scoping. An
     `approved` ChangeOrder must NOT appear in a client's list."""
-    admin = await _register_and_login(client, "Acme Construction", "co-list-client-scoped@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-client-scoped@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-list-client-scoped-c@acme.test"
     )
@@ -457,8 +440,8 @@ async def test_client_can_list_change_orders_scoped_to_pending(client):
 
 
 async def test_list_change_orders_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "co-list-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "co-list-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "co-list-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "co-list-cross-b@acme.test")
     project_id = await _create_project(client, b)
     await _advance_project_to(client, b, project_id, "active")
     create = await _create_change_order(client, b, project_id)
@@ -469,7 +452,7 @@ async def test_list_change_orders_cross_tenant_project_returns_404(client):
 
 
 async def test_list_change_orders_nonexistent_project_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-list-nonexistent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-list-nonexistent@acme.test")
     nonexistent_project_id = "00000000-0000-0000-0000-000000000000"
 
     response = await client.get(
@@ -525,7 +508,7 @@ async def test_send_for_signature_succeeds_when_pending(client):
     (unlike Estimate's own `"sent"` transition) — a `pending` ChangeOrder
     stays `pending` afterward; this route's entire job is the readiness
     gate itself."""
-    admin = await _register_and_login(client, "Acme Construction", "co-sfs-ok-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-sfs-ok-admin@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
     created = await _create_change_order(client, admin, project_id)
@@ -543,7 +526,7 @@ async def test_send_for_signature_requires_pending_status(client):
     """409 if the ChangeOrder is no longer `pending` (e.g. already
     approved) — mirroring Estimate's own `send-for-signature` guard, just
     against `pending` instead of `sent`."""
-    admin = await _register_and_login(client, "Acme Construction", "co-sfs-409-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-sfs-409-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "co-sfs-409-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -564,7 +547,7 @@ async def test_send_for_signature_requires_pending_status(client):
 
 
 async def test_non_write_roles_cannot_send_for_signature(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-sfs-rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-sfs-rbac-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "co-sfs-rbac-client@acme.test")
     accountant = await _invite_and_login_as(
         client, admin, "accountant", "co-sfs-rbac-accountant@acme.test"
@@ -583,7 +566,7 @@ async def test_non_write_roles_cannot_send_for_signature(client):
 
 
 async def test_send_for_signature_nonexistent_change_order_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-sfs-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-sfs-404-admin@acme.test")
 
     response = await client.post(
         "/change-orders/00000000-0000-0000-0000-000000000000/send-for-signature",
@@ -609,7 +592,7 @@ async def test_approve_captures_esignature_reusing_shared_capture_path(client):
     (tests/test_esignatures.py) — if approval used a different code path
     that bypassed `capture_esignature`, there would be no reason for this
     guarantee to hold for a change-order-sourced row too."""
-    admin = await _register_and_login(client, "Acme Construction", "co-approve-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-approve-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "co-approve-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -671,7 +654,7 @@ async def test_approve_captures_esignature_reusing_shared_capture_path(client):
 
 
 async def test_approve_requires_pending_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-approve-409-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-approve-409-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-approve-409-client@acme.test"
     )
@@ -692,7 +675,7 @@ async def test_approve_requires_pending_status(client):
 
 
 async def test_approve_nonexistent_change_order_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-approve-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-approve-404-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-approve-404-client@acme.test"
     )
@@ -707,7 +690,7 @@ async def test_approve_nonexistent_change_order_returns_404(client):
 
 
 async def test_reject_requires_a_reason(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-reject-noreason-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-reject-noreason-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-reject-noreason-client@acme.test"
     )
@@ -731,7 +714,7 @@ async def test_reject_requires_a_reason(client):
 
 
 async def test_reject_with_reason_succeeds_and_does_not_capture_esignature(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-reject-ok-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-reject-ok-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "co-reject-ok-client@acme.test")
     project_id = await _create_project(client, admin)
     await _advance_project_to(client, admin, project_id, "active")
@@ -764,7 +747,7 @@ async def test_reject_with_reason_succeeds_and_does_not_capture_esignature(clien
 
 
 async def test_reject_requires_pending_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-reject-409-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-reject-409-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-reject-409-client@acme.test"
     )
@@ -789,7 +772,7 @@ async def test_reject_requires_pending_status(client):
 
 
 async def test_reject_nonexistent_change_order_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-reject-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-reject-404-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "co-reject-404-client@acme.test"
     )
@@ -806,7 +789,7 @@ async def test_reject_nonexistent_change_order_returns_404(client):
 
 
 async def test_non_client_roles_cannot_approve_or_reject(client):
-    admin = await _register_and_login(client, "Acme Construction", "co-noclient-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "co-noclient-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "co-noclient-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "co-noclient-acct@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "co-noclient-crew@acme.test")

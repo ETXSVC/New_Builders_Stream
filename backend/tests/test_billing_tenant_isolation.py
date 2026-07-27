@@ -25,31 +25,14 @@ rather than sharing them via conftest.py.
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 
 async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_email": email,
-            "admin_password": "correct horse battery staple",
-            "admin_full_name": "Admin",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "correct horse battery staple"})
-    assert login.status_code == 200, login.text
-    token = login.json()["access_token"]
-    # Tier gating (Task 5.7): child-branch creation is Enterprise-gated;
-    # registration can only produce trialing/pro.
-    await set_subscription_tier(register.json()["company_id"], "enterprise")
-    return {
-        "headers": {"Authorization": f"Bearer {token}"},
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-    }
+    """Thin wrapper: this module's tests need the enterprise tier.
+    See tests/conftest.py's register_and_login."""
+    return await register_and_login(client, company_name, email, tier="enterprise")
+
 
 
 async def _add_membership_directly(user_id, company_id, role):

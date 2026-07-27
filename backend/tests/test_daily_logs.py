@@ -8,29 +8,13 @@ them via conftest.py.
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -118,7 +102,7 @@ async def _assign_field_crew_to_project(client, admin, project_id, field_crew_us
 
 
 async def test_project_manager_can_create_daily_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "dl-pm@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -136,7 +120,7 @@ async def test_project_manager_can_create_daily_log(client):
 async def test_create_daily_log_with_optional_fields_omitted(client):
     # weather/notes are both `str | None` on DailyLogCreateRequest — confirm
     # omitting them round-trips as null, not an empty string or a 422.
-    admin = await _register_and_login(client, "Acme Construction", "dl-optional-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-optional-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.post(
@@ -160,7 +144,7 @@ async def test_cannot_spoof_author_id_via_request_payload(client):
     role (see test_client_cannot_create_daily_log below for that role's
     actual write-access test); named to avoid confusion with the `client`
     HTTP-test-client fixture."""
-    admin = await _register_and_login(client, "Acme Construction", "dl-override-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-override-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "dl-override-pm@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -175,7 +159,7 @@ async def test_cannot_spoof_author_id_via_request_payload(client):
 
 
 async def test_field_crew_can_create_daily_log_for_assigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dl-fc@acme.test")
     project_id = await _create_project(client, admin)
     await _assign_field_crew_to_project(client, admin, project_id, field_crew["user_id"])
@@ -186,7 +170,7 @@ async def test_field_crew_can_create_daily_log_for_assigned_project(client):
 
 
 async def test_field_crew_cannot_create_daily_log_for_unassigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-fc-none-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-fc-none-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dl-fc-none@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -195,7 +179,7 @@ async def test_field_crew_cannot_create_daily_log_for_unassigned_project(client)
 
 
 async def test_client_cannot_create_daily_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-client-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-client-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "dl-client@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -204,7 +188,7 @@ async def test_client_cannot_create_daily_log(client):
 
 
 async def test_accountant_cannot_create_daily_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-acct-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "dl-acct@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -224,7 +208,7 @@ async def test_daily_logs_are_immutable_at_the_database_level(client):
     migration's `REVOKE UPDATE, DELETE ON daily_logs FROM app_user` (design
     decision #6) blocks both with a real permission-denied error from
     Postgres, not a silent no-op."""
-    admin = await _register_and_login(client, "Acme Construction", "dl-immutable-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-immutable-admin@acme.test")
     project_id = await _create_project(client, admin)
     create = await _create_daily_log(client, admin, project_id)
     assert create.status_code == 201, create.text
@@ -260,8 +244,8 @@ async def test_daily_logs_are_immutable_at_the_database_level(client):
 
 
 async def test_create_daily_log_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "dl-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "dl-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "dl-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "dl-cross-b@acme.test")
     project_id = await _create_project(client, b)
 
     response = await _create_daily_log(client, a, project_id)
@@ -269,8 +253,8 @@ async def test_create_daily_log_cross_tenant_project_returns_404(client):
 
 
 async def test_list_daily_logs_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "dl-list-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "dl-list-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "dl-list-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "dl-list-cross-b@acme.test")
     project_id = await _create_project(client, b)
     create = await _create_daily_log(client, b, project_id)
     assert create.status_code == 201, create.text
@@ -280,7 +264,7 @@ async def test_list_daily_logs_cross_tenant_project_returns_404(client):
 
 
 async def test_create_and_list_daily_log_nonexistent_project_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-nonexistent-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-nonexistent-admin@acme.test")
     nonexistent_project_id = "00000000-0000-0000-0000-000000000000"
 
     create = await _create_daily_log(client, admin, nonexistent_project_id)
@@ -294,7 +278,7 @@ async def test_create_and_list_daily_log_nonexistent_project_returns_404(client)
 
 
 async def test_list_daily_logs_returns_all_created(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     first = await _create_daily_log(client, admin, project_id, log_date="2026-08-01", notes="Day 1")
@@ -315,7 +299,7 @@ async def test_list_daily_logs_returns_all_created(client):
 
 
 async def test_list_daily_logs_empty_project_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-empty-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-empty-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.get(f"/projects/{project_id}/daily-logs", headers=admin["headers"])
@@ -324,7 +308,7 @@ async def test_list_daily_logs_empty_project_returns_empty_list(client):
 
 
 async def test_list_daily_logs_paginates_with_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-page-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-page-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     created_ids = []
@@ -364,7 +348,7 @@ async def test_list_daily_logs_paginates_with_cursor(client):
 
 
 async def test_admin_pm_accountant_can_list_daily_logs(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-rbac-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "dl-list-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "dl-list-rbac-acct@acme.test")
     project_id = await _create_project(client, admin)
@@ -378,7 +362,7 @@ async def test_admin_pm_accountant_can_list_daily_logs(client):
 
 
 async def test_field_crew_can_list_daily_logs_for_assigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dl-list-fc@acme.test")
     project_id = await _create_project(client, admin)
     await _assign_field_crew_to_project(client, admin, project_id, field_crew["user_id"])
@@ -391,7 +375,7 @@ async def test_field_crew_can_list_daily_logs_for_assigned_project(client):
 
 
 async def test_field_crew_cannot_list_daily_logs_for_unassigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-fc-none-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-fc-none-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dl-list-fc-none@acme.test")
     project_id = await _create_project(client, admin)
     create = await _create_daily_log(client, admin, project_id)
@@ -408,7 +392,7 @@ async def test_client_cannot_list_daily_logs(client):
     with a 403 at the require_role dependency layer, same as list_documents
     (see this router's docstring on list_daily_logs for the full
     justification of why _LIST_ROLES, not _GET_ROLES, is used here)."""
-    admin = await _register_and_login(client, "Acme Construction", "dl-list-client-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dl-list-client-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "dl-list-client@acme.test")
     project_id = await _create_project(client, admin)
 

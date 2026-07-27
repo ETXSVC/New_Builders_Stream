@@ -41,6 +41,7 @@ from app.services.pdf_export import (
     render_estimate_pdf,
 )
 from app.tasks.estimate_pdf import _generate_estimate_pdf
+from tests.conftest import register_and_login
 
 
 def _markup_profile(**overrides):
@@ -369,23 +370,7 @@ def test_render_estimate_html_autoescapes_untrusted_string_fields():
 # =============================================================================
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 def _project_payload(**overrides):
@@ -474,7 +459,7 @@ async def _create_estimate_with_line_item(client, admin):
 
 
 async def test_export_estimate_pdf_returns_202_and_sets_pdf_status_pending(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-export-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-export-admin@acme.test")
     estimate_id = await _create_estimate_with_line_item(client, admin)
 
     response = await client.post(f"/estimates/{estimate_id}/export", headers=admin["headers"])
@@ -492,7 +477,7 @@ async def test_export_estimate_pdf_returns_202_and_sets_pdf_status_pending(clien
 
 
 async def test_export_estimate_pdf_as_project_manager(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-export-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-export-pm-admin@acme.test")
     invite = await client.post(
         "/invitations",
         json={"email": "pdf-export-pm@acme.test", "role": "project_manager"},
@@ -516,7 +501,7 @@ async def test_export_estimate_pdf_as_project_manager(client):
 
 
 async def test_export_estimate_pdf_forbidden_for_field_crew(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-export-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-export-fc-admin@acme.test")
     invite = await client.post(
         "/invitations",
         json={"email": "pdf-export-fc@acme.test", "role": "field_crew"},
@@ -540,7 +525,7 @@ async def test_export_estimate_pdf_forbidden_for_field_crew(client):
 
 
 async def test_export_estimate_pdf_not_found_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-export-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-export-404-admin@acme.test")
 
     response = await client.post(
         "/estimates/00000000-0000-0000-0000-000000000000/export", headers=admin["headers"]
@@ -556,7 +541,7 @@ async def test_export_estimate_pdf_not_found_returns_404(client):
 
 
 async def test_generate_estimate_pdf_actor_writes_file_and_marks_ready(client):
-    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-actor-admin@acme.test")
     estimate_id = await _create_estimate_with_line_item(client, admin)
 
     await _generate_estimate_pdf(estimate_id, admin["user_id"])
@@ -577,7 +562,7 @@ async def test_generate_estimate_pdf_actor_overwrites_on_reexport(client):
     """Design decision #5: re-exporting produces a new PDF from current
     state, always overwriting the previous file — never `FileExistsError`
     on a second export of the same estimate."""
-    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-reexport-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-actor-reexport-admin@acme.test")
     estimate_id = await _create_estimate_with_line_item(client, admin)
 
     await _generate_estimate_pdf(estimate_id, admin["user_id"])
@@ -593,7 +578,7 @@ async def test_generate_estimate_pdf_actor_marks_failed_on_render_error(client, 
     `pdf_status` on `'failed'`, never leave it stuck on `'pending'`, and the
     original exception must still propagate (so Dramatiq's own retry/
     dead-letter handling still applies)."""
-    admin = await _register_and_login(client, "Acme Construction", "pdf-actor-fail-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pdf-actor-fail-admin@acme.test")
     estimate_id = await _create_estimate_with_line_item(client, admin)
 
     export = await client.post(f"/estimates/{estimate_id}/export", headers=admin["headers"])

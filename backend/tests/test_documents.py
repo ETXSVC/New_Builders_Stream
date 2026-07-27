@@ -10,28 +10,12 @@ from pathlib import Path
 import asyncpg
 
 from app.config import settings
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -112,7 +96,7 @@ async def _assign_field_crew_to_project(client, admin, project_id, field_crew_us
 
 
 async def test_admin_can_upload_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await _upload(client, admin, project_id, "blueprint.pdf", b"pdf-bytes-v1")
@@ -137,7 +121,7 @@ async def test_admin_can_upload_document(client):
 
 
 async def test_project_manager_can_upload_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "doc-pm@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -147,7 +131,7 @@ async def test_project_manager_can_upload_document(client):
 
 
 async def test_field_crew_cannot_upload_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "doc-fc@acme.test")
     project_id = await _create_project(client, admin)
 
@@ -156,7 +140,7 @@ async def test_field_crew_cannot_upload_document(client):
 
 
 async def test_accountant_and_client_cannot_upload_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-acct-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-acct-admin@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "doc-acct@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "doc-client@acme.test")
     project_id = await _create_project(client, admin)
@@ -170,7 +154,7 @@ async def test_accountant_and_client_cannot_upload_document(client):
 
 
 async def test_reupload_same_file_name_creates_new_version_both_retrievable(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-version-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-version-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     first = await _upload(client, admin, project_id, "blueprint.pdf", b"version-one-content")
@@ -205,7 +189,7 @@ async def test_same_file_name_in_different_projects_is_independent(client):
     """version numbering is scoped per-project, not globally per file_name —
     a same-named file in an unrelated project of the same company starts
     fresh at version 1."""
-    admin = await _register_and_login(client, "Acme Construction", "doc-multi-project-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-multi-project-admin@acme.test")
     project_a = await _create_project(client, admin, name="Project A")
     project_b = await _create_project(client, admin, name="Project B")
 
@@ -223,7 +207,7 @@ async def test_same_file_name_in_different_projects_is_independent(client):
 
 
 async def test_path_traversal_file_name_is_rejected_outright(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-traversal-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-traversal-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await _upload(client, admin, project_id, "../../etc/passwd", b"malicious")
@@ -242,7 +226,7 @@ async def test_path_traversal_file_name_is_rejected_outright(client):
 
 
 async def test_backslash_and_absolute_path_file_names_are_rejected(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-traversal2-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-traversal2-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     for bad_name in ("..\\..\\windows\\system32\\config", "/etc/passwd", "C:\\evil.txt", "nested/path.pdf"):
@@ -256,7 +240,7 @@ async def test_control_character_file_name_is_rejected_not_a_500(client):
     # filesystem path — and Postgres' UTF8 text type rejects NUL outright,
     # so an unvalidated one previously reached the DB layer and crashed
     # with an unhandled 500 instead of this module's own clean 422.
-    admin = await _register_and_login(client, "Acme Construction", "doc-control-char-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-control-char-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await _upload(client, admin, project_id, "\x00nullbyte.txt", b"malicious")
@@ -273,7 +257,7 @@ async def test_file_name_over_max_length_is_rejected_not_a_500(client):
     # unvalidated over-long file_name previously passed validate_file_name(),
     # wrote to disk successfully, and only failed at the DB insert with an
     # unhandled 500 instead of a clean 422.
-    admin = await _register_and_login(client, "Acme Construction", "doc-long-name-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-long-name-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     over_limit_name = "a" * 256 + ".txt"
@@ -288,7 +272,7 @@ async def test_file_name_over_max_length_is_rejected_not_a_500(client):
 
 
 async def test_empty_file_content_uploads_successfully(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-empty-content-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-empty-content-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await _upload(client, admin, project_id, "empty.txt", b"")
@@ -309,7 +293,7 @@ async def test_concurrent_upload_of_same_file_name_returns_409_for_the_loser(cli
     # write_document_file's docstring in app/services/document_storage.py.
     import asyncio
 
-    admin = await _register_and_login(client, "Acme Construction", "doc-concurrent-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-concurrent-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     responses = await asyncio.gather(
@@ -331,8 +315,8 @@ async def test_concurrent_upload_of_same_file_name_returns_409_for_the_loser(cli
 
 
 async def test_upload_document_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "doc-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "doc-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "doc-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "doc-cross-b@acme.test")
     project_id = await _create_project(client, b)
 
     response = await _upload(client, a, project_id, "blueprint.pdf", b"x")
@@ -340,8 +324,8 @@ async def test_upload_document_cross_tenant_project_returns_404(client):
 
 
 async def test_list_documents_cross_tenant_project_returns_404(client):
-    a = await _register_and_login(client, "Company A", "doc-list-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "doc-list-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "doc-list-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "doc-list-cross-b@acme.test")
     project_id = await _create_project(client, b)
     upload = await _upload(client, b, project_id, "blueprint.pdf", b"x")
     assert upload.status_code == 201, upload.text
@@ -355,7 +339,7 @@ async def test_upload_and_list_document_nonexistent_project_returns_404(client):
     # own convention of testing "doesn't exist at all" separately from
     # "exists but isn't visible to you", even though both route through the
     # same _get_project_or_404 code path.
-    admin = await _register_and_login(client, "Acme Construction", "doc-nonexistent-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-nonexistent-admin@acme.test")
     nonexistent_project_id = "00000000-0000-0000-0000-000000000000"
 
     upload = await _upload(client, admin, nonexistent_project_id, "blueprint.pdf", b"x")
@@ -369,7 +353,7 @@ async def test_upload_and_list_document_nonexistent_project_returns_404(client):
 
 
 async def test_list_documents_shows_latest_version_only(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     v1 = await _upload(client, admin, project_id, "blueprint.pdf", b"v1")
@@ -394,7 +378,7 @@ async def test_list_documents_shows_latest_version_only(client):
 
 
 async def test_list_documents_empty_project_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-empty-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-empty-admin@acme.test")
     project_id = await _create_project(client, admin)
 
     response = await client.get(f"/projects/{project_id}/documents", headers=admin["headers"])
@@ -406,7 +390,7 @@ async def test_list_documents_empty_project_returns_empty_list(client):
 
 
 async def test_admin_pm_accountant_can_list_documents(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-rbac-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "doc-list-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "doc-list-rbac-acct@acme.test")
     project_id = await _create_project(client, admin)
@@ -420,7 +404,7 @@ async def test_admin_pm_accountant_can_list_documents(client):
 
 
 async def test_field_crew_can_list_documents_for_assigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-fc-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-fc-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "doc-list-fc@acme.test")
     project_id = await _create_project(client, admin)
     await _assign_field_crew_to_project(client, admin, project_id, field_crew["user_id"])
@@ -433,7 +417,7 @@ async def test_field_crew_can_list_documents_for_assigned_project(client):
 
 
 async def test_field_crew_cannot_list_documents_for_unassigned_project(client):
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-fc-none-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-fc-none-admin@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "doc-list-fc-none@acme.test")
     project_id = await _create_project(client, admin)
     upload = await _upload(client, admin, project_id, "blueprint.pdf", b"x")
@@ -448,7 +432,7 @@ async def test_client_cannot_list_documents(client):
     no list-shaped route at all — only the single sanitized GET
     /projects/{id} dashboard. GET /projects/{id}/documents blocks `client`
     with a 403 at the require_role dependency layer, same as list_projects."""
-    admin = await _register_and_login(client, "Acme Construction", "doc-list-client-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "doc-list-client-admin@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "doc-list-client@acme.test")
     project_id = await _create_project(client, admin)
 

@@ -3,19 +3,20 @@ multipart route must 413 an oversized body instead of the previous bare
 `await file.read()` (an unbounded memory + disk vector).
 
 Caps are Settings fields precisely so these tests can shrink them to ~1 KiB
-instead of shipping multi-megabyte payloads through CI. Helpers are
-imported from the routes' own test files (the established cross-file
-pattern test_tier_gating.py uses).
+instead of shipping multi-megabyte payloads through CI.
+
+Route-specific helpers (_create_project, _upload, ...) are still imported
+from the routes' own test files. `register_and_login` is NOT: it comes
+from conftest, because importing it from whichever test module happened to
+define it is exactly the fragile chain that broke this file the moment
+that module stopped defining it.
 """
 from app.config import settings
-from tests.conftest import grant_client_access
-from tests.test_documents import _create_project, _register_and_login, _upload
+from tests.conftest import grant_client_access, register_and_login
+from tests.test_documents import _create_project, _upload
 from tests.test_subcontractors import (
     _create_subcontractor,
     _upload_compliance_document,
-)
-from tests.test_subcontractors import (
-    _register_and_login as _register_subcontractor_admin,
 )
 
 _CAP = 1024
@@ -23,7 +24,7 @@ _CAP = 1024
 
 async def test_project_document_upload_over_cap_is_413(client, monkeypatch):
     monkeypatch.setattr(settings, "max_document_upload_bytes", _CAP)
-    admin = await _register_and_login(client, "Upload Cap Co 1", "upload-cap-1@acme.test")
+    admin = await register_and_login(client, "Upload Cap Co 1", "upload-cap-1@acme.test")
     project_id = await _create_project(client, admin)
 
     over = await _upload(client, admin, project_id, "big.pdf", b"x" * (_CAP + 1))
@@ -35,7 +36,7 @@ async def test_project_document_upload_over_cap_is_413(client, monkeypatch):
 
 async def test_compliance_document_upload_over_cap_is_413(client, monkeypatch):
     monkeypatch.setattr(settings, "max_document_upload_bytes", _CAP)
-    admin = await _register_subcontractor_admin(client, "Upload Cap Co 2", "upload-cap-2@acme.test")
+    admin = await register_and_login(client, "Upload Cap Co 2", "upload-cap-2@acme.test")
     subcontractor = await _create_subcontractor(client, admin)
     assert subcontractor.status_code == 201, subcontractor.text
     subcontractor_id = subcontractor.json()["id"]
@@ -58,11 +59,12 @@ async def test_signature_artifact_over_cap_is_413(client, monkeypatch):
         _create_markup_profile,
         _create_project as _create_estimate_project,
         _invite_and_login_as,
-        _register_and_login as _register_estimate_admin,
     )
 
     monkeypatch.setattr(settings, "max_signature_upload_bytes", _CAP)
-    admin = await _register_estimate_admin(client, "Upload Cap Co 3", "upload-cap-3@example.test")
+    admin = await register_and_login(
+        client, "Upload Cap Co 3", "upload-cap-3@example.test", tier="enterprise"
+    )
     client_role = await _invite_and_login_as(client, admin, "client", "upload-cap-3-client@example.test")
     project = await _create_estimate_project(client, admin["headers"])
     # Migration 0019: the approve route is behind project membership now, so

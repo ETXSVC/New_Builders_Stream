@@ -2,27 +2,14 @@
 POST /materials/{id}/receipts (app/routers/bom_lines.py).
 """
 
-from tests.conftest import set_subscription_tier
+from tests.conftest import register_and_login, set_subscription_tier
 
 
 async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    assert login.status_code == 200, login.text
-    await set_subscription_tier(register.json()["company_id"], "pro")
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
-    }
+    """Thin wrapper: this module's tests need the pro tier.
+    See tests/conftest.py's register_and_login."""
+    return await register_and_login(client, company_name, email, tier="pro")
+
 
 
 async def _create_project(client, headers, name="Kitchen Remodel"):
