@@ -26,6 +26,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.after_commit import enqueue_after_commit
 from app.core.tier_gating import tier_allows
 from app.models import IntegrationConnection
 from app.tasks.accounting_sync import sync_financial_record
@@ -53,7 +54,16 @@ async def handle_financial_record_created(
     connections = connections_result.scalars().all()
 
     for connection in connections:
-        sync_financial_record.send(
+        # Deferred until the request transaction commits, NOT sent here.
+        # This handler runs inside that transaction (app/core/events.py
+        # dispatches inline on purpose), and Redis does not roll back with
+        # it — so a send() here queued work referring to a row that a
+        # later rollback would erase, and the worker then burned all three
+        # retries against an id that never existed. See
+        # app/core/after_commit.py.
+        enqueue_after_commit(
+            session,
+            sync_financial_record.send,
             connection_id=str(connection.id),
             entity_type=entity_type,
             entity_id=str(entity_id),

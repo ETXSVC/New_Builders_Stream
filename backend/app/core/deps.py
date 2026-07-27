@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.after_commit import run_after_commit
 from app.core.context import bearer_token_ctx, claimed_tenant_id_ctx
 from app.core.security import InvalidTokenError, decode_access_token
 from app.db import SessionLocal, set_current_tenant, set_current_user
@@ -111,6 +112,12 @@ async def get_current_user():
         yield CurrentUser(user=user, company_id=claimed_tenant_uuid, role=membership.role, session=session)
 
         await session.commit()
+        # Side effects that must not happen unless the data did — today,
+        # the accounting-sync enqueues. Deliberately AFTER the commit and
+        # inside the try, so a rollback path never reaches it. See
+        # app/core/after_commit.py for why ordering these the other way
+        # round was a real bug rather than a style question.
+        run_after_commit(session)
     except Exception:
         await session.rollback()
         raise
