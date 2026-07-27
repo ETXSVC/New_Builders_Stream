@@ -37,12 +37,63 @@ manages a dedicated background event-loop thread the worker process uses
 to run every async actor's coroutine to completion.
 """
 
+import logging
+
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
+from dramatiq.middleware import Middleware
 from dramatiq.middleware.asyncio import AsyncIO
 
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
+
+class DeadLetterLogging(Middleware):
+    """Log every message Dramatiq gives up on.
+
+    Retry exhaustion was completely silent. `after_nack` fires when a
+    message is nacked into the dead-letter queue — i.e. after `max_retries`
+    is spent — and nothing was listening, so an actor that failed three
+    times produced no record an operator could find. The review doc filed
+    this against `send_invitation_email` as "the one actor with no
+    bookkeeping row", which is true but is the wrong level to fix it at:
+
+      * that actor's docstring **deliberately** rejects a sent/failed
+        table, and the reasoning is sound — the invitation row and its
+        copyable accept link are the source of truth, and the email is an
+        optimization on top of them, not the only way in. Adding a table
+        would contradict a decision someone made on purpose;
+      * and it is not actually the only actor without one. `estimate_pdf`,
+        `compliance_expiry`, `seat_usage` and both other mailers have no
+        per-message bookkeeping either. Only `accounting_sync` does, and
+        that is because `integration_sync_records` is a product surface
+        (`GET /integrations/{provider}/sync-status`), not an ops one.
+
+    So this is one middleware covering every actor, present and future,
+    instead of N tables. It gives the operator the half that was missing —
+    "this job died" — while `app/core/after_commit.py`'s own logging
+    covers the other half, "this job was never enqueued".
+
+    Deliberately logging only. It does not retry, alert, or write a row:
+    the log line is the artifact, `docker logs` + grep is the stated
+    consumer (see `app/core/logging.py`), and anything richer wants the
+    Sentry integration `docs/11-production-deployment.md` already tracks as
+    a deferred follow-up.
+    """
+
+    def after_nack(self, broker, message):
+        logger.error(
+            "dramatiq message dead-lettered after exhausting retries: "
+            "actor=%s message_id=%s args=%s kwargs=%s",
+            message.actor_name,
+            message.message_id,
+            message.args,
+            message.kwargs,
+        )
+
+
 redis_broker = RedisBroker(url=settings.redis_url)
 redis_broker.add_middleware(AsyncIO())
+redis_broker.add_middleware(DeadLetterLogging())
 dramatiq.set_broker(redis_broker)
