@@ -11,7 +11,7 @@ import asyncpg
 import pytest
 
 from app.core.tier_gating import MODULE_MIN_TIER, TIER_RANK, tier_allows
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login, set_subscription_tier
 
 
 def iter_api_routes(router):
@@ -152,26 +152,11 @@ async def test_tier_allows_resolves_the_root_company_for_a_child_branch(db_sessi
     assert await tier_allows(db_session, child_id, "accounting") is True
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
-    }
+
 
 
 async def test_starter_company_cannot_create_a_catalog_item(client):
-    admin = await _register_and_login(client, "Tier Co S1", "tier-s1@example.test")
+    admin = await register_and_login(client, "Tier Co S1", "tier-s1@example.test")
     await set_subscription_tier(admin["company_id"], "starter")
 
     response = await client.post(
@@ -186,7 +171,7 @@ async def test_starter_company_cannot_create_a_catalog_item(client):
 
 
 async def test_starter_company_cannot_create_a_subcontractor_but_can_read_the_dashboard(client):
-    admin = await _register_and_login(client, "Tier Co S3", "tier-s3@example.test")
+    admin = await register_and_login(client, "Tier Co S3", "tier-s3@example.test")
     await set_subscription_tier(admin["company_id"], "starter")
 
     create = await client.post(
@@ -206,7 +191,7 @@ async def test_starter_company_cannot_create_a_subcontractor_but_can_read_the_da
 
 
 async def test_starter_company_cannot_create_an_estimate_but_can_still_read(client):
-    admin = await _register_and_login(client, "Tier Co S2", "tier-s2@example.test")
+    admin = await register_and_login(client, "Tier Co S2", "tier-s2@example.test")
     await set_subscription_tier(admin["company_id"], "starter")
 
     # A valid-SHAPED body (the project/markup profile don't need to exist —
@@ -229,7 +214,7 @@ async def test_starter_company_cannot_create_an_estimate_but_can_still_read(clie
 async def test_pro_company_can_create_a_catalog_item(client):
     """The trial default IS pro — no tier flip needed; this pins the
     at-tier pass so a future gating regression can't silently over-block."""
-    admin = await _register_and_login(client, "Tier Co P1", "tier-p1@example.test")
+    admin = await register_and_login(client, "Tier Co P1", "tier-p1@example.test")
 
     response = await client.post(
         "/catalogs/items",
@@ -249,7 +234,7 @@ async def test_gate_fires_for_a_child_branch_acting_session_via_rls_root_resolut
     breakage loud."""
     import asyncpg as _asyncpg
 
-    admin = await _register_and_login(client, "Tier Co RLS1", "tier-rls1@example.test")
+    admin = await register_and_login(client, "Tier Co RLS1", "tier-rls1@example.test")
     # Bump to enterprise first so the (Task 5.7) child_branches gate lets the
     # child be created, grant the admin a membership in it directly, then
     # downgrade the ROOT to starter — the gate-under-test still fires from
@@ -304,7 +289,7 @@ async def test_existing_child_branches_keep_operating_after_a_downgrade_to_pro(c
     the starter test above still sees its 403."""
     import asyncpg as _asyncpg
 
-    admin = await _register_and_login(client, "Tier Co RLS2", "tier-rls2@example.test")
+    admin = await register_and_login(client, "Tier Co RLS2", "tier-rls2@example.test")
     await set_subscription_tier(admin["company_id"], "enterprise")
     create = await client.post(
         f"/companies/{admin['company_id']}/children", json={"name": "Surviving Branch"}, headers=admin["headers"]
@@ -337,7 +322,7 @@ async def test_existing_child_branches_keep_operating_after_a_downgrade_to_pro(c
 
 
 async def test_pro_company_cannot_create_a_child_branch_but_enterprise_can(client):
-    admin = await _register_and_login(client, "Tier Co C1", "tier-c1@example.test")
+    admin = await register_and_login(client, "Tier Co C1", "tier-c1@example.test")
 
     blocked = await client.post(
         f"/companies/{admin['company_id']}/children", json={"name": "Blocked Branch"}, headers=admin["headers"]
@@ -355,7 +340,7 @@ async def test_pro_company_cannot_create_a_child_branch_but_enterprise_can(clien
 async def test_pro_company_cannot_create_accounting_records(client):
     """The trial default (pro) is exactly the below-tier case for
     accounting — no tier flip needed for the negative direction."""
-    admin = await _register_and_login(client, "Tier Co A1", "tier-a1@example.test")
+    admin = await register_and_login(client, "Tier Co A1", "tier-a1@example.test")
     project = await client.post(
         "/projects", json={"name": "Tier Project", "site_address": "1 Main St"}, headers=admin["headers"]
     )
@@ -382,7 +367,7 @@ async def test_pro_company_cannot_create_accounting_records(client):
 
 
 async def test_enterprise_company_can_create_an_invoice_and_pro_can_still_read(client):
-    admin = await _register_and_login(client, "Tier Co A2", "tier-a2@example.test")
+    admin = await register_and_login(client, "Tier Co A2", "tier-a2@example.test")
     await set_subscription_tier(admin["company_id"], "enterprise")
     project = await client.post(
         "/projects", json={"name": "Tier Project 2", "site_address": "1 Main St"}, headers=admin["headers"]
@@ -407,7 +392,7 @@ async def test_enterprise_company_can_create_an_invoice_and_pro_can_still_read(c
 async def test_pro_company_cannot_start_or_complete_the_oauth_flow(client):
     from app.services.integration_oauth_state import sign_oauth_state
 
-    admin = await _register_and_login(client, "Tier Co I1", "tier-i1@example.test")
+    admin = await register_and_login(client, "Tier Co I1", "tier-i1@example.test")
 
     connect = await client.get("/integrations/quickbooks/connect", headers=admin["headers"])
     assert connect.status_code == 403
@@ -426,7 +411,7 @@ async def test_pro_company_cannot_start_or_complete_the_oauth_flow(client):
 async def test_pro_company_can_still_read_sync_status_for_an_existing_connection(client):
     from app.services.integration_oauth_state import sign_oauth_state
 
-    admin = await _register_and_login(client, "Tier Co I2", "tier-i2@example.test")
+    admin = await register_and_login(client, "Tier Co I2", "tier-i2@example.test")
     await set_subscription_tier(admin["company_id"], "enterprise")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
@@ -456,7 +441,7 @@ async def test_pro_company_estimate_approval_drafts_no_deposit_invoice(client):
     )
 
     register_event_handlers()
-    admin = await _register_and_login(client, "Tier Co E1", "tier-e1@example.test")
+    admin = await register_and_login(client, "Tier Co E1", "tier-e1@example.test")
     # Deliberately NOT bumped to enterprise: pro is the case under test.
     # (test_estimate_approved_handler's own helper bumps ITS callers to
     # enterprise as of Task 5.6 - which is why this test registers through
@@ -504,7 +489,7 @@ async def test_pro_company_project_completion_drafts_no_final_invoice(client):
     )
 
     register_event_handlers()
-    admin = await _register_and_login(client, "Tier Co E3", "tier-e3@example.test")
+    admin = await register_and_login(client, "Tier Co E3", "tier-e3@example.test")
     # Deliberately NOT bumped to enterprise: pro is the case under test.
     client_role = await _invite_and_login_as(client, admin, "client", "tier-e3-client@example.test")
     project = await _create_project(client, admin["headers"])
@@ -544,7 +529,7 @@ async def test_below_tier_company_with_a_leftover_connection_enqueues_no_sync(cl
     from app.tasks.accounting_sync import sync_financial_record
 
     register_event_handlers()
-    admin = await _register_and_login(client, "Tier Co E2", "tier-e2@example.test")
+    admin = await register_and_login(client, "Tier Co E2", "tier-e2@example.test")
     await set_subscription_tier(admin["company_id"], "enterprise")
     state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
     connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")

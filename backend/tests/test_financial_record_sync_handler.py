@@ -9,32 +9,16 @@ from app.core.event_handlers import register_event_handlers
 from app.core import after_commit as after_commit_module
 from app.core.after_commit import pending_count, run_after_commit
 from app.core.events import publish
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    # Tier gating (Task 5.5): these suites exercise Enterprise-gated
-    # accounting routes; registration can only produce trialing/pro.
-    # (The plan expected this file to pass unchanged, but its three
-    # "via the real route" tests POST to the gated accounting routes.)
-    await set_subscription_tier(register.json()["company_id"], "enterprise")
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
-    }
+    """Thin wrapper: this module's tests need the enterprise tier.
+    See tests/conftest.py's register_and_login."""
+    return await register_and_login(client, company_name, email, tier="enterprise")
+
 
 
 async def test_zero_connections_enqueues_nothing(client, monkeypatch, db_session):

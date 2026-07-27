@@ -1,27 +1,12 @@
 import asyncpg
 import pytest
 
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, register_and_login
 
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -75,7 +60,7 @@ NONEXISTENT_LEAD_ID = "00000000-0000-0000-0000-000000000000"
 
 
 async def test_admin_can_create_and_list_communication_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     response = await client.post(
@@ -99,7 +84,7 @@ async def test_admin_can_create_and_list_communication_log(client):
 
 
 async def test_project_manager_can_create_communication_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "pm@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
@@ -112,7 +97,7 @@ async def test_project_manager_can_create_communication_log(client):
 
 
 async def test_create_communication_log_rejects_invalid_channel(client):
-    admin = await _register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "invalid-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     response = await client.post(
@@ -124,7 +109,7 @@ async def test_create_communication_log_rejects_invalid_channel(client):
 
 
 async def test_create_communication_log_rejects_empty_body(client):
-    admin = await _register_and_login(client, "Acme Construction", "empty-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "empty-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     response = await client.post(
@@ -136,7 +121,7 @@ async def test_create_communication_log_rejects_empty_body(client):
 
 
 async def test_non_admin_pm_cannot_create_communication_log(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "crew@acme.test")
 
@@ -149,7 +134,7 @@ async def test_non_admin_pm_cannot_create_communication_log(client):
 
 
 async def test_non_admin_pm_cannot_list_communication_logs(client):
-    admin = await _register_and_login(client, "Acme Construction", "blocked-admin2@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "blocked-admin2@acme.test")
     lead = await _create_lead(client, admin["headers"])
     client_role = await _invite_and_login_as(client, admin, "client", "client@acme.test")
 
@@ -160,7 +145,7 @@ async def test_non_admin_pm_cannot_list_communication_logs(client):
 
 
 async def test_create_communication_log_under_nonexistent_lead_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "nonexistent-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "nonexistent-admin@acme.test")
 
     response = await client.post(
         f"/leads/{NONEXISTENT_LEAD_ID}/communications",
@@ -171,7 +156,7 @@ async def test_create_communication_log_under_nonexistent_lead_returns_404(clien
 
 
 async def test_list_communication_logs_under_nonexistent_lead_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "nonexistent-admin2@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "nonexistent-admin2@acme.test")
 
     response = await client.get(
         f"/leads/{NONEXISTENT_LEAD_ID}/communications", headers=admin["headers"]
@@ -185,8 +170,8 @@ async def test_create_communication_log_under_cross_tenant_lead_returns_404(clie
     discover its existence and — the property this task's spec calls out
     explicitly — so nobody can create a communication log under a lead_id
     they couldn't otherwise see via GET /leads/{id}."""
-    a = await _register_and_login(client, "Company A", "cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "cross-b@acme.test")
     lead_b = await _create_lead(client, b["headers"])
 
     response = await client.post(
@@ -202,8 +187,8 @@ async def test_list_communication_logs_under_cross_tenant_lead_returns_404(clien
     an empty list. An empty list would leak the asymmetric information that
     the lead_id exists but simply has no communications, which is worse
     than the uniform 404 pattern used everywhere else in this codebase."""
-    a = await _register_and_login(client, "Company A", "cross-list-a@acme.test")
-    b = await _register_and_login(client, "Company B", "cross-list-b@acme.test")
+    a = await register_and_login(client, "Company A", "cross-list-a@acme.test")
+    b = await register_and_login(client, "Company B", "cross-list-b@acme.test")
     lead_b = await _create_lead(client, b["headers"])
     seed = await client.post(
         f"/leads/{lead_b['id']}/communications", json=_comm_payload(), headers=b["headers"]
@@ -221,7 +206,7 @@ async def test_list_communication_logs_is_chronological_oldest_first(client):
     reading order for a history log. Seeds three logs in order and confirms
     the list returns them in the same order they were created, not reversed
     and not by some other implicit ordering."""
-    admin = await _register_and_login(client, "Acme Construction", "order-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "order-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     created_bodies = []
@@ -242,7 +227,7 @@ async def test_list_communication_logs_is_chronological_oldest_first(client):
 
 
 async def test_list_communication_logs_pagination_walks_every_row_exactly_once(client):
-    admin = await _register_and_login(client, "Acme Construction", "page-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "page-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     created_ids = []
@@ -290,7 +275,7 @@ async def test_communication_logs_are_immutable_at_the_database_level(client):
     (e.g. an UPDATE/DELETE affecting 0 rows because of an RLS predicate,
     which would look superficially similar but proves nothing about the
     grant itself)."""
-    admin = await _register_and_login(client, "Acme Construction", "immutable-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "immutable-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
     create = await client.post(
         f"/leads/{lead['id']}/communications",

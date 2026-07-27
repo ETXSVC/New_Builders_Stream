@@ -19,54 +19,40 @@ it, so one hit per module is enough to catch a route whose id param was
 typed wrong.
 """
 
-
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    assert login.status_code == 200, login.text
-    return {"headers": {"Authorization": f"Bearer {login.json()['access_token']}"}}
+from tests.conftest import register_and_login
 
 
 async def test_malformed_lead_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 1", "malformed-lead@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 1", "malformed-lead@acme.test")
     response = await client.get("/leads/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422
 
 
 async def test_malformed_project_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 2", "malformed-project@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 2", "malformed-project@acme.test")
     response = await client.get("/projects/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422
 
 
 async def test_malformed_estimate_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 3", "malformed-estimate@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 3", "malformed-estimate@acme.test")
     response = await client.get("/estimates/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422
 
 
 async def test_malformed_invoice_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 4", "malformed-invoice@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 4", "malformed-invoice@acme.test")
     response = await client.get("/invoices/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422
 
 
 async def test_malformed_bill_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 5", "malformed-bill@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 5", "malformed-bill@acme.test")
     response = await client.get("/bills/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422
 
 
 async def test_malformed_subcontractor_id_path_param_is_rejected(client):
-    admin = await _register_and_login(client, "Malformed UUID Co 6", "malformed-subcontractor@acme.test")
+    admin = await register_and_login(client, "Malformed UUID Co 6", "malformed-subcontractor@acme.test")
     response = await client.get("/subcontractors/not-a-uuid", headers=admin["headers"])
     assert response.status_code == 422

@@ -28,29 +28,13 @@ from app.config import settings
 from app.db import SessionLocal, set_current_tenant, set_current_user
 from app.schemas.esignature import EsignatureCaptureRequest
 from app.services.esignature import capture_esignature
-from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL
+from tests.conftest import TEST_APP_DATABASE_URL, TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 APP_CONN_DSN = TEST_APP_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -144,7 +128,7 @@ def test_capture_request_schema_excludes_signed_at_and_ip_address():
 
 
 async def test_capture_esignature_produces_correct_row_with_real_signed_at(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-capture-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-capture-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -180,7 +164,7 @@ async def test_capture_esignature_produces_correct_row_with_real_signed_at(clien
 
 
 async def test_capture_esignature_writes_artifact_file_to_disk(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-artifact-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-artifact-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -205,7 +189,7 @@ async def test_capture_esignature_rejects_invalid_document_type_without_orphanin
     bad value never reaches the file-write step at all. This asserts BOTH
     halves: the call raises, AND no file was written for the id that would
     have been used."""
-    admin = await _register_and_login(client, "Acme Construction", "esig-badtype-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-badtype-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -226,7 +210,7 @@ async def test_capture_esignature_rejects_invalid_document_type_without_orphanin
 
 
 async def test_raw_update_against_esignatures_as_app_user_is_rejected(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-update-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-update-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -246,7 +230,7 @@ async def test_raw_update_against_esignatures_as_app_user_is_rejected(client):
 
 
 async def test_raw_delete_against_esignatures_as_app_user_is_rejected(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-delete-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-delete-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -269,7 +253,7 @@ async def test_raw_delete_against_esignatures_as_app_user_is_rejected(client):
 
 
 async def test_get_esignature_returns_captured_record(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-get-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-get-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -288,7 +272,7 @@ async def test_get_esignature_returns_captured_record(client):
 
 
 async def test_get_esignature_allowed_for_read_roles(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-roles-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-roles-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -309,7 +293,7 @@ async def test_client_can_read_only_their_own_signature(client):
     read here, so every customer of a company could pull up every other
     customer's executed contract. Migration 0019's `signed_by_user_id`
     makes "mine" expressible, and this asserts both halves of it."""
-    admin = await _register_and_login(client, "Acme Construction", "esig-own-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-own-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
 
     signer = await _invite_and_login_as(client, admin, "client", "esig-signer@acme.test")
@@ -330,7 +314,7 @@ async def test_client_cannot_read_a_pre_0019_signature_with_no_signer_account(cl
     invisible to every client rather than visible to all of them —
     deliberate, since those are precisely the records whose attribution was
     never verified. Staff can still read them."""
-    admin = await _register_and_login(client, "Acme Construction", "esig-legacy-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-legacy-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -352,7 +336,7 @@ async def test_client_cannot_read_a_pre_0019_signature_with_no_signer_account(cl
 
 
 async def test_get_esignature_blocked_for_field_crew(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-crew-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-crew-admin@acme.test")
     company_id = uuid.UUID(admin["company_id"])
     user_id = uuid.UUID(admin["user_id"])
 
@@ -365,7 +349,7 @@ async def test_get_esignature_blocked_for_field_crew(client):
 
 
 async def test_get_esignature_nonexistent_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "esig-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "esig-404-admin@acme.test")
 
     response = await client.get(
         "/esignatures/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
@@ -374,8 +358,8 @@ async def test_get_esignature_nonexistent_returns_404(client):
 
 
 async def test_get_esignature_cross_tenant_returns_404(client):
-    a = await _register_and_login(client, "Company A", "esig-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "esig-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "esig-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "esig-cross-b@acme.test")
     company_a_id = uuid.UUID(a["company_id"])
     user_a_id = uuid.UUID(a["user_id"])
 

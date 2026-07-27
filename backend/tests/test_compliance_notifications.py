@@ -32,26 +32,10 @@ from datetime import date, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.tasks.compliance_expiry import _check_compliance_expiry
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -156,7 +140,7 @@ async def _seed_notifications(client, admin, *, days_out=5, name="Ace Plumbing C
 
 
 async def test_admin_can_list_notifications_with_full_display_context(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-admin@acme.test")
     subcontractor_id, document_id = await _seed_notifications(client, admin, name="Full Context Sub")
 
     response = await client.get("/compliance/notifications", headers=admin["headers"])
@@ -175,7 +159,7 @@ async def test_admin_can_list_notifications_with_full_display_context(client):
 
 
 async def test_project_manager_cannot_list_notifications(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-pm-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-pm-403@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "notif-pm-403-pm@acme.test")
 
     response = await client.get("/compliance/notifications", headers=pm["headers"])
@@ -183,7 +167,7 @@ async def test_project_manager_cannot_list_notifications(client):
 
 
 async def test_accountant_cannot_list_notifications(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-acct-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-acct-403@acme.test")
     accountant = await _invite_and_login_as(
         client, admin, "accountant", "notif-acct-403-acct@acme.test"
     )
@@ -193,7 +177,7 @@ async def test_accountant_cannot_list_notifications(client):
 
 
 async def test_field_crew_cannot_list_notifications(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-fc-403@acme.test")
     field_crew = await _invite_and_login_as(
         client, admin, "field_crew", "notif-fc-403-fc@acme.test"
     )
@@ -203,7 +187,7 @@ async def test_field_crew_cannot_list_notifications(client):
 
 
 async def test_client_cannot_list_notifications(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-client-403@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "notif-client-403-c@acme.test"
     )
@@ -213,8 +197,8 @@ async def test_client_cannot_list_notifications(client):
 
 
 async def test_notifications_list_is_scoped_to_callers_own_company(client):
-    a = await _register_and_login(client, "Company A", "notif-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "notif-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "notif-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "notif-cross-b@acme.test")
 
     await _seed_notifications(client, a, name="Company A Sub")
     await _seed_notifications(client, b, name="Company B Sub")
@@ -233,7 +217,7 @@ async def test_notifications_list_is_scoped_to_callers_own_company(client):
 
 
 async def test_notifications_list_empty_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-empty@acme.test")
 
     response = await client.get("/compliance/notifications", headers=admin["headers"])
     assert response.status_code == 200, response.text
@@ -246,7 +230,7 @@ async def test_notifications_list_empty_returns_empty_list(client):
 
 
 async def test_unread_only_filters_out_dismissed_notifications(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-unread@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-unread@acme.test")
     await _seed_notifications(client, admin, name="Unread Filter Sub")
 
     all_response = await client.get("/compliance/notifications", headers=admin["headers"])
@@ -281,7 +265,7 @@ async def test_unread_only_filters_out_dismissed_notifications(client):
 
 
 async def test_dismiss_notification_sets_read_at(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-dismiss@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-dismiss@acme.test")
     await _seed_notifications(client, admin, name="Dismiss Sub")
 
     listing = await client.get("/compliance/notifications", headers=admin["headers"])
@@ -297,7 +281,7 @@ async def test_dismiss_notification_sets_read_at(client):
 
 
 async def test_dismiss_notification_is_idempotent_on_double_dismiss(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-idempotent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-idempotent@acme.test")
     await _seed_notifications(client, admin, name="Idempotent Sub")
 
     listing = await client.get("/compliance/notifications", headers=admin["headers"])
@@ -322,8 +306,8 @@ async def test_dismiss_notification_is_idempotent_on_double_dismiss(client):
 
 
 async def test_dismiss_notification_cross_tenant_returns_404(client):
-    a = await _register_and_login(client, "Company A", "notif-dismiss-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "notif-dismiss-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "notif-dismiss-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "notif-dismiss-cross-b@acme.test")
 
     await _seed_notifications(client, a, name="Company A Dismiss Sub")
 
@@ -337,7 +321,7 @@ async def test_dismiss_notification_cross_tenant_returns_404(client):
 
 
 async def test_dismiss_notification_nonexistent_id_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-dismiss-404@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-dismiss-404@acme.test")
 
     response = await client.post(
         "/compliance/notifications/00000000-0000-0000-0000-000000000000/dismiss",
@@ -347,7 +331,7 @@ async def test_dismiss_notification_nonexistent_id_returns_404(client):
 
 
 async def test_project_manager_cannot_dismiss_notification(client):
-    admin = await _register_and_login(client, "Acme Construction", "notif-dismiss-pm-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "notif-dismiss-pm-403@acme.test")
     pm = await _invite_and_login_as(
         client, admin, "project_manager", "notif-dismiss-pm-403-pm@acme.test"
     )
@@ -362,7 +346,7 @@ async def test_project_manager_cannot_dismiss_notification(client):
 
 
 async def test_accountant_cannot_dismiss_notification(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "notif-dismiss-acct-403@acme.test"
     )
     accountant = await _invite_and_login_as(
@@ -379,7 +363,7 @@ async def test_accountant_cannot_dismiss_notification(client):
 
 
 async def test_field_crew_cannot_dismiss_notification(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "notif-dismiss-fc-403@acme.test"
     )
     field_crew = await _invite_and_login_as(
@@ -396,7 +380,7 @@ async def test_field_crew_cannot_dismiss_notification(client):
 
 
 async def test_client_cannot_dismiss_notification(client):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", "notif-dismiss-client-403@acme.test"
     )
     client_role = await _invite_and_login_as(

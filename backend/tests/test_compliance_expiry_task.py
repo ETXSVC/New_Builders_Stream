@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.models.compliance_notification import ComplianceNotification
 from app.tasks.compliance_expiry import _check_compliance_expiry
 from app.tasks.scanner_db import scanner_engine
-from tests.conftest import TEST_DATABASE_URL, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, register_and_login, set_subscription_tier
 
 _test_owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
 _TestOwnerSessionLocal = async_sessionmaker(_test_owner_engine, expire_on_commit=False, class_=AsyncSession)
@@ -48,23 +48,7 @@ async def _dispose_test_owner_engine():
     await _test_owner_engine.dispose()
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _create_subcontractor(client, actor, **overrides):
@@ -120,7 +104,7 @@ def test_scanner_engine_points_at_test_database_not_dev_database():
 
 
 async def test_document_5_days_out_fires_all_three_thresholds_simultaneously(client):
-    admin = await _register_and_login(client, "Acme Construction", "expiry-single@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "expiry-single@acme.test")
     subcontractor_id = await _create_subcontractor(client, admin)
     expires_on = (date.today() + timedelta(days=5)).isoformat()
     document_id = await _upload_compliance_document(
@@ -205,8 +189,8 @@ async def test_second_run_does_not_duplicate_notification():
 
 
 async def test_multiple_companies_no_cross_tenant_notification_leakage(client):
-    company_a = await _register_and_login(client, "Company A", "expiry-a@acme.test")
-    company_b = await _register_and_login(client, "Company B", "expiry-b@acme.test")
+    company_a = await register_and_login(client, "Company A", "expiry-a@acme.test")
+    company_b = await register_and_login(client, "Company B", "expiry-b@acme.test")
 
     sub_a = await _create_subcontractor(client, company_a, name="Company A Sub")
     sub_b = await _create_subcontractor(client, company_b, name="Company B Sub")
@@ -241,7 +225,7 @@ async def test_multiple_companies_no_cross_tenant_notification_leakage(client):
 
 
 async def test_document_25_days_out_fires_only_30_day_not_14_or_7(client):
-    admin = await _register_and_login(client, "Acme Construction", "expiry-25days@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "expiry-25days@acme.test")
     subcontractor_id = await _create_subcontractor(client, admin)
     expires_on = (date.today() + timedelta(days=25)).isoformat()
     document_id = await _upload_compliance_document(
@@ -264,7 +248,7 @@ async def test_document_25_days_out_fires_only_30_day_not_14_or_7(client):
 async def test_document_crossing_into_14_day_window_fires_only_new_notification_leaving_30_day_untouched(
     client,
 ):
-    admin = await _register_and_login(client, "Acme Construction", "expiry-crossing@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "expiry-crossing@acme.test")
     subcontractor_id = await _create_subcontractor(client, admin)
     # 25 days out: first run fires only 30_day (per the test above).
     expires_on = (date.today() + timedelta(days=25)).isoformat()
@@ -327,8 +311,8 @@ async def test_starter_company_gets_no_new_notifications_while_pro_company_still
     undismissable. The starter company here is built the realistic way:
     upload while pro (registration default), THEN downgrade — the document
     row survives, but must stop producing notifications."""
-    starter = await _register_and_login(client, "Downgraded Co", "expiry-starter@acme.test")
-    pro = await _register_and_login(client, "Still Pro Co", "expiry-pro@acme.test")
+    starter = await register_and_login(client, "Downgraded Co", "expiry-starter@acme.test")
+    pro = await register_and_login(client, "Still Pro Co", "expiry-pro@acme.test")
 
     sub_starter = await _create_subcontractor(client, starter, name="Downgraded Co Sub")
     sub_pro = await _create_subcontractor(client, pro, name="Still Pro Co Sub")

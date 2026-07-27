@@ -9,30 +9,16 @@ import uuid
 import asyncpg
 
 from app.core.event_handlers import register_event_handlers
-from tests.conftest import TEST_DATABASE_URL, grant_client_access, set_subscription_tier
+from tests.conftest import TEST_DATABASE_URL, grant_client_access, register_and_login, set_subscription_tier
 
 ADMIN_CONN_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
 async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    assert register.status_code == 201, register.text
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    assert login.status_code == 200, login.text
-    await set_subscription_tier(register.json()["company_id"], "pro")
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
-    }
+    """Thin wrapper: this module's tests need the pro tier.
+    See tests/conftest.py's register_and_login."""
+    return await register_and_login(client, company_name, email, tier="pro")
+
 
 
 async def _invite_and_login_as(client, admin, role, email):

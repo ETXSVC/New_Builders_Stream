@@ -2,24 +2,7 @@
 No download route existed before this — documents could be uploaded and
 listed but never retrieved."""
 
-
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+from tests.conftest import register_and_login
 
 
 async def _project(client, admin, name):
@@ -32,7 +15,7 @@ async def _project(client, admin, name):
 
 
 async def test_download_round_trips_uploaded_bytes(client):
-    admin = await _register_and_login(client, "Download Co", "download-admin@acme.test")
+    admin = await register_and_login(client, "Download Co", "download-admin@acme.test")
     project = await _project(client, admin, "Download Project")
 
     upload = await client.post(
@@ -54,7 +37,7 @@ async def test_download_round_trips_uploaded_bytes(client):
 
 
 async def test_download_404_for_document_of_other_project(client):
-    admin = await _register_and_login(client, "Download Iso Co", "download-iso@acme.test")
+    admin = await register_and_login(client, "Download Iso Co", "download-iso@acme.test")
     project_a = await _project(client, admin, "Project A")
     project_b = await _project(client, admin, "Project B")
 

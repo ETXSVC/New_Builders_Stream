@@ -3,28 +3,12 @@ frontend plan Task 10.5, a spec-gap fix: tasks have assignee_id but no
 endpoint listed who could be assigned)."""
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -56,7 +40,7 @@ async def _invite_and_login_as(client, admin, role, email):
 
 
 async def test_members_lists_company_users_with_names_and_roles(client):
-    admin = await _register_and_login(client, "Members Co", "members-admin@acme.test")
+    admin = await register_and_login(client, "Members Co", "members-admin@acme.test")
     await _invite_and_login_as(client, admin, "field_crew", "members-crew@acme.test")
 
     listed = await client.get("/companies/members", headers=admin["headers"])
@@ -70,7 +54,7 @@ async def test_members_lists_company_users_with_names_and_roles(client):
 
 
 async def test_members_denied_for_field_crew(client):
-    admin = await _register_and_login(client, "Members Deny Co", "members-deny@acme.test")
+    admin = await register_and_login(client, "Members Deny Co", "members-deny@acme.test")
     crew = await _invite_and_login_as(client, admin, "field_crew", "members-deny-crew@acme.test")
     response = await client.get("/companies/members", headers=crew["headers"])
     assert response.status_code == 403
@@ -81,7 +65,7 @@ async def test_members_denied_for_field_crew(client):
 
 
 async def test_company_users_lists_own_company_by_id(client):
-    admin = await _register_and_login(client, "ById Co", "byid-admin@acme.test")
+    admin = await register_and_login(client, "ById Co", "byid-admin@acme.test")
     await _invite_and_login_as(client, admin, "field_crew", "byid-crew@acme.test")
 
     listed = await client.get(f"/companies/{admin['company_id']}/users", headers=admin["headers"])
@@ -97,7 +81,7 @@ async def test_company_users_returns_empty_list_for_a_memberless_child_branch(cl
     an empty membership read as 404."""
     from tests.conftest import set_subscription_tier
 
-    admin = await _register_and_login(client, "ById Parent Co", "byid-parent@acme.test")
+    admin = await register_and_login(client, "ById Parent Co", "byid-parent@acme.test")
     await set_subscription_tier(admin["company_id"], "enterprise")
     child = await client.post(
         f"/companies/{admin['company_id']}/children",
@@ -112,15 +96,15 @@ async def test_company_users_returns_empty_list_for_a_memberless_child_branch(cl
 
 
 async def test_company_users_cross_tenant_id_is_404(client):
-    admin = await _register_and_login(client, "ById Co A", "byid-a@acme.test")
-    other = await _register_and_login(client, "ById Co B", "byid-b@acme.test")
+    admin = await register_and_login(client, "ById Co A", "byid-a@acme.test")
+    other = await register_and_login(client, "ById Co B", "byid-b@acme.test")
 
     response = await client.get(f"/companies/{other['company_id']}/users", headers=admin["headers"])
     assert response.status_code == 404
 
 
 async def test_company_users_denied_for_field_crew(client):
-    admin = await _register_and_login(client, "ById Deny Co", "byid-deny@acme.test")
+    admin = await register_and_login(client, "ById Deny Co", "byid-deny@acme.test")
     crew = await _invite_and_login_as(client, admin, "field_crew", "byid-deny-crew@acme.test")
     response = await client.get(f"/companies/{admin['company_id']}/users", headers=crew["headers"])
     assert response.status_code == 403

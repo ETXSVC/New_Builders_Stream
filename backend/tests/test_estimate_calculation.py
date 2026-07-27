@@ -14,28 +14,12 @@ from decimal import Decimal
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -208,7 +192,7 @@ async def test_calculate_representative_multi_line_multi_category(client):
 
     Expected: subtotal="649.99", total="822.24".
     """
-    admin = await _register_and_login(client, "Acme Construction", "calc-repr-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-repr-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(
         client, admin["headers"], overhead_pct="10.00", profit_pct="15.00"
@@ -262,7 +246,7 @@ async def test_calculate_zero_line_items(client):
     pipeline is `0 * overhead_multiplier * profit_multiplier`, pure
     multiplication throughout, so there is nothing to divide by zero in
     the first place)."""
-    admin = await _register_and_login(client, "Acme Construction", "calc-zero-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-zero-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(client, admin["headers"])
     estimate = await _create_estimate(client, admin["headers"], project["id"], markup["id"])
@@ -321,7 +305,7 @@ async def test_calculate_decimal_precision_trap(client):
     assert Decimal("520.00") * Decimal("1.0345") * Decimal("1.25") == Decimal("672.425")
     assert round(672.4249999999999, 2) == 672.42  # the float trap this test guards against
 
-    admin = await _register_and_login(client, "Acme Construction", "calc-trap-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-trap-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(
         client, admin["headers"], overhead_pct="3.45", profit_pct="25.00"
@@ -357,7 +341,7 @@ async def test_calculate_snapshotted_estimate_returns_409_and_does_not_recompute
     calculation's totals completely untouched, proving the 409 guard
     fires before `calculate_estimate` (the service) is ever called, not
     merely before the persist step."""
-    admin = await _register_and_login(client, "Acme Construction", "calc-snap-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-snap-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(
         client, admin["headers"], overhead_pct="10.00", profit_pct="15.00"
@@ -401,7 +385,7 @@ async def test_calculate_snapshotted_estimate_returns_409_and_does_not_recompute
 
 
 async def test_calculate_as_project_manager(client):
-    admin = await _register_and_login(client, "Acme Construction", "calc-pm-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-pm-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "calc-pm@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(client, admin["headers"])
@@ -412,7 +396,7 @@ async def test_calculate_as_project_manager(client):
 
 
 async def test_calculate_blocked_for_non_write_roles(client):
-    admin = await _register_and_login(client, "Acme Construction", "calc-blocked-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-blocked-admin@acme.test")
     project = await _create_project(client, admin["headers"])
     markup = await _create_markup_profile(client, admin["headers"])
     estimate = await _create_estimate(client, admin["headers"], project["id"], markup["id"])
@@ -429,7 +413,7 @@ async def test_calculate_blocked_for_non_write_roles(client):
 
 
 async def test_calculate_nonexistent_estimate_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "calc-404-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "calc-404-admin@acme.test")
 
     response = await client.post(
         "/estimates/00000000-0000-0000-0000-000000000000/calculate", headers=admin["headers"]
@@ -438,8 +422,8 @@ async def test_calculate_nonexistent_estimate_returns_404(client):
 
 
 async def test_calculate_cross_tenant_estimate_returns_404(client):
-    a = await _register_and_login(client, "Company A", "calc-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "calc-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "calc-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "calc-cross-b@acme.test")
     project = await _create_project(client, a["headers"])
     markup = await _create_markup_profile(client, a["headers"])
     estimate = await _create_estimate(client, a["headers"], project["id"], markup["id"])

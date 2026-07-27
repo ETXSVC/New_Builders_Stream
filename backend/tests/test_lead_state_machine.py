@@ -6,25 +6,10 @@ import pytest
 
 from app.core import events
 from app.services.lead_transitions import LEAD_TRANSITIONS
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 def _lead_payload(**overrides):
@@ -112,7 +97,7 @@ def test_transition_table_matches_the_documented_business_decision():
 
 @pytest.mark.parametrize("from_status,to_status", sorted(_EXPECTED_LEGAL_EDGES))
 async def test_legal_transition_succeeds_and_is_audited(client, from_status, to_status):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", f"legal-{from_status}-{to_status}@acme.test"
     )
     lead = await _create_lead(client, admin["headers"])
@@ -149,7 +134,7 @@ async def test_legal_transition_succeeds_and_is_audited(client, from_status, to_
     ],
 )
 async def test_illegal_transition_returns_409_with_no_state_change(client, from_status, to_status):
-    admin = await _register_and_login(
+    admin = await register_and_login(
         client, "Acme Construction", f"illegal-{from_status}-{to_status}@acme.test"
     )
     lead = await _create_lead(client, admin["headers"])
@@ -172,7 +157,7 @@ async def test_illegal_transition_returns_409_with_no_state_change(client, from_
 
 
 async def test_plain_field_only_patch_succeeds_without_status_audit_entry(client):
-    admin = await _register_and_login(client, "Acme Construction", "field-only@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "field-only@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     response = await client.patch(
@@ -196,7 +181,7 @@ async def test_plain_field_only_patch_succeeds_without_status_audit_entry(client
 
 
 async def test_combined_field_and_status_patch_applies_both_atomically(client):
-    admin = await _register_and_login(client, "Acme Construction", "combined-ok@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "combined-ok@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     response = await client.patch(
@@ -223,7 +208,7 @@ async def test_combined_field_and_illegal_status_patch_applies_neither(client):
     """The field-change half of a combined PATCH must not silently apply
     when the status-change half is illegal — one transaction, one outcome
     (Inherited Invariant #4)."""
-    admin = await _register_and_login(client, "Acme Construction", "combined-fail@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "combined-fail@acme.test")
     lead = await _create_lead(client, admin["headers"], notes="original notes")
 
     response = await client.patch(
@@ -240,7 +225,7 @@ async def test_combined_field_and_illegal_status_patch_applies_neither(client):
 
 
 async def test_updated_at_actually_bumps_after_a_patch(client):
-    admin = await _register_and_login(client, "Acme Construction", "updated-at@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "updated-at@acme.test")
     lead = await _create_lead(client, admin["headers"])
     original_updated_at = datetime.fromisoformat(lead["updated_at"])
 
@@ -262,7 +247,7 @@ async def test_transition_into_won_calls_publish_with_the_expected_payload(clien
     registering a temporary handler on the live app.core.events dispatcher
     and confirming it actually fires with the right payload on a
     qualified -> won transition."""
-    admin = await _register_and_login(client, "Acme Construction", "publish-check@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "publish-check@acme.test")
     lead = await _create_lead(client, admin["headers"], project_name="Deck Build")
     await _advance_to(
         client, admin["headers"], lead["id"], _PRECONDITION_PATH["qualified"]
@@ -292,7 +277,7 @@ async def test_transition_into_won_calls_publish_with_the_expected_payload(clien
 
 
 async def test_non_admin_pm_cannot_patch_lead(client):
-    admin = await _register_and_login(client, "Acme Construction", "rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "rbac-admin@acme.test")
     lead = await _create_lead(client, admin["headers"])
 
     invite = await client.post(
@@ -318,7 +303,7 @@ async def test_non_admin_pm_cannot_patch_lead(client):
 
 
 async def test_patch_nonexistent_lead_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "patch-404@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "patch-404@acme.test")
 
     response = await client.patch(
         "/leads/00000000-0000-0000-0000-000000000000",
@@ -329,8 +314,8 @@ async def test_patch_nonexistent_lead_returns_404(client):
 
 
 async def test_patch_cross_tenant_lead_returns_404(client):
-    a = await _register_and_login(client, "Company A", "patch-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "patch-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "patch-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "patch-cross-b@acme.test")
 
     lead = await _create_lead(client, b["headers"])
 

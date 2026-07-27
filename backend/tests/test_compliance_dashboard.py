@@ -7,25 +7,10 @@ them via conftest.py.
 """
 
 from datetime import date, timedelta
+from tests.conftest import register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -68,7 +53,7 @@ async def _upload_compliance_document(
 
 
 async def test_expiring_soon_document_appears_with_correct_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-expsoon@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-expsoon@acme.test")
     create = await _create_subcontractor(client, admin, name="Expiring Soon Sub")
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -94,7 +79,7 @@ async def test_expiring_soon_document_appears_with_correct_status(client):
 
 
 async def test_expired_document_appears_with_correct_status(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-expired@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-expired@acme.test")
     create = await _create_subcontractor(client, admin, name="Expired Sub")
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -120,7 +105,7 @@ async def test_expired_document_appears_with_correct_status(client):
 
 
 async def test_document_expiring_far_in_future_does_not_appear(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-farfuture@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-farfuture@acme.test")
     create = await _create_subcontractor(client, admin, name="Far Future Sub")
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -137,7 +122,7 @@ async def test_document_expiring_far_in_future_does_not_appear(client):
 
 
 async def test_dashboard_mixes_expiring_soon_expired_and_omits_far_future_in_one_query(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-mixed@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-mixed@acme.test")
     create = await _create_subcontractor(client, admin, name="Mixed Sub")
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -176,7 +161,7 @@ async def test_dashboard_boundary_days_produce_correct_status(client):
     # soon" window) is still "expiring_soon"; exactly 31 days out is absent
     # entirely; exactly today is "expiring_soon", not "expired"; exactly 1
     # day overdue is "expired".
-    admin = await _register_and_login(client, "Acme Construction", "dash-boundary@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-boundary@acme.test")
     create = await _create_subcontractor(client, admin, name="Boundary Sub")
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -209,7 +194,7 @@ async def test_dashboard_boundary_days_produce_correct_status(client):
 
 
 async def test_field_crew_cannot_view_compliance_dashboard(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "dash-fc-403-fc@acme.test")
 
     response = await client.get("/compliance/dashboard", headers=field_crew["headers"])
@@ -217,7 +202,7 @@ async def test_field_crew_cannot_view_compliance_dashboard(client):
 
 
 async def test_client_cannot_view_compliance_dashboard(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-client-403@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "dash-client-403-c@acme.test")
 
     response = await client.get("/compliance/dashboard", headers=client_role["headers"])
@@ -225,7 +210,7 @@ async def test_client_cannot_view_compliance_dashboard(client):
 
 
 async def test_admin_pm_accountant_can_view_compliance_dashboard(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-rbac@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-rbac@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "dash-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "dash-rbac-acct@acme.test")
     create = await _create_subcontractor(client, admin)
@@ -244,8 +229,8 @@ async def test_admin_pm_accountant_can_view_compliance_dashboard(client):
 
 
 async def test_compliance_dashboard_is_scoped_to_callers_own_company(client):
-    a = await _register_and_login(client, "Company A", "dash-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "dash-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "dash-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "dash-cross-b@acme.test")
 
     create_a = await _create_subcontractor(client, a, name="Company A Sub")
     assert create_a.status_code == 201, create_a.text
@@ -276,7 +261,7 @@ async def test_compliance_dashboard_is_scoped_to_callers_own_company(client):
 
 
 async def test_dashboard_empty_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "dash-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "dash-empty@acme.test")
 
     response = await client.get("/compliance/dashboard", headers=admin["headers"])
     assert response.status_code == 200, response.text

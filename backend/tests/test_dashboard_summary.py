@@ -3,28 +3,12 @@ from datetime import date, timedelta
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -56,7 +40,7 @@ async def _invite_and_login_as(client, admin, role, email):
 
 
 async def test_summary_counts_open_leads_active_projects_and_due_tasks(client):
-    admin = await _register_and_login(client, "Summary Co", "summary-admin@acme.test")
+    admin = await register_and_login(client, "Summary Co", "summary-admin@acme.test")
 
     lead = await client.post(
         "/leads",
@@ -115,7 +99,7 @@ async def test_summary_counts_open_leads_active_projects_and_due_tasks(client):
 
 
 async def test_summary_denied_for_field_crew(client):
-    admin = await _register_and_login(client, "Summary Deny Co", "summary-deny@acme.test")
+    admin = await register_and_login(client, "Summary Deny Co", "summary-deny@acme.test")
     crew = await _invite_and_login_as(client, admin, "field_crew", "summary-crew@acme.test")
     response = await client.get("/dashboard/summary", headers=crew["headers"])
     assert response.status_code == 403

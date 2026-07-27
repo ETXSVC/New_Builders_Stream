@@ -26,28 +26,12 @@ from decimal import Decimal
 
 import asyncpg
 
-from tests.conftest import TEST_DATABASE_URL, grant_client_access
+from tests.conftest import TEST_DATABASE_URL, grant_client_access, register_and_login
 
 OWNER_DSN = TEST_DATABASE_URL.replace("+asyncpg", "")
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -191,7 +175,7 @@ async def test_approved_estimate_totals_and_line_items_are_immune_to_later_catal
     `unit_rate_snapshot`/`line_total`/`total` for the line item whose
     underlying catalog price was changed in step 3.
     """
-    admin = await _register_and_login(client, "Acme Construction", "snaphist-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "snaphist-admin@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "snaphist-client@acme.test"
     )

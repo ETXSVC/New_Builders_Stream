@@ -14,26 +14,10 @@ import pytest
 
 from app.config import settings
 from app.services.document_storage import InvalidFileNameError, write_compliance_document_file
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import TEST_DATABASE_URL, register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "user_id": register.json()["user_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def _invite_and_login_as(client, admin, role, email):
@@ -85,7 +69,7 @@ async def _upload_compliance_document(
 
 
 async def test_admin_can_create_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-admin-create@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-admin-create@acme.test")
 
     response = await _create_subcontractor(client, admin)
     assert response.status_code == 201, response.text
@@ -98,7 +82,7 @@ async def test_admin_can_create_subcontractor(client):
 
 
 async def test_create_subcontractor_optional_fields_may_be_omitted(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-admin-optional@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-admin-optional@acme.test")
 
     payload = {"name": "Bare Bones Electric"}
     response = await client.post("/subcontractors", json=payload, headers=admin["headers"])
@@ -110,7 +94,7 @@ async def test_create_subcontractor_optional_fields_may_be_omitted(client):
 
 
 async def test_project_manager_cannot_create_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-pm-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-pm-403@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "sub-pm-403-pm@acme.test")
 
     response = await _create_subcontractor(client, pm)
@@ -118,7 +102,7 @@ async def test_project_manager_cannot_create_subcontractor(client):
 
 
 async def test_accountant_cannot_create_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-acct-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-acct-403@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "sub-acct-403-a@acme.test")
 
     response = await _create_subcontractor(client, accountant)
@@ -126,7 +110,7 @@ async def test_accountant_cannot_create_subcontractor(client):
 
 
 async def test_field_crew_cannot_create_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "sub-fc-403-fc@acme.test")
 
     response = await _create_subcontractor(client, field_crew)
@@ -134,7 +118,7 @@ async def test_field_crew_cannot_create_subcontractor(client):
 
 
 async def test_client_cannot_create_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-client-403@acme.test")
     client_role = await _invite_and_login_as(client, admin, "client", "sub-client-403-c@acme.test")
 
     response = await _create_subcontractor(client, client_role)
@@ -145,7 +129,7 @@ async def test_client_cannot_create_subcontractor(client):
 
 
 async def test_admin_pm_accountant_can_list_subcontractors(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-list-rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-list-rbac-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "sub-list-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(
         client, admin, "accountant", "sub-list-rbac-acct@acme.test"
@@ -160,7 +144,7 @@ async def test_admin_pm_accountant_can_list_subcontractors(client):
 
 
 async def test_field_crew_cannot_list_subcontractors(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-list-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-list-fc-403@acme.test")
     field_crew = await _invite_and_login_as(client, admin, "field_crew", "sub-list-fc-403-fc@acme.test")
 
     response = await client.get("/subcontractors", headers=field_crew["headers"])
@@ -168,7 +152,7 @@ async def test_field_crew_cannot_list_subcontractors(client):
 
 
 async def test_client_cannot_list_subcontractors(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-list-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-list-client-403@acme.test")
     client_role = await _invite_and_login_as(
         client, admin, "client", "sub-list-client-403-c@acme.test"
     )
@@ -178,7 +162,7 @@ async def test_client_cannot_list_subcontractors(client):
 
 
 async def test_list_subcontractors_empty_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-list-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-list-empty@acme.test")
 
     response = await client.get("/subcontractors", headers=admin["headers"])
     assert response.status_code == 200, response.text
@@ -186,7 +170,7 @@ async def test_list_subcontractors_empty_returns_empty_list(client):
 
 
 async def test_list_subcontractors_paginates_with_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-list-page@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-list-page@acme.test")
 
     created_ids = []
     for i in range(5):
@@ -221,7 +205,7 @@ async def test_list_subcontractors_paginates_with_cursor(client):
 
 
 async def test_get_subcontractor_by_id_succeeds(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-get-ok@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-get-ok@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -234,8 +218,8 @@ async def test_get_subcontractor_by_id_succeeds(client):
 
 
 async def test_get_subcontractor_cross_tenant_returns_404(client):
-    a = await _register_and_login(client, "Company A", "sub-get-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "sub-get-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "sub-get-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "sub-get-cross-b@acme.test")
     create = await _create_subcontractor(client, b)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -245,7 +229,7 @@ async def test_get_subcontractor_cross_tenant_returns_404(client):
 
 
 async def test_get_subcontractor_nonexistent_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-get-nonexistent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-get-nonexistent@acme.test")
 
     response = await client.get(
         "/subcontractors/00000000-0000-0000-0000-000000000000", headers=admin["headers"]
@@ -254,7 +238,7 @@ async def test_get_subcontractor_nonexistent_returns_404(client):
 
 
 async def test_field_crew_cannot_get_subcontractor_by_id(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-get-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-get-fc-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -265,7 +249,7 @@ async def test_field_crew_cannot_get_subcontractor_by_id(client):
 
 
 async def test_client_cannot_get_subcontractor_by_id(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-get-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-get-client-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -281,7 +265,7 @@ async def test_client_cannot_get_subcontractor_by_id(client):
 
 
 async def test_admin_can_upload_compliance_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-admin-create@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-admin-create@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -325,7 +309,7 @@ async def test_admin_can_upload_compliance_document(client):
 
 
 async def test_project_manager_cannot_upload_compliance_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-pm-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-pm-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -336,7 +320,7 @@ async def test_project_manager_cannot_upload_compliance_document(client):
 
 
 async def test_accountant_cannot_upload_compliance_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-acct-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-acct-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -347,7 +331,7 @@ async def test_accountant_cannot_upload_compliance_document(client):
 
 
 async def test_field_crew_cannot_upload_compliance_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-fc-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -358,7 +342,7 @@ async def test_field_crew_cannot_upload_compliance_document(client):
 
 
 async def test_client_cannot_upload_compliance_document(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-client-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -369,7 +353,7 @@ async def test_client_cannot_upload_compliance_document(client):
 
 
 async def test_upload_compliance_document_invalid_doc_type_returns_422_no_orphaned_file(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-invalid-doctype@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-invalid-doctype@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -415,7 +399,7 @@ def test_write_compliance_document_file_rejects_control_character_extension():
 async def test_upload_compliance_document_oversized_extension_returns_422(client):
     # Same review finding: an extension well past MAX_EXTENSION_LENGTH could
     # exceed the filesystem's own NAME_MAX and raise an unhandled OSError.
-    admin = await _register_and_login(client, "Acme Construction", "cd-long-ext@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-long-ext@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -427,7 +411,7 @@ async def test_upload_compliance_document_oversized_extension_returns_422(client
 
 
 async def test_upload_compliance_document_malformed_expires_on_returns_422(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-bad-date@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-bad-date@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -439,8 +423,8 @@ async def test_upload_compliance_document_malformed_expires_on_returns_422(clien
 
 
 async def test_upload_compliance_document_cross_tenant_subcontractor_returns_404(client):
-    a = await _register_and_login(client, "Company A", "cd-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "cd-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "cd-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "cd-cross-b@acme.test")
     create = await _create_subcontractor(client, b)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -450,7 +434,7 @@ async def test_upload_compliance_document_cross_tenant_subcontractor_returns_404
 
 
 async def test_upload_compliance_document_nonexistent_subcontractor_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-nonexistent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-nonexistent@acme.test")
 
     response = await _upload_compliance_document(
         client, admin, "00000000-0000-0000-0000-000000000000"
@@ -462,7 +446,7 @@ async def test_upload_compliance_document_nonexistent_subcontractor_returns_404(
 
 
 async def test_admin_pm_accountant_can_list_compliance_documents(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-rbac-admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-rbac-admin@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "cd-list-rbac-pm@acme.test")
     accountant = await _invite_and_login_as(client, admin, "accountant", "cd-list-rbac-acct@acme.test")
     create = await _create_subcontractor(client, admin)
@@ -480,7 +464,7 @@ async def test_admin_pm_accountant_can_list_compliance_documents(client):
 
 
 async def test_field_crew_cannot_list_compliance_documents(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-fc-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-fc-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -493,7 +477,7 @@ async def test_field_crew_cannot_list_compliance_documents(client):
 
 
 async def test_client_cannot_list_compliance_documents(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-client-403@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-client-403@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -506,8 +490,8 @@ async def test_client_cannot_list_compliance_documents(client):
 
 
 async def test_list_compliance_documents_cross_tenant_subcontractor_returns_404(client):
-    a = await _register_and_login(client, "Company A", "cd-list-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "cd-list-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "cd-list-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "cd-list-cross-b@acme.test")
     create = await _create_subcontractor(client, b)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -521,7 +505,7 @@ async def test_list_compliance_documents_cross_tenant_subcontractor_returns_404(
 
 
 async def test_list_compliance_documents_nonexistent_subcontractor_returns_404(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-nonexistent@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-nonexistent@acme.test")
 
     response = await client.get(
         "/subcontractors/00000000-0000-0000-0000-000000000000/compliance-documents",
@@ -531,7 +515,7 @@ async def test_list_compliance_documents_nonexistent_subcontractor_returns_404(c
 
 
 async def test_list_compliance_documents_empty_returns_empty_list(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-empty@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -544,7 +528,7 @@ async def test_list_compliance_documents_empty_returns_empty_list(client):
 
 
 async def test_list_compliance_documents_paginates_with_cursor(client):
-    admin = await _register_and_login(client, "Acme Construction", "cd-list-page@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "cd-list-page@acme.test")
     create = await _create_subcontractor(client, admin)
     assert create.status_code == 201, create.text
     subcontractor_id = create.json()["id"]
@@ -595,7 +579,7 @@ async def test_list_compliance_documents_paginates_with_cursor(client):
 
 
 async def test_admin_can_update_a_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-patch@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-patch@acme.test")
     created = await _create_subcontractor(client, admin)
     subcontractor_id = created.json()["id"]
 
@@ -616,7 +600,7 @@ async def test_updating_with_an_explicit_null_clears_a_nullable_field(client):
     """`exclude_unset`, not `exclude_none`: sending `null` must CLEAR the
     field while omitting the key leaves it alone. Under `exclude_none` the
     two are indistinguishable and clearing becomes impossible."""
-    admin = await _register_and_login(client, "Acme Construction", "sub-patch-null@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-patch-null@acme.test")
     created = await _create_subcontractor(client, admin)
     subcontractor_id = created.json()["id"]
 
@@ -631,7 +615,7 @@ async def test_updating_with_an_explicit_null_clears_a_nullable_field(client):
 
 
 async def test_updating_with_an_empty_body_is_rejected(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-patch-empty@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-patch-empty@acme.test")
     created = await _create_subcontractor(client, admin)
 
     response = await client.patch(
@@ -641,7 +625,7 @@ async def test_updating_with_an_empty_body_is_rejected(client):
 
 
 async def test_non_admin_cannot_update_a_subcontractor(client):
-    admin = await _register_and_login(client, "Acme Construction", "sub-patch-rbac@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "sub-patch-rbac@acme.test")
     pm = await _invite_and_login_as(client, admin, "project_manager", "sub-patch-pm@acme.test")
     created = await _create_subcontractor(client, admin)
 
@@ -654,8 +638,8 @@ async def test_non_admin_cannot_update_a_subcontractor(client):
 
 
 async def test_updating_another_tenants_subcontractor_is_a_404(client):
-    a = await _register_and_login(client, "Company A", "sub-patch-cross-a@acme.test")
-    b = await _register_and_login(client, "Company B", "sub-patch-cross-b@acme.test")
+    a = await register_and_login(client, "Company A", "sub-patch-cross-a@acme.test")
+    b = await register_and_login(client, "Company B", "sub-patch-cross-b@acme.test")
     theirs = await _create_subcontractor(client, b)
 
     response = await client.patch(

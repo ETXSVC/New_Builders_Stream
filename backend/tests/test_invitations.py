@@ -1,26 +1,12 @@
 from datetime import datetime, timedelta, timezone
+from tests.conftest import register_and_login
 
 
-async def _register_and_login(client, company_name, email):
-    register = await client.post(
-        "/auth/register",
-        json={
-            "company_name": company_name,
-            "admin_full_name": "Test Admin",
-            "admin_email": email,
-            "admin_password": "supersecret123",
-        },
-    )
-    login = await client.post("/auth/login", json={"email": email, "password": "supersecret123"})
-    body = login.json()
-    return {
-        "company_id": register.json()["company_id"],
-        "headers": {"Authorization": f"Bearer {body['access_token']}"},
-    }
+
 
 
 async def test_admin_can_invite_a_user(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin@acme.test")
 
     response = await client.post(
         "/invitations",
@@ -35,7 +21,7 @@ async def test_admin_can_invite_a_user(client):
 
 
 async def test_invitation_rejects_invalid_role(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin2@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin2@acme.test")
 
     response = await client.post(
         "/invitations",
@@ -46,7 +32,7 @@ async def test_invitation_rejects_invalid_role(client):
 
 
 async def test_accept_invitation_creates_user_and_membership(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin3@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin3@acme.test")
 
     invite = await client.post(
         "/invitations",
@@ -67,7 +53,7 @@ async def test_accept_invitation_creates_user_and_membership(client):
 
 
 async def test_accept_expired_invitation_is_rejected(client, monkeypatch):
-    admin = await _register_and_login(client, "Acme Construction", "admin4@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin4@acme.test")
 
     invite = await client.post(
         "/invitations",
@@ -98,7 +84,7 @@ async def test_accept_expired_invitation_is_rejected(client, monkeypatch):
 
 
 async def test_accept_already_accepted_invitation_is_rejected(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin5@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin5@acme.test")
 
     invite = await client.post(
         "/invitations",
@@ -121,7 +107,7 @@ async def test_accept_already_accepted_invitation_is_rejected(client):
 
 
 async def test_accept_invitation_rejects_duplicate_email(client):
-    admin = await _register_and_login(client, "Acme Construction", "admin6@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin6@acme.test")
 
     first_invite = await client.post(
         "/invitations",
@@ -150,7 +136,7 @@ async def test_non_admin_cannot_create_invitations(client):
     (test_deps.py's test_require_role_blocks_non_admin_role has to insert one
     directly via SQL for exactly this reason) — so this is the first place a
     non-admin actually exists to exercise require_role("admin") end-to-end."""
-    admin = await _register_and_login(client, "Acme Construction", "admin7@acme.test")
+    admin = await register_and_login(client, "Acme Construction", "admin7@acme.test")
 
     invite = await client.post(
         "/invitations",
