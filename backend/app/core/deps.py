@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.after_commit import run_after_commit
 from app.core.context import bearer_token_ctx, claimed_tenant_id_ctx
+from app.core.observability import tag_current_tenant
 from app.core.security import InvalidTokenError, decode_access_token
 from app.db import SessionLocal, set_current_tenant, set_current_user
 from app.models import CompanyUser, Subscription, User
@@ -106,6 +107,12 @@ async def get_current_user():
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a member of this company")
 
         await set_current_tenant(session, str(claimed_tenant_uuid))
+
+        # Tag the event scope with the VERIFIED tenant, once membership has
+        # actually been checked above. Deliberately not the X-Tenant-ID
+        # header, which is attacker-controlled (design decision #3) and so
+        # says only what was claimed. A no-op when Sentry is off.
+        tag_current_tenant(claimed_tenant_uuid, membership.role)
 
         # The transaction stays open here — do not commit before yielding.
         # See this function's docstring.

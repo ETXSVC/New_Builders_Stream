@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.core.event_handlers import register_event_handlers
 from app.core.logging import configure_logging
+from app.core.observability import init_error_reporting
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
 from app.core.readiness import probe_database, probe_redis
@@ -37,6 +38,9 @@ from app.routers import (
 )
 
 configure_logging()
+# Before the app object exists, so an error during router import or
+# startup is reported rather than only printed.
+init_error_reporting("api")
 logger = logging.getLogger("app")
 
 # In production the interactive docs/schema endpoints are disabled — the
