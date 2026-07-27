@@ -27,6 +27,40 @@ that changes).
 - A decision on `TZ` — the daily scheduler jobs (compliance expiry 02:00,
   seat usage 03:00, overdue flagging 04:00) fire in this zone; default UTC.
 
+### If the box is LAN-only (no public domain)
+
+Let's Encrypt cannot issue a certificate for a host it cannot reach, so a
+box that is not published to the internet needs `SITE_ADDRESS` set to a
+name ACME will never be asked about — anything under `.local` / `.lan` /
+`.internal`, or a bare IP:
+
+```
+SITE_ADDRESS=builders.lan          # or 192.168.1.50
+FRONTEND_BASE_URL=https://builders.lan
+```
+
+Caddy recognises those as non-public and switches to its **internal CA**
+automatically — still real TLS, still HSTS, no ACME attempt, nothing to
+configure beyond the two values above. Browsers will warn until you trust
+Caddy's root once per client:
+
+```bash
+docker compose -f docker-compose.prod.yml exec caddy \
+  cat /data/caddy/pki/authorities/local/root.crt > builders-root.crt
+# then import builders-root.crt into each machine's trust store
+```
+
+Two consequences worth knowing before you choose this path. `FRONTEND_BASE_URL`
+must still be `https://` — it is what invitation-email links and OAuth
+redirects point at, and the boot validator rejects `http://localhost` but
+cannot tell whether a LAN name resolves for the person clicking the link.
+And smoke-test item 3 (§4) changes shape: the padlock will show a warning
+until the root is trusted, which is expected here rather than a failure.
+
+Move to a real domain later by changing `SITE_ADDRESS` and
+`FRONTEND_BASE_URL` and recreating Caddy; nothing else in the stack knows
+the difference.
+
 ## 2. Server `.env`
 
 Copy `.env.example` to `.env` on the server and set **every** value below.
@@ -96,11 +130,26 @@ and no ownership: same reach, none of the ability to change the rules.
 
 ```bash
 git clone <repo> /opt/builders-stream && cd /opt/builders-stream
-cp .env.example .env   # then edit per the table above
+cp .env.example .env   # then edit per the table above — every value
 docker compose -f docker-compose.prod.yml up -d --build
-# migrations run automatically (the one-shot `migrate` service gates the backend)
-# then do the ALTER ROLE step above, then run the smoke-test checklist
 ```
+
+That is the whole first deploy. The one-shot `migrate` service runs
+`alembic upgrade head` before the backend starts, and migration `0020`
+applies `APP_DB_PASSWORD` / `SCANNER_DB_PASSWORD` from the `.env` you just
+wrote — there is **no manual `ALTER ROLE` step**, contrary to what this
+block used to say. Verify the roles and then run §4's checklist:
+
+```bash
+docker compose -f docker-compose.prod.yml ps          # every service Up/healthy
+docker compose -f docker-compose.prod.yml logs migrate # "Running upgrade ... -> 0022"
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U postgres -d builders_stream -c "\du app_user scanner"
+```
+
+First `up` takes a few minutes — it builds two images from source and
+pulls seven more (Caddy, Postgres, Redis, Prometheus, Grafana,
+Alertmanager, node-exporter, cAdvisor).
 
 ## 4. Smoke-test checklist (run top-to-bottom on the box)
 
