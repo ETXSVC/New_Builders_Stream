@@ -1,6 +1,24 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
+// `next dev` needs 'unsafe-eval' and a production build must never have it.
+//
+// React's development build calls eval() for debugging machinery — most
+// visibly to reconstruct callstacks across environments — and Turbopack's
+// HMR runtime does the same. With the CSP below applied unconditionally,
+// `docker compose up` came up looking healthy and then threw
+// "eval() is not supported in this environment" into the console on every
+// page. React's own message says it plainly: it never uses eval() in
+// production mode.
+//
+// So this is switched on NODE_ENV, which `next dev` sets to "development"
+// and `next build`/`next start` set to "production". The relaxation is
+// exactly one directive, in exactly one mode, and
+// `e2e/security-headers.spec.ts` asserts it is absent from the production
+// build — because a dev-only weakening that silently reaches production is
+// worse than never having relaxed it, and nothing else here would notice.
+const isDevelopment = process.env.NODE_ENV === "development";
+
 // Security headers the APP owns (they describe its own asset origins and
 // apply in dev too). HSTS deliberately lives at the reverse proxy only
 // (deploy/Caddyfile) — it is meaningless without TLS and harmful if the
@@ -9,6 +27,10 @@ import { withSentryConfig } from "@sentry/nextjs";
 // CSP: 'unsafe-inline' for scripts/styles is the honest cost of Next's
 // inline bootstrap without a nonce pipeline; a nonce-based strict CSP is
 // a documented follow-up (docs/11-production-deployment.md), not blocking.
+const scriptSrc = isDevelopment
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+  : "script-src 'self' 'unsafe-inline'";
+
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
@@ -17,7 +39,7 @@ const securityHeaders = [
   {
     key: "Content-Security-Policy",
     value:
-      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+      `default-src 'self'; ${scriptSrc}; style-src 'self' 'unsafe-inline'; ` +
       "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
   },
 ];
