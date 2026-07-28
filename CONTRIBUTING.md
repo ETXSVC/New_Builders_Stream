@@ -31,9 +31,19 @@ npm run build               # this is the typecheck
 npm run test:e2e            # needs the full stack up
 ```
 
-Whole stack: `docker compose up`.
+Whole stack:
 
-Two footguns worth knowing before you lose an hour to them:
+```bash
+docker compose up
+docker compose exec backend alembic upgrade head   # creates the schema
+```
+
+The second line is not optional. The dev stack has no one-shot `migrate`
+service (the production stack does, and gates the backend on it), so `up`
+alone leaves you with six healthy containers and an empty database — and
+the first registration 500s with nothing pointing at why.
+
+Four footguns worth knowing before you lose an hour to them:
 
 - **Python 3.12 is required and 3.11 fails confusingly.** `pip install -e .`
   under 3.11 prints `ERROR: Package requires a different Python` and then
@@ -42,6 +52,17 @@ Two footguns worth knowing before you lose an hour to them:
   `basicConfig(force=True)` at import, which removes the handler pytest
   installs on the root logger. Substitute the module's logger instead —
   `tests/test_financial_record_sync_handler.py` has a worked example.
+- **`localhost` in the DB URLs is host-side only.** `.env` points
+  `MIGRATIONS_DATABASE_URL`/`TEST_DATABASE_URL` at `localhost:5432` because
+  Alembic and pytest normally run on the host. Inside a container that is
+  the container, so `docker-compose.yml` overrides them per-service for
+  `backend` and `worker`. A new service that runs Alembic, or reads
+  `scanner`'s URL, needs the same override — without it you get
+  `Connect call failed ('127.0.0.1', 5432)`, which has now happened twice.
+- **Line endings are LF, enforced by `.gitattributes`.** `deploy/backup/*.sh`
+  are bind-mounted into Linux containers; a CRLF shebang fails there as
+  `/bin/bash^M: bad interpreter`, at 01:30, on the unattended backup job.
+  Do not set `core.autocrlf=true` for this repo.
 
 ## The gates, and what each one is actually protecting
 

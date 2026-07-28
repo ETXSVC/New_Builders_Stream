@@ -60,7 +60,7 @@ Complex workflows span multiple modules (e.g., CRM lead → Project → Estimate
 | `INVOICE_CREATED` | Accounting/Billing (AR), Estimation (auto-drafted deposit invoice on `ESTIMATE_APPROVED`) | Integrations (enqueues sync to every connected accounting provider) |
 | `EXPENSE_CREATED` | Accounting/Billing | Integrations (enqueues sync to every connected accounting provider) |
 | `BILL_CREATED` | Accounting/Billing (AP) | Integrations (enqueues sync to every connected accounting provider) |
-| `PROJECT_COMPLETED` | Project Management | Billing (triggers final invoice), Integrations (enqueues sync to every connected accounting provider) — **not yet implemented**, see [`docs/superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md`](superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md) |
+| `PROJECT_COMPLETED` | Project Management | Billing — drafts a final invoice for the uninvoiced remainder (**implemented**: `app/services/project_completed_handler.py`). Integrations sync on this event is **not yet implemented**, see [`docs/superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md`](superpowers/specs/2026-07-15-integrations-quickbooks-freshbooks-design.md) |
 | `INVOICE_PAID` | Billing | Project Management (unlocks next milestone, if gated) — **not yet implemented** |
 
 This keeps modules loosely coupled: Billing does not need to know CRM's internals, only that an `ESTIMATE_APPROVED` event carries a `project_id` and `approved_total`.

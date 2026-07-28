@@ -17,6 +17,25 @@ This document describes API contracts conceptually. The authoritative, machine-r
 > snapshot is the shape. Where the two disagree, the snapshot wins, and CI's
 > schema-diff gate is what keeps the snapshot honest.
 
+### Operational endpoints (deliberately not product API)
+
+Three routes exist that no client should ever call, and they are split on
+purpose:
+
+| Route | In the OpenAPI snapshot? | Purpose |
+|---|---|---|
+| `GET /health` | yes | Static liveness — is the process serving at all. What a **restart policy** acts on. Deliberately reports no dependency state: a database outage must not restart-loop the backend. |
+| `GET /ready` | yes | Readiness — probes Postgres and Redis, reporting per-dependency status so a failing check names the dependency. What a **load balancer or compose healthcheck** gates on. |
+| `GET /metrics` | **no** | Prometheus exposition (`app/core/metrics.py`). Excluded via `include_in_schema=False`, so — unlike everything else above — it is **not** in the snapshot and not in the generated frontend types. That is the point: it is an operational surface, not part of the product contract, and it should not appear in a client's type definitions. |
+
+`/metrics` is unauthenticated, which is safe only because of where it
+runs: the production reverse proxy fronts the Next BFF alone and never
+routes the backend, and in the split topology `deploy/Caddyfile.api` pins
+a `remote_ip` allowlist. **If the backend is ever published directly, this
+route needs a guard before that happens.** Its two labelling invariants —
+never a tenant label, always the route template — are documented in
+`CLAUDE.md` and enforced by `backend/tests/test_metrics.py`.
+
 ## 1. Conventions
 
 - **Base URL:** `https://api.buildersstream.app/v1` (self-hosted equivalent in non-prod environments).

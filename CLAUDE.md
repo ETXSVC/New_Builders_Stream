@@ -13,7 +13,11 @@ TypeScript). The full design doc set is in `docs/` — start with
 `CONTRIBUTING.md` covers the mechanics of getting a change in — the CI
 gates and what each one is actually protecting, plus two environment
 footguns (Python 3.11 fails `pip install` while exiting 0; `caplog` cannot
-see app loggers). `docs/adr/` indexes the load-bearing decisions and points
+see app loggers). A third lives in `.gitattributes`: the working tree is
+LF on every platform, because `deploy/backup/*.sh` are bind-mounted into
+Linux containers and a CRLF shebang fails there as
+`/bin/bash^M: bad interpreter` — at 01:30, unattended, on the backup job.
+Do not relax that file on a Windows checkout. `docs/adr/` indexes the load-bearing decisions and points
 at the code that records each one — read that index before "fixing"
 anything that looks odd in auth, tenancy, pagination or deployment.
 `docs/14-frontend-architecture.md` covers the frontend, which was
@@ -53,9 +57,25 @@ alembic revision -m "description"          # hand-write the migration body
 
 # Full stack locally (Postgres, Redis, backend, worker, scheduler, frontend)
 docker compose up
+# ...then create the schema. The DEV stack has no one-shot `migrate`
+# service (the prod stack does, and gates the backend on it), so a fresh
+# `up` gives you six healthy containers and an EMPTY database — the first
+# registration 500s with nothing pointing at the cause.
+docker compose exec backend alembic upgrade head
 # Production stack (Caddy TLS, hardened): docker-compose.prod.yml — see
 # docs/11-production-deployment.md; the dev compose above is unchanged
 ```
+
+**`localhost` vs `postgres` in the DB URLs is deliberate, and per-process.**
+`.env` points `MIGRATIONS_DATABASE_URL`/`TEST_DATABASE_URL` at
+`localhost:5432` because Alembic and pytest normally run on the HOST,
+against the port the dev compose publishes. Inside a container `localhost`
+is that container, so `docker-compose.yml` overrides those variables
+per-service to the compose-network hostname — `backend` (for the alembic
+command above) and `worker` (for the daily cross-tenant sweeps). Adding a
+service that runs Alembic or reads `scanner`'s URL means adding the same
+override; forgetting it produces `Connect call failed ('127.0.0.1', 5432)`,
+which has now happened twice.
 
 Test setup notes (see `backend/tests/conftest.py` for the full rationale):
 - The session-scoped `_setup_test_database` fixture drops/recreates a
@@ -324,6 +344,22 @@ after a backend route/schema change, regenerate the snapshot
 (`backend/scripts/export_openapi.py`) and then the types (CI's schema-diff
 gate fails if the snapshot drifts from the code). `marketing-site/` (static HTML/CSS/JS) and `marketing/` (copy docs)
 are a separate, pre-existing marketing site, unrelated to the Next.js app.
+
+Security headers live in `next.config.ts` and apply in dev too, with one
+deliberate exception: **`script-src` gains `'unsafe-eval'` when
+`NODE_ENV === "development"` and must never carry it in production.**
+React's development build and Turbopack's HMR runtime both call `eval()`
+— without the exception, `next dev` throws "eval() is not supported in
+this environment" on every page, which is exactly what an unconditional
+CSP produced. React never uses `eval()` in production, so the relaxation
+buys nothing there and costs the policy its point.
+`e2e/security-headers.spec.ts` asserts every header and, under CI
+specifically, that `'unsafe-eval'` is **absent** — `e2e-ci` builds and
+serves a production frontend, so that assertion runs against the real
+artifact. HSTS is deliberately NOT here: it belongs at Caddy
+(`deploy/Caddyfile`), being meaningless without TLS and harmful over dev
+HTTP. A nonce-based strict CSP that would remove `'unsafe-inline'`
+entirely is a tracked follow-up, not a blocker.
 
 `lib/use-cursor-list.ts` is the shared loader for cursor-paginated lists,
 and the one to reach for in new code. It carries the stale-response guard
