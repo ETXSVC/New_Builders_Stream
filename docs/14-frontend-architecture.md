@@ -127,3 +127,70 @@ backend, except where a spec deliberately forces a failure with
 `failOnFlakyTests` is on in CI: a test that passes on retry **fails the
 job**. Do not weaken this to go green. It has caught two real product bugs
 that a passing check had been hiding, and one wrong assertion of its own.
+
+## 8. Security headers, and the one dev/production difference
+
+`next.config.ts` owns the headers that describe the app's own origins:
+`X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`,
+`Permissions-Policy` (camera/mic/geolocation off) and a CSP. They apply in
+development too — a policy only exercised in production is a policy nobody
+finds out is wrong until it matters.
+
+**HSTS is deliberately not here.** It belongs at Caddy
+(`deploy/Caddyfile`): it is meaningless without TLS and actively harmful
+if emitted over plain HTTP in development.
+
+The CSP has exactly one conditional directive:
+
+```
+script-src 'self' 'unsafe-inline'                  # production
+script-src 'self' 'unsafe-inline' 'unsafe-eval'    # NODE_ENV=development
+```
+
+React's development build and Turbopack's HMR runtime both call `eval()`
+— for callstack reconstruction and module replacement. With the CSP
+applied unconditionally, `next dev` threw *"eval() is not supported in
+this environment"* on every page while the stack otherwise looked healthy.
+React never uses `eval()` in production, so the relaxation buys nothing
+there and costs the policy its entire point.
+
+`e2e/security-headers.spec.ts` asserts the headers are served, that the
+CSP still carries the directives that matter (`frame-ancestors 'none'`,
+`connect-src 'self'`, `default-src 'self'`), and — gated on CI, where the
+frontend is a real `next build` + `next start` — that `'unsafe-eval'` is
+**absent**. A dev-only weakening that silently reaches production is worse
+than never having relaxed it, and without that assertion nothing else in
+the repository would notice.
+
+`'unsafe-inline'` remains for scripts and styles: it is the honest cost of
+Next's inline bootstrap without a nonce pipeline. A nonce-based strict CSP
+is a tracked follow-up in `docs/11-production-deployment.md` §9, not a
+blocker.
+
+## 9. Error reporting and error boundaries
+
+`app/error.tsx` and `app/global-error.tsx` are the route-level and
+root-level React error boundaries; the latter renders its own `<html>` and
+`<body>` because it replaces the root layout when that layout is what
+failed.
+
+Sentry is **off unless a DSN is set**. `next.config.ts` applies
+`withSentryConfig` only when `NEXT_PUBLIC_SENTRY_DSN`/`SENTRY_DSN` is
+present, so a build without one produces exactly the bytes it produced
+before the integration existed — which is what keeps CI and local builds
+unaffected.
+
+Two details are load-bearing:
+
+- **Events tunnel through `/monitoring`, not `ingest.sentry.io`.** The CSP
+  above pins `connect-src 'self'`; a direct POST would be blocked, and
+  widening `connect-src` for every page to suit telemetry is the wrong
+  trade. Tunnelling also survives ad blockers, which routinely block known
+  telemetry hosts. Cost: a total frontend outage reports nothing —
+  server-side errors still report directly via `instrumentation.ts`, so
+  the outage itself is not silent.
+- **`sentry.shared.ts` scrubs query strings before anything leaves.**
+  `SENSITIVE_QUERY_KEYS` includes a bare `id`, and that is not
+  over-caution: the invitation-accept page reads its one-time credential
+  from `?id=`. A key list written from memory misses that — this one did,
+  until `e2e/sentry-scrubbing.spec.ts` caught it against real URL shapes.
