@@ -46,6 +46,16 @@ test.describe("security headers", () => {
 
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
+    // The estimate PDF preview is an <iframe> pointing at a blob: URL
+    // (PdfPanel.tsx). `frame-src` falls back through `child-src` to
+    // `default-src 'self'`, which does not cover blob: — omitting this
+    // directive replaced the preview with the browser's "This content is
+    // blocked" placeholder, and the app reported nothing because nothing
+    // in the app had failed.
+    expect(csp, "frame-src must allow blob: or the PDF preview is blocked").toContain(
+      "frame-src 'self' blob:"
+    );
+    expect(csp).toContain("object-src 'none'");
     // connect-src 'self' is load-bearing beyond itself: it is the reason
     // Sentry is tunnelled through /monitoring rather than posting to
     // ingest.sentry.io (see next.config.ts). Widening it would quietly
