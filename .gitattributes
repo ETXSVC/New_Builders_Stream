@@ -1,0 +1,55 @@
+# Line endings. Everything in this repository is consumed by Linux — the
+# containers, CI, and the production box — so the working tree is LF
+# everywhere, on every platform.
+#
+# This is not a style preference. Git on Windows defaults to
+# `core.autocrlf=true`, which rewrites LF to CRLF on checkout. Four shell
+# scripts under deploy/backup/ are bind-mounted straight into Linux
+# containers (`db-backup` mounts backup.sh), and a CRLF shebang line there
+# does not produce a readable error — it produces:
+#
+#     /backup.sh: line 2: $'\r': command not found
+#     /bin/bash^M: bad interpreter: No such file or directory
+#
+# on the first nightly backup, i.e. at 01:30, unattended, on the one job
+# whose whole purpose is running unattended. The same applies to the
+# Dockerfiles, the compose files, and the Caddyfile: all are read by Linux
+# tooling that treats a trailing \r as part of the value.
+#
+# The index is already pure LF (this repo was authored on Linux), so
+# adding this changes no file content — it only guarantees a Windows
+# checkout matches. If a CRLF file ever does sneak in, fix it with:
+#
+#     git add --renormalize .
+#
+# See docs/11-production-deployment.md for the deployment these files feed.
+
+* text=auto eol=lf
+
+# Belt and braces for the files where CRLF is actively breaking rather
+# than merely untidy — spelled out so the reason survives someone
+# relaxing the blanket rule above.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+Caddyfile*      text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.env.example    text eol=lf
+
+# Binary, so git never tries to translate anything inside them.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.woff   binary
+*.woff2  binary
+*.dump   binary
+
+# Generated, and reviewed as artifacts rather than read line by line.
+# Collapsing them keeps a dependency bump's diff legible.
+frontend/package-lock.json  linguist-generated=true
+backend/openapi.json        linguist-generated=true
+frontend/lib/api/types.ts   linguist-generated=true
