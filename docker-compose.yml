@@ -30,6 +30,23 @@ services:
       context: ./backend
       target: dev
     env_file: .env
+    environment:
+      # Alembic is the only thing that reads MIGRATIONS_DATABASE_URL
+      # (tests/test_worker_db_roles.py asserts no app/ module does), and
+      # `.env` points it at `localhost:5432` on purpose — that is where it
+      # resolves for a developer running `alembic upgrade head` on the
+      # HOST, against the port this compose file publishes.
+      #
+      # Inside this container, localhost is the container. So
+      # `docker compose exec backend alembic upgrade head` — the command
+      # README gives for bootstrapping a fresh stack, and the only thing
+      # that creates the schema, since the dev stack has no one-shot
+      # `migrate` service the way docker-compose.prod.yml does — failed
+      # with connection refused against an empty database.
+      #
+      # The `worker` service below already carries this same override for
+      # the same reason. The backend was simply missed.
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     depends_on:
       postgres:
         condition: service_healthy
