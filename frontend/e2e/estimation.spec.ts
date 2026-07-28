@@ -4,6 +4,20 @@ import { test, expect, request as playwrightRequest } from "@playwright/test";
 const BACKEND_URL = process.env.E2E_BACKEND_URL ?? "http://localhost:8000";
 
 test("estimation and e-signature: catalog, builder, PDF, client sign-off, change order", async ({ page }) => {
+  // A CSP violation is invisible to every other assertion in this file:
+  // the browser blocks the resource, the app throws nothing, and the page
+  // still "works" apart from the hole where the content should be. That
+  // is exactly how a missing `frame-src blob:` shipped — the PDF panel
+  // rendered the browser's "This content is blocked" placeholder while
+  // this spec went green on the Download button next to it.
+  await page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      (window as unknown as { __csp: string[] }).__csp ??= [];
+      (window as unknown as { __csp: string[] }).__csp.push(
+        `${e.violatedDirective} blocked ${e.blockedURI}`
+      );
+    });
+  });
   test.setTimeout(240_000);
 
   const suffix = randomUUID().slice(0, 8);
@@ -70,6 +84,27 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
   await test.step("export and download the PDF", async () => {
     await page.getByRole("button", { name: "Generate PDF" }).click();
     await expect(page.getByRole("button", { name: "Download" })).toBeVisible({ timeout: 30_000 });
+
+    // The Download button appearing only proves the worker finished. The
+    // preview is a separate claim: an <iframe> pointing at a blob: URL,
+    // which the CSP has to permit via frame-src. Assert the frame exists,
+    // is really a blob, and — the part that catches a block — that the
+    // browser reported no policy violation while rendering it.
+    const frame = page.locator('iframe[title="Estimate PDF"]');
+    await expect(frame).toBeVisible({ timeout: 15_000 });
+    await expect(frame).toHaveAttribute("src", /^blob:/);
+
+    const violations = await page.evaluate(
+      () => (window as unknown as { __csp?: string[] }).__csp ?? []
+    );
+    expect(violations, "the CSP blocked something while rendering the PDF preview").toEqual([]);
+  });
+
+  await test.step("no CSP violation anywhere in the flow so far", async () => {
+    const violations = await page.evaluate(
+      () => (window as unknown as { __csp?: string[] }).__csp ?? []
+    );
+    expect(violations).toEqual([]);
   });
 
   await test.step("send for signature", async () => {

@@ -40,7 +40,22 @@ const securityHeaders = [
     key: "Content-Security-Policy",
     value:
       `default-src 'self'; ${scriptSrc}; style-src 'self' 'unsafe-inline'; ` +
-      "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'",
+      "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; " +
+      // The estimate PDF preview is `<iframe src={URL.createObjectURL(...)}>`
+      // (components/estimates/PdfPanel.tsx) — the PDF is fetched with the
+      // bearer token and turned into a blob, because an <iframe> cannot
+      // carry an Authorization header. `frame-src` falls back through
+      // `child-src` to `default-src 'self'`, which does NOT cover `blob:`,
+      // so the panel rendered "This content is blocked. Contact the site
+      // owner to fix the issue" — a browser-level block, with the app
+      // reporting no error because nothing in it failed. `img-src` already
+      // allowed `blob:`; frames were simply missed.
+      "frame-src 'self' blob:; " +
+      // Nothing in this app uses <object>/<embed>. Without this they would
+      // inherit `default-src 'self'`, which permits same-origin plugin
+      // content; 'none' is free here and removes the surface entirely.
+      "object-src 'none'; " +
+      "frame-ancestors 'none'",
   },
 ];
 
