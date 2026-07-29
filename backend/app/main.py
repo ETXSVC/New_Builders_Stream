@@ -28,6 +28,8 @@ from app.routers import (
     invitations,
     invoices,
     leads,
+    platform_auth,
+    platform_tenants,
     projects,
     reports,
     subcontractor_assignments,
@@ -113,6 +115,13 @@ app.include_router(reports.router)
 app.include_router(webhooks.router)
 app.include_router(integrations.router)
 app.include_router(dashboard.router)
+# Platform console (migration 0023). Registered last because nothing else
+# claims a `/platform` prefix, so ordering carries no meaning here — unlike
+# the branding/companies pair above. These routes authenticate through
+# `get_platform_admin`, NOT `get_current_user`, and a token minted by
+# /auth/login can never reach them.
+app.include_router(platform_auth.router)
+app.include_router(platform_tenants.router)
 
 # Task 1.18: wires the real LEAD_WON -> draft-Project handler into
 # app.core.events for actual requests served by this app instance. Called

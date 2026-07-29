@@ -54,6 +54,19 @@ class Settings(BaseSettings):
     # verification is the runbook's job; the fallback is a migration aid,
     # not the intended end state.
     scanner_database_url: str | None = None
+    # Connection string for the `platform_admin` role (migration 0023): the
+    # cross-tenant console's connection. BYPASSRLS like `scanner`, because
+    # listing every tenant is the whole job, but far narrower on writes —
+    # SELECT everywhere plus DML on `company_module_overrides`, UPDATE on
+    # `subscriptions` and INSERT on `audit_log`, and nothing else.
+    #
+    # Deliberately NO fallback to another URL, unlike scanner_database_url
+    # above. That fallback exists so an upgrading deployment's worker keeps
+    # running; there is no equivalent here, because this feature did not
+    # exist before this setting did. Leaving it unset disables the platform
+    # console (every route 503s) rather than quietly running it with wider
+    # privileges than it should have — see app/core/platform_db.py.
+    platform_database_url: str | None = None
     # Connection-pool sizing for the runtime engine (app/db.py). Explicit
     # rather than SQLAlchemy's defaults (5 + 10) because a transaction is
     # held open for the whole request here, so the pool size IS the
@@ -69,6 +82,12 @@ class Settings(BaseSettings):
     # docs/07 Section 1: access tokens are short-lived; refresh tokens
     # (Task 6.2+) carry the long-lived session. 15 is the spec's number.
     jwt_expire_minutes: int = 15
+    # Platform-console sessions (migration 0023). Shorter than a tenant
+    # session's practical lifetime because the blast radius is different:
+    # this token reaches every tenant's subscription state, and there is no
+    # refresh-token flow behind it — when it expires the operator signs in
+    # again, password plus TOTP.
+    platform_jwt_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
     redis_url: str = "redis://localhost:6379/0"
     # Local-filesystem root for Document uploads (Task 1.15, design decision

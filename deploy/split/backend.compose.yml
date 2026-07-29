@@ -95,6 +95,12 @@ services:
     env_file: .env
     environment:
       APP_ENV: production
+      # The `platform_admin` role (migration 0023) — same reasoning, and the
+      # same non-optionality, as docker-compose.prod.yml's backend service:
+      # app/config.py gives this setting NO fallback, so an unset value means
+      # every /platform route 503s. This split topology serves the same API,
+      # so it needs the same wiring.
+      PLATFORM_DATABASE_URL: postgresql+asyncpg://platform_admin:${PLATFORM_DB_PASSWORD:-platform_password}@postgres:5432/${POSTGRES_DB}
     volumes:
       - ${DOCUMENTS_DIR:?host path for document storage, e.g. /opt/builders-documents}:/data/documents
     networks: [builders-net]

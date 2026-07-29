@@ -137,6 +137,18 @@ async def _sync_subscription(
                     current_period_end, tz=timezone.utc
                 )
 
+            if subscription.manual_status_override:
+                # A platform admin set this status by hand (migration 0023).
+                # This handler is otherwise last-write-wins, so without this
+                # guard the next routine customer.subscription.updated event
+                # would revert the operator's decision silently — no error,
+                # nothing in the logs, the change simply stops being true.
+                # current_period_end above is still applied: that is Stripe's
+                # own fact to own, and suppressing it would leave the row
+                # claiming a period that has passed. Clearing the override in
+                # the console hands `status` back to Stripe.
+                return
+
             if previous_status == new_status:
                 # No actual status change — could be a genuine redelivery,
                 # or a legitimate renewal event that only advances

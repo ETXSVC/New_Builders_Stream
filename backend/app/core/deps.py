@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.after_commit import run_after_commit
 from app.core.context import bearer_token_ctx, claimed_tenant_id_ctx
 from app.core.observability import tag_current_tenant
-from app.core.security import InvalidTokenError, decode_access_token
+from app.core.security import TENANT_SCOPE, InvalidTokenError, decode_access_token
 from app.db import SessionLocal, set_current_tenant, set_current_user
 from app.models import CompanyUser, Subscription, User
 
@@ -70,6 +70,14 @@ async def get_current_user():
     try:
         payload = decode_access_token(token)
     except InvalidTokenError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+    # A platform-console token must never authenticate an ordinary API
+    # request (migration 0023). Written as an allow-list rather than
+    # `!= PLATFORM_SCOPE` so a scope added later fails closed here instead
+    # of silently inheriting tenant access; the default covers tokens minted
+    # before the claim existed, which stay valid until they expire.
+    if payload.get("scope", TENANT_SCOPE) != TENANT_SCOPE:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
 
     user_id = uuid.UUID(payload["sub"])

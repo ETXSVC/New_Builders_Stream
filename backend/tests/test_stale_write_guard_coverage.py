@@ -58,6 +58,13 @@ UNGUARDABLE = {
     "/companies/members/{user_id}": "company_users has no updated_at column",
     "/markup-profiles/{profile_id}": "markup_profiles has no timestamp columns",
     "/subcontractors/{subcontractor_id}": "subcontractors has no updated_at column",
+    # `subscriptions` has no created_at/updated_at either — app/models/
+    # subscription.py says so explicitly, following docs/04 Section 7's DDL.
+    # The console's own concurrency story is different anyway: two operators
+    # editing one tenant's plan is not the race this guard exists for, and
+    # `manual_status_override` (migration 0023) is what stops the genuine
+    # conflicting writer here, POST /webhooks/stripe, from reverting them.
+    "/platform/companies/{company_id}/subscription": "subscriptions has no updated_at column",
 }
 
 
@@ -138,7 +145,7 @@ def test_patch_route_count_is_pinned():
     turns that into a failure — the same reasoning, and the same lesson,
     behind test_tier_gating.py's own pinned count."""
     routes = _patch_routes()
-    assert len(routes) == 13, (
+    assert len(routes) == 14, (
         f"PATCH route count changed: {len(routes)} (paths: {sorted(routes)!r}). "
         "If a route was genuinely added or removed, update this literal AND "
         "classify it above. If the count collapsed, the introspection broke "
