@@ -151,7 +151,31 @@ never a tenant label, always the route template — are documented in
 | `/webhooks/stripe` | Stripe | Subscription lifecycle events (payment succeeded/failed, plan changed) |
 | `/webhooks/esignature-provider` | E-signature provider (if a third-party service is used instead of a built-in flow) | Signature completed/declined |
 
-## 10. Security Requirements on Every Endpoint
+## 10. Platform Console (Cross-Tenant Administration)
 
-- Every route (except `/auth/*` and public webhook receivers) requires a valid JWT resolving to an active `company_users` membership with sufficient role, enforced by a FastAPI dependency, in addition to the database-level RLS policy (defense in depth — see [Security & Compliance](07-security-compliance.md)).
+`/platform/*` is the only surface that spans tenants. It does **not** use the
+authentication described in Section 11 below — a token minted by `/auth/login`
+can never reach it, and a token minted here can never reach anything else.
+
+| Route | Purpose |
+|---|---|
+| `POST /platform/auth/login` | Password + TOTP → a `scope: "platform"` token. Refuses any account without an activated second factor. |
+| `POST /platform/auth/mfa/enroll` | Password-gated. Returns the TOTP secret once. |
+| `POST /platform/auth/mfa/activate` | Confirms enrolment with a live code. |
+| `GET /platform/companies` | Every tenant, cursor-paginated — tier, status, seat count, whether writes are enabled. |
+| `GET /platform/companies/{company_id}` | One tenant, plus per-module entitlements and child branches. |
+| `PATCH /platform/companies/{company_id}/subscription` | Change tier, status or seats. Setting `status` by hand sets `manual_status_override`, which stops the Stripe webhook reverting it; `clear_manual_status_override` hands control back. |
+| `PUT /platform/companies/{company_id}/modules/{module}` | Grant (`enabled: true`) or withhold (`enabled: false`) a module, overriding the tier. |
+| `DELETE /platform/companies/{company_id}/modules/{module}` | Remove the override; entitlement reverts to the tier. |
+
+Entitlements are held by the **root** company, so targeting a child branch is
+refused by name (400) rather than silently redirected to its root — changing a
+root changes every branch in that tree, and that should be an explicit act.
+
+There is no route that grants platform privilege; see
+[Database Schema](04-database-schema.md), Section 9.
+
+## 11. Security Requirements on Every Endpoint
+
+- Every route (except `/auth/*`, `/platform/*` and public webhook receivers) requires a valid JWT resolving to an active `company_users` membership with sufficient role, enforced by a FastAPI dependency, in addition to the database-level RLS policy (defense in depth — see [Security & Compliance](07-security-compliance.md)).
 - Webhook receivers verify provider signatures (e.g., Stripe's `Stripe-Signature` header) before processing.

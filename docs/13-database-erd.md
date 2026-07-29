@@ -1,10 +1,10 @@
 # Database ERD
 
-Generated from the **live schema** — a scratch database with all 22 Alembic
+Generated from the **live schema** — a scratch database with all 23 Alembic
 migrations applied — rather than from the ORM models or by hand, so it cannot
 quietly drift from what `alembic upgrade head` actually produces.
 
-**37 tables** (excluding `alembic_version`).
+**39 tables** (excluding `alembic_version`).
 
 ## Read this first: the tenant boundary is in the database
 
@@ -14,12 +14,19 @@ application code. Every tenant table carries `company_id` and a `FOR ALL`
 policy scoped by `get_all_descendant_ids(current_setting('app.current_tenant'))`,
 so a query that forgets to filter by company still cannot cross tenants.
 
-- RLS enabled: **35 of 37** tables
+- RLS enabled: **37 of 39** tables
 - Deliberately without RLS: `refresh_tokens`, `users`
 
 `users` is global by design (one person may belong to several companies, and
 login happens before any tenant is known); `refresh_tokens` hangs off `users`
 and is looked up by token hash, never by tenant.
+
+`platform_admins` (migration 0023) is the one table with RLS enabled but **no
+`company_id`** — a platform administrator belongs to no tenant, so the usual
+policy would be meaningless. Its policy is scoped to the caller's own user id
+instead, so the request path can ask "am I a platform admin?" without being
+able to enumerate who else is. See [Database Schema](04-database-schema.md),
+Section 9.
 
 `companies.parent_id` self-references to form the branch hierarchy, and is
 **immutable** — migration 0021 enforces that with a trigger, because
@@ -505,6 +512,43 @@ erDiagram
 
     integration_connections ||--o{ integration_sync_records : "connection_id"
 ```
+
+## Platform administration
+
+The one group that sits *above* the tenant hierarchy rather than inside it.
+Neither table is writable by `app_user` or `scanner` — migration 0023 revokes
+`INSERT/UPDATE/DELETE` on both — so no HTTP request or background job can
+grant platform privilege or edit an entitlement.
+
+```mermaid
+erDiagram
+    platform_admins {
+        uuid id "PK"
+        uuid user_id "FK — no company_id: belongs to no tenant"
+        uuid granted_by "FK"
+        timestamptz granted_at
+        timestamptz revoked_at "NULL = active; re-checked every request"
+        text note
+    }
+    company_module_overrides {
+        uuid id "PK"
+        uuid company_id "FK — always a ROOT company"
+        varchar module
+        boolean enabled "true grants, false withholds, no row defers to tier"
+        text note
+        uuid set_by "FK"
+        timestamptz created_at
+    }
+
+    users ||--o{ platform_admins : "user_id"
+    companies ||--o{ company_module_overrides : "company_id"
+```
+
+`enabled` is three-state on purpose, and the middle state is why the column
+cannot simply be a boolean flag on `subscriptions`: **no row** means "use the
+tier", `true` grants a module the tier would withhold, and `false` withholds
+one the tier would grant. Collapsing the first two would make "off"
+unexpressible.
 
 ## Cross-domain foreign keys
 

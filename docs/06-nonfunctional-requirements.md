@@ -16,7 +16,7 @@
 ## 2. Scalability
 
 - Must support **1,000+ company tenants** on shared-schema PostgreSQL without per-tenant infrastructure.
-- Indexing strategy (see [Database Schema](04-database-schema.md), Section 9) must keep core list/detail queries performant as row counts grow into the millions.
+- Indexing strategy (see [Database Schema](04-database-schema.md), Section 10) must keep core list/detail queries performant as row counts grow into the millions.
 - **Trigger for revisiting the recursive RLS lookup:** if `EXPLAIN ANALYZE` on `get_all_descendant_ids` shows measurable latency (baseline: establish this once real company-tree depth/fan-out data exists — do not pre-optimize before that), cache the permitted tenant-ID set in the session/JWT instead of recomputing per request.
 - **Trigger for extracting a module into its own service:** a module's background job queue depth or CPU usage disproportionately dominates the shared backend's resource budget, as observed via the Section 5 monitoring below — not before.
 

@@ -44,7 +44,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (1049 tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (1070 tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test
@@ -178,7 +178,8 @@ time.
 
 `backend/app/main.py` wires together one router per bounded module (`auth`,
 `leads`, `projects`, `estimates`, `compliance`, `invoices`/`bills`/`expenses`,
-`integrations`, `subscriptions`, ...). Router include order occasionally
+`integrations`, `subscriptions`, `platform_auth`/`platform_tenants`, ...).
+Router include order occasionally
 matters: `branding.router` is registered before `companies.router` because
 Starlette matches routes by registration order, and `companies.router`'s
 generic `/companies/{company_id}` would otherwise shadow `branding.router`'s
@@ -260,10 +261,55 @@ Write routes commonly compose three independent, orthogonal dependencies:
   method-sniffing shortcut, since the routes needing the gate most are GETs.
   A missing subscription row fails **open** in both `block_if_read_only` and
   `tier_allows` (treated as an unreachable state, not defended against).
+  Since migration 0023 a per-tenant **override** takes precedence over the
+  tier — see the platform console below. `_module_allowed` is the single
+  place that resolves this, so `require_module`, the OAuth callback and the
+  event handlers cannot drift apart on what a tenant may use.
 
 All three depend on `get_current_user`, which FastAPI caches per-request by
 callable+params, so stacking them doesn't cost extra JWT decodes or DB
 round trips.
+
+### The platform console: a trust tier above every tenant
+
+`/platform/*` (migration 0023) is cross-tenant administration — changing a
+customer's plan, status or module entitlements without a psql session. It is
+deliberately built *beside* the product's auth path rather than inside it,
+and the separation is the design:
+
+- **A different dependency.** `get_platform_admin` (`app/core/platform_deps.py`),
+  not `get_current_user`. Adding cross-tenant administration required no
+  change to the most security-critical function in the codebase beyond a
+  two-line scope check that *narrows* what it accepts.
+- **A different token.** `create_platform_token` mints `scope: "platform"`
+  and carries **no** `default_company_id`, so it cannot name a tenant even if
+  the scope check were bypassed. `get_current_user` reads `scope` as an
+  allow-list (defaulting to `tenant`), so a scope added later fails closed
+  there rather than silently inheriting tenant access.
+- **A different database role.** `platform_admin` (BYPASSRLS, owning
+  nothing) — SELECT everywhere, DML on `company_module_overrides`, UPDATE on
+  `subscriptions`, INSERT on `audit_log`, nothing else. `PLATFORM_DATABASE_URL`
+  has **no fallback**: unset disables the console (every route 503s) rather
+  than quietly running it on a wider connection.
+- **Privilege is re-checked every request**, not baked into the token, so
+  revoking takes effect within one request rather than one token lifetime.
+  That check reads through the ordinary RLS-scoped `app_user` connection
+  under a `self_read` policy — a caller can ask "am *I* an admin?" without
+  being able to enumerate who else is.
+- **No route grants the privilege.** `platform_admins` revokes writes from
+  both `app_user` and `scanner`, so escalation into this tier is removed as a
+  category rather than defended against. Minting an account is
+  `backend/scripts/grant_platform_admin.py` (table owner, so: database access
+  and a shell), and the account still cannot sign in until it enrols TOTP.
+
+Two behaviours worth knowing before touching this area: overrides are
+**three-state** (`true` grants what the tier withholds, `false` withholds
+what it grants, no row defers to the tier — collapsing the first two makes
+"off" unexpressible), and `subscriptions.manual_status_override` exists
+because `POST /webhooks/stripe` is otherwise last-write-wins on `status` —
+without it the next routine `customer.subscription.updated` silently reverts
+an operator's change. Entitlement changes are audited into the **target
+tenant's** `audit_log`, not a separate platform log.
 
 ### Cross-module communication: in-process synchronous event bus
 
@@ -406,6 +452,13 @@ suites that matter architecturally:
 - `test_worker_db_roles.py` — no `app/` module may read
   `migrations_database_url` (AST sweep), `scanner` holds BYPASSRLS and
   nothing else, and `companies.parent_id` cannot change.
+- `test_platform_admin.py` — the two-way boundary between the product API
+  and the platform console, asserted from both sides: a product token
+  cannot reach `/platform` and a platform token cannot reach the product
+  API, and being a platform admin does **not** elevate that user's ordinary
+  token. It also asserts the grant model at the database level — that no
+  runtime role can write `platform_admins` or `company_module_overrides` —
+  which is the part a route-level test would miss entirely.
 - `test_migration_downgrade.py` — walks the migration chain to `base` and
   back to `head` on a scratch database. The re-upgrade is the half that
   matters: it proves a downgrade actually removed things rather than merely

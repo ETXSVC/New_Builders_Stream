@@ -285,7 +285,14 @@ CREATE TABLE subscriptions ( -- Builders Stream's own SaaS billing, distinct fro
     stripe_subscription_id VARCHAR(255) NOT NULL,
     tier VARCHAR(20) NOT NULL CHECK (tier IN ('starter','pro','enterprise')),
     status VARCHAR(20) NOT NULL,
-    current_period_end TIMESTAMPTZ
+    current_period_end TIMESTAMPTZ,
+    -- Set when a platform admin edits `status` by hand (Section 9). The
+    -- Stripe webhook is otherwise last-write-wins on this column, so
+    -- without this flag the next routine customer.subscription.updated
+    -- event silently reverts the operator's change. While it is set the
+    -- webhook still applies current_period_end — Stripe's own fact to own
+    -- — and leaves status alone.
+    manual_status_override BOOLEAN NOT NULL DEFAULT false
 );
 
 CREATE TABLE invoices ( -- client-facing project invoices (AR)
@@ -386,8 +393,71 @@ CREATE TABLE audit_log (
 CREATE INDEX idx_audit_log_company_created ON audit_log(company_id, created_at DESC);
 ```
 
-## 9. Indexing & RLS Notes
+## 9. Platform Administration (Cross-Tenant, migration 0023)
+
+These two tables sit *above* the tenant hierarchy rather than inside it, and
+each breaks one of this document's otherwise-universal rules on purpose.
+
+```sql
+-- Who may operate the cross-tenant console. NO company_id: a platform
+-- admin belongs to no tenant, which is the point — the usual
+-- `company_id`-scoped policy would be meaningless here.
+CREATE TABLE platform_admins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    granted_by UUID REFERENCES users(id),
+    granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ, -- NULL = active; checked on EVERY request
+    note TEXT
+);
+ALTER TABLE platform_admins ENABLE ROW LEVEL SECURITY;
+-- Scoped to the caller's own id, not a tenant: it exists so the request
+-- path can answer "am I a platform admin?" without being able to
+-- enumerate who else is.
+CREATE POLICY self_read ON platform_admins FOR SELECT
+    USING (user_id = current_setting('app.current_user_id', true)::uuid);
+
+-- Per-tenant entitlement overrides. Three-state by design: a row with
+-- enabled = true GRANTS a module the plan withholds, enabled = false
+-- WITHHOLDS one the plan grants, and no row at all defers to the tier.
+CREATE TABLE company_module_overrides (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID NOT NULL REFERENCES companies(id), -- always a ROOT company
+    module VARCHAR(50) NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    note TEXT,
+    set_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_company_module_overrides_company_module UNIQUE (company_id, module)
+);
+ALTER TABLE company_module_overrides ENABLE ROW LEVEL SECURITY;
+-- get_root_company_id, not get_all_descendant_ids: entitlements are held
+-- by the root, so a child branch reads its root's row (the same
+-- upward-visibility shape `subscriptions` uses).
+CREATE POLICY tenant_isolation ON company_module_overrides FOR ALL
+    USING (company_id = get_root_company_id(NULLIF(current_setting('app.current_tenant', true), '')::uuid))
+    WITH CHECK (company_id = get_root_company_id(NULLIF(current_setting('app.current_tenant', true), '')::uuid));
+```
+
+**Neither table is writable from the application.** Migration 0023 revokes
+`INSERT, UPDATE, DELETE` on both from `app_user` (the request path) *and*
+`scanner` (the worker), so there is no code path reachable from an HTTP
+request or a background job that can grant platform privilege or edit an
+entitlement — privilege escalation into this tier is removed as a category
+rather than defended against with a role check. Writes come from a fourth
+database role, `platform_admin` (LOGIN, BYPASSRLS, owning nothing): SELECT
+everywhere, DML on `company_module_overrides`, UPDATE on `subscriptions`,
+INSERT on `audit_log`, and nothing else. Granting the privilege itself is
+`backend/scripts/grant_platform_admin.py`, which runs as the table owner
+and therefore requires database access and a shell.
+
+Entitlement changes are audited into the **target tenant's** `audit_log`,
+not a separate platform log, so a customer-facing "why did this change?"
+question is answerable from the same place every other change is.
+
+## 10. Indexing & RLS Notes
 
 - Every `company_id` foreign key column should be indexed; most access patterns filter or join on it.
-- RLS policies for every table in Sections 3–6 and 8 follow the identical pattern shown in Section 3 — omitted per-table above for brevity, but is a **mandatory** part of each table's migration, not optional.
+- RLS policies for every table in Sections 3–6 and 8 follow the identical pattern shown in Section 3 — omitted per-table above for brevity, but is a **mandatory** part of each table's migration, not optional. Section 9's two tables are the documented exceptions and spell their policies out in full.
+- Adding a tenant table means adding its policy in the same migration. This is enforced, not trusted: `tests/test_rls_policy_coverage.py` sweeps every table Postgres reports and fails on one that has no policy, a policy that does not actually scope by the tenant tree, or no `company_id` column and no explicit declaration that it holds no tenant data.
 - `estimate_line_items.unit_rate_snapshot` and `cost_catalog_items.unit_rate` are intentionally separate columns — this is what implements the historical-immutability rule from [Functional Requirements](02-functional-requirements.md), Section 4.

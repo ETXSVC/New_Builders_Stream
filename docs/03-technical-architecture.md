@@ -94,6 +94,29 @@ RLS is the **primary** enforcement mechanism, not just a code-level `WHERE compa
 - Frontend attaches `Authorization: Bearer <jwt>` and, for multi-company users, an `X-Tenant-ID` header indicating the "active branch" selected in the UI.
 - Backend middleware validates both before any module logic executes; requests without a resolvable tenant context are rejected (except public/auth routes).
 
+*As built:* the middleware does not validate anything — it has no database
+session. It only extracts the bearer token and `X-Tenant-ID` into contextvars;
+the claimed tenant is **verified** in the `get_current_user` dependency, which
+looks up the caller's `company_users` membership for that company before
+setting the tenant GUC. That ordering is what stops a spoofed `X-Tenant-ID`
+from granting cross-tenant access.
+
+### 5.4 The one surface that is deliberately not tenant-scoped
+
+Everything above describes requests made *by a tenant*. Cross-tenant
+administration — changing a customer's plan or module entitlements — cannot
+work that way, and is built as a separate surface rather than as an exception
+inside this one (migration 0023, [API Spec](05-api-specification.md),
+Section 10).
+
+It gets its own authentication dependency, its own token scope carrying no
+company claim, and its own database role (`platform_admin`: BYPASSRLS, owning
+nothing, with write grants on exactly three tables). None of the machinery in
+5.2 is relaxed for it — a platform token cannot reach the product API at all,
+so there is no path by which this widens what an ordinary request can see.
+The privilege itself is unwritable from the application: no route can grant
+it ([Security & Compliance](07-security-compliance.md), Section 2.1).
+
 ## 6. Estimation Calculation Rules
 
 To guarantee reproducible, auditable quotes, the Estimation module executes calculations server-side, in this fixed order, using Python's `decimal` module (never floats) for all currency math:

@@ -27,6 +27,8 @@ This is the single most important test category given the shared-schema multi-te
 4. Deliberately omit the `X-Tenant-ID` header / use a malformed one; assert the request is rejected rather than silently defaulting to some other tenant.
 5. A regression test that runs a query with RLS temporarily disabled (in test setup only) to confirm the policy itself — not just application code — is what blocks cross-tenant access; this catches the case where a policy is accidentally dropped or misconfigured in a migration.
 
+6. The **platform surface is a second boundary**, and it is asserted from both sides: an ordinary product token must be refused at `/platform/*`, and a platform token must be refused everywhere else. Being a platform admin must not elevate that same user's ordinary token. Because this tier is deliberately allowed to cross tenants, the isolation that matters is the *credential* boundary rather than the row boundary — assert the grant model at the database level too (no runtime role can write `platform_admins` or `company_module_overrides`), which a route-level test cannot see. Covered by `tests/test_platform_admin.py`.
+
 **This suite failing blocks deployment to staging and production**, per [Security & Compliance](07-security-compliance.md), Section 3.
 
 ## 3. Estimation Engine Testing
