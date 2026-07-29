@@ -56,11 +56,15 @@ alembic upgrade head
 alembic revision -m "description"          # hand-write the migration body
 
 # Full stack locally (Postgres, Redis, backend, worker, scheduler, frontend)
+# The schema is created for you: a one-shot `migrate` service runs
+# `alembic upgrade head` first, and `backend`/`worker` are gated on it
+# completing — the same shape docker-compose.prod.yml uses. Before that
+# service existed, a fresh `up` gave you six healthy containers and an
+# EMPTY database, and the first registration 500'd with nothing pointing
+# at the cause.
 docker compose up
-# ...then create the schema. The DEV stack has no one-shot `migrate`
-# service (the prod stack does, and gates the backend on it), so a fresh
-# `up` gives you six healthy containers and an EMPTY database — the first
-# registration 500s with nothing pointing at the cause.
+# Only needed to migrate out of band (e.g. after hand-writing a revision
+# while the stack is already running):
 docker compose exec backend alembic upgrade head
 # Production stack (Caddy TLS, hardened): docker-compose.prod.yml — see
 # docs/11-production-deployment.md; the dev compose above is unchanged

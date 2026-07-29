@@ -65,9 +65,12 @@ Full rationale and diagrams are in [03-technical-architecture.md](docs/03-techni
 
 ```bash
 cp .env.example .env   # then set INTEGRATION_TOKEN_ENCRYPTION_KEY (see comments)
-docker compose up      # Postgres, Redis, backend :8000, worker, scheduler, frontend :3001
-docker compose exec backend alembic upgrade head
+docker compose up      # Postgres, Redis, migrate, backend :8000, worker, scheduler, frontend :3001
 ```
+
+A one-shot `migrate` service applies `alembic upgrade head` before the
+backend and worker start, so `up` leaves you with a migrated database
+rather than an empty one.
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
 

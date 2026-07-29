@@ -25,6 +25,38 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot: applies Alembic migrations before anything serves traffic,
+  # mirroring docker-compose.prod.yml's own `migrate` service. This stack
+  # deliberately did NOT have one for a long time, and the cost was a bad
+  # first-run experience: `docker compose up` gave you six healthy
+  # containers and an EMPTY database, and the first registration 500'd with
+  # nothing pointing at the cause. Bootstrapping was a second, manual
+  # `docker compose exec backend alembic upgrade head` that you had to know
+  # about.
+  #
+  # `target: dev` and the source bind-mount, unlike prod's production
+  # image: a migration you have just written on the host is visible to this
+  # container without a rebuild, which is the whole point in dev.
+  migrate:
+    build:
+      context: ./backend
+      target: dev
+    restart: "no"
+    env_file: .env
+    environment:
+      # Same Docker-network-hostname override every other service here
+      # carries, and for the identical reason — `.env` says `localhost`
+      # because that is correct for HOST-side Alembic/pytest, and inside a
+      # container `localhost` is the container. Without this the migration
+      # step fails with `Connect call failed ('127.0.0.1', 5432)`.
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - ./backend:/app
+    command: alembic upgrade head
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build:
       context: ./backend
@@ -37,19 +69,31 @@ services:
       # resolves for a developer running `alembic upgrade head` on the
       # HOST, against the port this compose file publishes.
       #
-      # Inside this container, localhost is the container. So
-      # `docker compose exec backend alembic upgrade head` — the command
-      # README gives for bootstrapping a fresh stack, and the only thing
-      # that creates the schema, since the dev stack has no one-shot
-      # `migrate` service the way docker-compose.prod.yml does — failed
-      # with connection refused against an empty database.
+      # Inside this container, localhost is the container, so this override
+      # is still required for any ad-hoc `docker compose exec backend
+      # alembic ...` you run — the `migrate` service above now handles the
+      # routine case, but this used to be the ONLY way the schema ever got
+      # created, and it failed with connection refused against an empty
+      # database.
       #
       # The `worker` service below already carries this same override for
       # the same reason. The backend was simply missed.
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Same Docker-network-hostname reason as the line above, for the same
+      # class of bug. `.env` points PLATFORM_DATABASE_URL at `localhost` so
+      # host-side pytest can reach the published port; inside this container
+      # `localhost` is this container, and every /platform route would fail
+      # with `Connect call failed ('127.0.0.1', 5432)`. The `platform_admin`
+      # role is created by migration 0023.
+      PLATFORM_DATABASE_URL: postgresql+asyncpg://platform_admin:${PLATFORM_DB_PASSWORD:-platform_password}@postgres:5432/${POSTGRES_DB}
     depends_on:
-      postgres:
-        condition: service_healthy
+      # Gated on the migration completing, exactly as prod gates its own
+      # backend — so this container never serves traffic against an
+      # unmigrated schema. `postgres: service_healthy` is not repeated
+      # because `migrate` already waits on it, so completing successfully
+      # implies it.
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     ports:
@@ -100,8 +144,11 @@ services:
       # actually connect as; it sees every tenant but owns nothing.
       SCANNER_DATABASE_URL: postgresql+asyncpg://scanner:${SCANNER_DB_PASSWORD:-scanner_password}@postgres:5432/${POSTGRES_DB}
     depends_on:
-      postgres:
-        condition: service_healthy
+      # Same migration gate as `backend` above, and prod gates its worker
+      # the same way: a job picked up against an unmigrated schema fails on
+      # a missing table and burns all three Dramatiq retries doing it.
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     # No `ports:` — this process is not HTTP-reachable, it only consumes
