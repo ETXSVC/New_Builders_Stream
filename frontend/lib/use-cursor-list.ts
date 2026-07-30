@@ -118,6 +118,18 @@ export interface CursorListCoreOptions extends CursorListOptions {
    * list before the token resolves.
    */
   ready?: boolean;
+  /**
+   * Called instead of setting an error when the response is a 401, for
+   * callers whose answer to "not signed in" is to leave the page rather than
+   * to report a failed load. The platform console passes its redirect here
+   * so a list behaves like `platformFetch` does; the product UI passes
+   * nothing, because its 401 path is AuthContext's token refresh.
+   *
+   * Must be a stable reference — it is a dependency of the fetch callback.
+   * Fires only for the newest request, below the generation guard, so a
+   * superseded response cannot navigate the page away.
+   */
+  onUnauthorized?: () => void;
 }
 
 /**
@@ -137,6 +149,7 @@ export function useCursorListCore<T>({
   enabled = true,
   ready = true,
   headers,
+  onUnauthorized,
 }: CursorListCoreOptions): CursorListResult<T> {
   const [items, setItems] = React.useState<T[]>([]);
   const [nextCursor, setNextCursor] = React.useState<string | null>(null);
@@ -170,6 +183,10 @@ export function useCursorListCore<T>({
         const data = await response.json();
         // Above the !response.ok branch on purpose — see the module docstring.
         if (generation !== generationRef.current) return;
+        if (response.status === 401 && onUnauthorized) {
+          onUnauthorized();
+          return;
+        }
         if (!response.ok) {
           setError(data.detail ?? `Failed to load ${label}`);
           return;
@@ -184,7 +201,7 @@ export function useCursorListCore<T>({
         if (generation === generationRef.current) setLoading(false);
       }
     },
-    [enabled, headers, label, path, query, ready]
+    [enabled, headers, label, onUnauthorized, path, query, ready]
   );
 
   React.useEffect(() => {

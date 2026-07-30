@@ -34,10 +34,12 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [notice, setNotice] = React.useState<string | null>(null);
-  // Bumped on every successful write, and used as SubscriptionCard's `key` so
-  // its inputs re-seed from the server's answer instead of keeping whatever
-  // was typed.
-  const [revision, setRevision] = React.useState(0);
+  // Used as SubscriptionCard's `key` so its inputs re-seed from the server's
+  // answer instead of keeping whatever was typed. Bumped by that card alone,
+  // NOT by every write: a module override is a different form, and remounting
+  // on one of those discarded a tier or seat count the operator had typed but
+  // not yet applied.
+  const [subscriptionRevision, setSubscriptionRevision] = React.useState(0);
 
   const load = React.useCallback(async () => {
     try {
@@ -61,10 +63,14 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
    * they do not re-query the tree — so replacing state wholesale would make
    * a tenant's branches vanish from the page until reload. Keep the list the
    * GET gave us.
+   *
+   * Returns whether the write landed, so each card can do its own post-write
+   * cleanup (re-seeding its inputs, clearing its audit note) rather than
+   * having this one place guess which of them wanted what.
    */
   const apply = React.useCallback(
-    async (path: string, init: RequestInit, successMessage: string) => {
-      if (busy) return;
+    async (path: string, init: RequestInit, successMessage: string): Promise<boolean> => {
+      if (busy) return false;
       setBusy(true);
       setError(null);
       setNotice(null);
@@ -75,9 +81,10 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
           child_company_ids: prev?.child_company_ids ?? updated.child_company_ids,
         }));
         setNotice(successMessage);
-        setRevision((n) => n + 1);
+        return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : "The change was not applied.");
+        return false;
       } finally {
         setBusy(false);
       }
@@ -138,7 +145,13 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
         </Card>
       ) : (
         <>
-          <SubscriptionCard key={revision} tenant={tenant} busy={busy} apply={apply} />
+          <SubscriptionCard
+            key={subscriptionRevision}
+            tenant={tenant}
+            busy={busy}
+            apply={apply}
+            onApplied={() => setSubscriptionRevision((n) => n + 1)}
+          />
           <ModulesCard tenant={tenant} busy={busy} apply={apply} companyId={companyId} />
         </>
       )}
@@ -161,16 +174,18 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
   );
 }
 
-type ApplyFn = (path: string, init: RequestInit, successMessage: string) => Promise<void>;
+type ApplyFn = (path: string, init: RequestInit, successMessage: string) => Promise<boolean>;
 
 function SubscriptionCard({
   tenant,
   busy,
   apply,
+  onApplied,
 }: {
   tenant: TenantDetailData;
   busy: boolean;
   apply: ApplyFn;
+  onApplied: () => void;
 }) {
   const [tier, setTier] = React.useState(tenant.tier ?? "");
   const [status, setStatus] = React.useState(tenant.status ?? "");
@@ -181,9 +196,9 @@ function SubscriptionCard({
   );
 
   // No re-seeding effect here on purpose: the parent remounts this card via
-  // a `key` after every successful write, which is React's own answer to
-  // "reset state when the input changes" and avoids a setState-in-effect
-  // that the lint rule (rightly) rejects.
+  // a `key` after each successful write OF ITS OWN (`onApplied`), which is
+  // React's own answer to "reset state when the input changes" and avoids a
+  // setState-in-effect that the lint rule (rightly) rejects.
   const dirty =
     tier !== (tenant.tier ?? "") ||
     status !== (tenant.status ?? "") ||
@@ -192,7 +207,7 @@ function SubscriptionCard({
         ? ""
         : String(tenant.included_seats));
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
     const body: Record<string, unknown> = {};
     if (tier && tier !== tenant.tier) body.tier = tier;
@@ -201,7 +216,7 @@ function SubscriptionCard({
       body.included_seats = Number(seats);
     }
     if (Object.keys(body).length === 0) return;
-    void apply(
+    const applied = await apply(
       `/api/platform/companies/${tenant.company_id}/subscription`,
       {
         method: "PATCH",
@@ -210,6 +225,7 @@ function SubscriptionCard({
       },
       "Subscription updated."
     );
+    if (applied) onApplied();
   }
 
   return (
@@ -218,7 +234,7 @@ function SubscriptionCard({
         <CardTitle>Subscription</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <form onSubmit={submit} className="flex flex-wrap items-end gap-4">
+        <form onSubmit={(e) => void submit(e)} className="flex flex-wrap items-end gap-4">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="tier">Tier</Label>
             <select
@@ -306,7 +322,11 @@ function SubscriptionCard({
                     body: JSON.stringify({ clear_manual_status_override: true }),
                   },
                   "Status control handed back to Stripe."
-                )
+                ).then((applied) => {
+                  // This card's own write too: the status it shows is now
+                  // Stripe's again, so re-seed rather than keep the operator's.
+                  if (applied) onApplied();
+                })
               }
             >
               Hand control back to Stripe
@@ -332,10 +352,16 @@ function ModulesCard({
   // One reason box for the next change rather than one per row: the note is
   // written to the target tenant's audit log, and an operator changing two
   // modules in one sitting is doing it for one reason.
+  //
+  // It is cleared once the write lands, though. Carrying it further would
+  // attach a reason an operator wrote for one module to an unrelated change
+  // they make ten minutes later, and a wrong reason in an audit log is worse
+  // than none — that log is read during an incident, not during the sitting
+  // that wrote it. Retyping is the cheaper mistake.
   const [note, setNote] = React.useState("");
 
-  function setOverride(module: string, enabled: boolean) {
-    void apply(
+  async function setOverride(module: string, enabled: boolean) {
+    const applied = await apply(
       `/api/platform/companies/${companyId}/modules/${module}`,
       {
         method: "PUT",
@@ -344,6 +370,7 @@ function ModulesCard({
       },
       `${module}: override set to ${enabled ? "granted" : "withheld"}.`
     );
+    if (applied) setNote("");
   }
 
   function clearOverride(module: string) {
@@ -428,7 +455,7 @@ function ModulesCard({
                         variant="outline"
                         size="sm"
                         disabled={busy || entitlement.override === true}
-                        onClick={() => setOverride(entitlement.module, true)}
+                        onClick={() => void setOverride(entitlement.module, true)}
                       >
                         Grant
                       </Button>
@@ -436,7 +463,7 @@ function ModulesCard({
                         variant="outline"
                         size="sm"
                         disabled={busy || entitlement.override === false}
-                        onClick={() => setOverride(entitlement.module, false)}
+                        onClick={() => void setOverride(entitlement.module, false)}
                       >
                         Withhold
                       </Button>

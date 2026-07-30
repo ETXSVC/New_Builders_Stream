@@ -31,6 +31,22 @@ npm run build               # this is the typecheck
 npm run test:e2e            # needs the full stack up
 ```
 
+`test:e2e` registers a fresh company per spec file and has no teardown, so
+a dev database accretes roughly 29 companies and 37 users per full run,
+cumulatively. When the tenant list gets noisy enough to make debugging
+harder, prune it from `backend/`:
+
+```bash
+python scripts/prune_dev_tenants.py         # dry run: reports, deletes nothing
+python scripts/prune_dev_tenants.py --yes   # actually deletes
+```
+
+It targets `E2E %` companies and `e2e-%` users by default, refuses to run
+with `app_env=production`, and discovers both the table list and the
+foreign-key order from the catalog rather than a transcribed list. Read the
+dry run before passing `--yes` — a widened `--company-like` would take your
+real dev tenants with it.
+
 Whole stack:
 
 ```bash
