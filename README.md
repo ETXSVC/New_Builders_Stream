@@ -40,10 +40,10 @@ Implemented against the [roadmap](docs/09-roadmap-implementation-plan.md), on `m
 | 3 — Accounting/Billing | ✅ Done | Invoices/payments, bills, expenses, auto-drafted deposit + final invoices (event-driven), Stripe subscription lifecycle behind a fake client |
 | 4 — External Integrations | ✅ Done | QuickBooks/FreshBooks OAuth connect + idempotent sync behind fake clients |
 | Frontend (all of the above) | ✅ Done | Next.js App Router product UI: CRM, projects, estimation + client e-signature, billing, compliance, integrations, invitation accept |
-| Platform console (cross-tenant admin) | ✅ Done (API only) | `/platform/*`: list every tenant, change tier/status, three-state per-module entitlement overrides. Separate token scope, separate DB role, TOTP-gated. **No UI yet** — API and `scripts/grant_platform_admin.py` only |
+| Platform console (cross-tenant admin) | ✅ Done | `/platform/*`: list every tenant, change tier/status, three-state per-module entitlement overrides. Separate token scope, separate DB role, TOTP-gated. Operator UI at `/platform` (own login, own httpOnly session cookie, no product nav); accounts are still minted by `scripts/grant_platform_admin.py`, because no route can grant that privilege |
 | 5 — Offline/PWA, AI takeoff, multi-currency | ⬜ Not scheduled | Per roadmap |
 
-Backend test suite (`main`): 1,070 passing tests, plus an 18-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
+Backend test suite (`main`): 1,070 passing tests, plus a 25-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
 
 **Remaining gaps** (deliberate, tracked):
 - **Real external-service clients:** Stripe billing, QuickBooks/FreshBooks sync, and SMTP email all run behind Protocol interfaces with config-selected fake implementations. The wiring, webhooks, tier gating, idempotency, and tests are in place; production use needs real credentials and SDK-backed clients dropped in behind the existing interfaces.
@@ -52,7 +52,7 @@ Backend test suite (`main`): 1,070 passing tests, plus an 18-test Playwright e2e
 - **Backend package layout:** organized by technical layer (`models/`, `routers/`, `services/`) rather than the doc's domain-bounded packages. The no-cross-module-imports rule is enforced by an AST sweep (`tests/test_module_boundaries.py`), not by review.
 - **Alert delivery:** the monitoring stack (Prometheus + Grafana + Alertmanager + node-exporter + cAdvisor, in `docker-compose.prod.yml`) evaluates and groups the alerts [docs/06 §5](docs/06-nonfunctional-requirements.md) requires, but ships with no notifier wired up — Alertmanager cannot read environment variables, so the SMTP details have to be filled in on the box ([runbook §10](docs/11-production-deployment.md)). Backup failure has an independent cron-mail path regardless.
 - **mypy:** gates `backend/app` in CI alongside ruff; the test suite itself stays outside the type gate (exercised by pytest instead).
-- **Platform console UI:** the cross-tenant admin surface is API-only. Operating it today means an HTTP client plus `backend/scripts/grant_platform_admin.py` (which needs database access and a shell — deliberately, since no route can grant that privilege). A Next.js surface for it is not built.
+- **Platform console account provisioning:** the console now has a UI at `/platform`, but *creating* an operator still needs `backend/scripts/grant_platform_admin.py` — database access and a shell. That is deliberate rather than missing: `platform_admins` revokes writes from both runtime roles, so no route can grant the privilege, and the console cannot enrol its own second factor from the UI either (that is two password-gated API calls). Its signed-in surface is also not covered by the e2e suite, for the same reason — see the note in `frontend/e2e/platform-console.spec.ts`.
 
 ## Architecture (Summary)
 
@@ -77,6 +77,15 @@ backend and worker start, so `up` leaves you with a migrated database
 rather than an empty one.
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
+
+**The platform console** is at http://localhost:3001/platform, and needs an operator account that nothing in the UI can create — deliberately, since `platform_admins` revokes writes from both runtime database roles:
+
+```bash
+cd backend
+python scripts/grant_platform_admin.py grant you@example.com   # the user must already exist
+```
+
+Then enrol a second factor (`POST /platform/auth/mfa/enroll` → `/activate`, both password-gated); login refuses any account without one. The console also needs `PLATFORM_DATABASE_URL` set — `.env.example` has it, and leaving it unset disables the console entirely (every `/platform` route 503s) rather than quietly running it on a wider connection.
 
 **Production**: `docker-compose.prod.yml` is the hardened single-box stack (Caddy TLS termination, internal-only DB/Redis, auto-migrations, restart policies, nightly backups); `deploy/split/` holds three standalone stacks (backend API, middleware worker tier, frontend) for deploying each tier on its own machine with independent lifecycles. The full guide — server `.env` requirements, first-deploy smoke-test checklist, split-topology wiring — is [docs/11-production-deployment.md](docs/11-production-deployment.md).
 

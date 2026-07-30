@@ -387,7 +387,16 @@ back to match the docs:
 ### Frontend
 
 Next.js App Router with route groups: `app/(app)/` (authenticated product
-UI) and `app/(marketing)/` (public pages). TypeScript API types in
+UI), `app/(marketing)/` (public pages), and `app/(platform)/` (the operator
+console at `/platform`). The console is a **different trust tier and a
+different session**: `POST /platform/auth/login` returns no refresh token, so
+`lib/platform/session.ts` keeps the platform token itself in an httpOnly
+`sameSite=strict` cookie whose lifetime comes from the response's
+`expires_in_minutes` — it never reaches JavaScript, and one `middleware.ts`
+gates both trees (selecting which cookie by path, with `/platform/login`
+exempt). It has no `AuthProvider`/`AppShell` on purpose: the product nav would
+offer links a platform token cannot open. `docs/14-frontend-architecture.md`
+§2.1 has the rest. TypeScript API types in
 `lib/api/types.ts` are generated from the committed `backend/openapi.json`
 snapshot via `npm run generate:api-types` — never hand-edit either file;
 after a backend route/schema change, regenerate the snapshot
@@ -420,6 +429,10 @@ copy-pasted loaders had silently been missing.
 **Six surfaces use it today** (leads, estimates, subcontractors, and the
 three billing panels); roughly seventeen others still hand-roll the fetch,
 so do not assume a list page you are editing is on the hook — check.
+It is split into `useCursorListCore` (the loader) and `useCursorList` (the
+core plus AuthContext's bearer token) because the platform console cannot
+call the wrapper: `useAuth()` throws without a provider, and the console has
+none. Reach for the core, not a copy, if you ever need it outside `(app)`.
 `integrations/page.tsx` is a deliberate permanent exception: different
 response envelope, and a 404 there means "not connected", not an error.
 
