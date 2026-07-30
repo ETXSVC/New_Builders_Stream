@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { components } from "@/lib/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmButton } from "@/components/ui/confirm-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { platformFetch } from "@/lib/platform/client";
@@ -40,6 +41,10 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
   // on one of those discarded a tier or seat count the operator had typed but
   // not yet applied.
   const [subscriptionRevision, setSubscriptionRevision] = React.useState(0);
+  // Its own counter for the same reason SubscriptionCard has one: a card
+  // should re-seed from the server after ITS OWN write, and not be reset by
+  // an unrelated one elsewhere on the page.
+  const [companyRevision, setCompanyRevision] = React.useState(0);
 
   const load = React.useCallback(async () => {
     try {
@@ -122,6 +127,17 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
         </p>
       )}
 
+      {/* Outside the root/branch split below: a name and being in service
+          are properties of THIS company, so both apply to a branch too.
+          Only entitlements are held by the root. */}
+      <CompanyCard
+        key={`company-${companyRevision}`}
+        tenant={tenant}
+        busy={busy}
+        apply={apply}
+        onApplied={() => setCompanyRevision((n) => n + 1)}
+      />
+
       {!tenant.is_root ? (
         <Card>
           <CardHeader>
@@ -175,6 +191,145 @@ export function TenantDetailView({ companyId }: { companyId: string }) {
 }
 
 type ApplyFn = (path: string, init: RequestInit, successMessage: string) => Promise<boolean>;
+
+/**
+ * The company itself: its name, and whether it is in service at all.
+ *
+ * Separate from SubscriptionCard because these are properties of THIS
+ * company while entitlements belong to the root of its tree — which is also
+ * why this card renders for a branch and that one does not.
+ *
+ * "Take out of service" is soft and says so. The backend sets
+ * `companies.deleted_at` and holds no DELETE privilege on the table
+ * (migration 0024), so the honest label is not "Delete": nothing is
+ * destroyed, every row survives, and Restore is a column going back to
+ * NULL. Calling it Delete would promise an irreversibility the console
+ * cannot deliver — and imply data loss it does not cause.
+ */
+function CompanyCard({
+  tenant,
+  busy,
+  apply,
+  onApplied,
+}: {
+  tenant: TenantDetailData;
+  busy: boolean;
+  apply: ApplyFn;
+  onApplied: () => void;
+}) {
+  const [name, setName] = React.useState(tenant.name);
+  const outOfService = tenant.deleted_at !== null && tenant.deleted_at !== undefined;
+
+  async function rename(e: React.FormEvent) {
+    e.preventDefault();
+    if (name.trim() === "" || name.trim() === tenant.name) return;
+    const applied = await apply(
+      `/api/platform/companies/${tenant.company_id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      },
+      "Name updated."
+    );
+    if (applied) onApplied();
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Company</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <form onSubmit={(e) => void rename(e)} className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="company-name">Name</Label>
+            <Input
+              id="company-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={255}
+              disabled={busy}
+              className="w-72"
+            />
+          </div>
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={busy || name.trim() === "" || name.trim() === tenant.name}
+          >
+            Rename
+          </Button>
+        </form>
+
+        <div
+          className={`rounded-md p-3 text-sm ${
+            outOfService ? "bg-red-50 text-red-900" : "bg-slate-50 text-slate-600"
+          }`}
+        >
+          {outOfService ? (
+            <>
+              <p>
+                <span className="font-medium">Out of service</span> since{" "}
+                {new Date(tenant.deleted_at as string).toLocaleString()}. Nobody in this
+                company — or any branch beneath it — can sign in, and tokens already issued
+                stopped working immediately.
+              </p>
+              <p className="mt-1">
+                Nothing was deleted. Restoring puts it back exactly as it was.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                disabled={busy}
+                onClick={() =>
+                  void apply(
+                    `/api/platform/companies/${tenant.company_id}/restore`,
+                    { method: "POST" },
+                    "Tenant restored."
+                  ).then((applied) => {
+                    if (applied) onApplied();
+                  })
+                }
+              >
+                Restore to service
+              </Button>
+            </>
+          ) : (
+            <>
+              <p>
+                Taking a tenant out of service blocks sign-in for this company and every branch
+                beneath it, within one request rather than one token lifetime. It is reversible
+                and destroys nothing.
+              </p>
+              <div className="mt-3">
+                <ConfirmButton
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  confirmMessage={`Take ${tenant.name} out of service?`}
+                  confirmLabel="Take out of service"
+                  onConfirm={() =>
+                    void apply(
+                      `/api/platform/companies/${tenant.company_id}`,
+                      { method: "DELETE" },
+                      "Tenant taken out of service."
+                    ).then((applied) => {
+                      if (applied) onApplied();
+                    })
+                  }
+                >
+                  Take out of service
+                </ConfirmButton>
+              </div>
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function SubscriptionCard({
   tenant,

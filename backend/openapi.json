@@ -5574,6 +5574,75 @@
         "title": "TaskUpdateRequest",
         "type": "object"
       },
+      "TenantCreateRequest": {
+        "description": "Everything needed to bring a customer into existence.\n\nMirrors `RegisterRequest`'s fields minus the password, which the\noperator does not choose \u2014 see `TenantCreateResponse`. `parent_id` is\nabsent on purpose: this always creates a ROOT company. Branches are\ncreated by the tenant's own admins, and `companies.parent_id` is\nimmutable (migration 0021), so an operator picking the wrong parent here\nwould be a migration to undo rather than an edit.",
+        "properties": {
+          "company_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Company Name",
+            "type": "string"
+          },
+          "owner_email": {
+            "format": "email",
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "owner_full_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Owner Full Name",
+            "type": "string"
+          },
+          "tier": {
+            "default": "pro",
+            "enum": [
+              "starter",
+              "pro",
+              "enterprise"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_name",
+          "owner_email",
+          "owner_full_name"
+        ],
+        "title": "TenantCreateRequest",
+        "type": "object"
+      },
+      "TenantCreateResponse": {
+        "description": "The new tenant, plus a credential shown exactly once.\n\nThe operator does not choose the owner's password and the API does not\nstore a recoverable copy \u2014 `temporary_password` is generated here,\nhashed like any other, and returned in this response and nowhere else.\nIt is not in the audit log, not in the tenant detail, and not\nretrievable afterwards: losing it means the owner uses the ordinary\npassword-reset path, which is the correct outcome.\n\nChosen over letting the operator type one because an operator inventing\npasswords for customers converges on one weak password, and over the\ninvitation flow only because that leaves no owner user (and so a tenant\nwith `user_count: 0`) until the customer acts. Swapping to invitations\nlater is a contained change \u2014 see `app/routers/invitations.py`.",
+        "properties": {
+          "owner_email": {
+            "format": "email",
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "owner_user_id": {
+            "format": "uuid",
+            "title": "Owner User Id",
+            "type": "string"
+          },
+          "temporary_password": {
+            "title": "Temporary Password",
+            "type": "string"
+          },
+          "tenant": {
+            "$ref": "#/components/schemas/TenantDetail"
+          }
+        },
+        "required": [
+          "tenant",
+          "owner_user_id",
+          "owner_email",
+          "temporary_password"
+        ],
+        "title": "TenantCreateResponse",
+        "type": "object"
+      },
       "TenantDetail": {
         "properties": {
           "child_company_ids": {
@@ -5593,6 +5662,18 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
           },
           "included_seats": {
             "anyOf": [
@@ -5730,6 +5811,18 @@
             "title": "Created At",
             "type": "string"
           },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
           "included_seats": {
             "anyOf": [
               {
@@ -5815,6 +5908,22 @@
           "created_at"
         ],
         "title": "TenantSummary",
+        "type": "object"
+      },
+      "TenantUpdateRequest": {
+        "description": "Rename only.\n\nNot `parent_id` (immutable, migration 0021), not `deleted_at` (its own\nroutes, so that taking a customer out of service can never be something\nthat happens as a side effect of fixing a typo), and not the\nsubscription (its own route already).",
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "TenantUpdateRequest",
         "type": "object"
       },
       "TokenResponse": {
@@ -10011,6 +10120,18 @@
             }
           },
           {
+            "description": "Include tenants taken out of service. Excluded by default so the list answers 'who are my customers', but reachable \u2014 a soft delete nobody can find again is a hard one with extra steps.",
+            "in": "query",
+            "name": "include_deleted",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Include tenants taken out of service. Excluded by default so the list answers 'who are my customers', but reachable \u2014 a soft delete nobody can find again is a hard one with extra steps.",
+              "title": "Include Deleted",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -10065,9 +10186,91 @@
         "tags": [
           "platform"
         ]
+      },
+      "post": {
+        "description": "Bring a customer into existence: company, owner, membership, trial.\n\nThe same four rows `POST /auth/register` writes, because it is the same\nact performed by a different actor \u2014 an operator onboarding a customer\nwho was sold the product rather than one who found the signup form. The\nordering is deliberately register's ordering too, including the Stripe\ncalls BEFORE the transaction opens: see the long comment there for why\na third-party call inside an open transaction is the thing to avoid.\n\nNot shared with register as one function, despite the overlap. That\nroute additionally owns rate limiting, the refresh-token family and the\nresponse shape a browser expects, and it runs as `app_user` under RLS\nwhere this runs as `platform_admin` under none. Folding them together\nwould mean a function that behaves differently in nearly every respect\ndepending on who called it, which is how the branch that skips the RLS\nstep gets taken by accident.",
+        "operationId": "create_tenant_platform_companies_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantCreateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Tenant",
+        "tags": [
+          "platform"
+        ]
       }
     },
     "/platform/companies/{company_id}": {
+      "delete": {
+        "description": "Take a tenant out of service. SOFT \u2014 no row is removed.\n\nDELETE as the method because that is what an operator means and what the\nconsole's button says; what it does is set `companies.deleted_at`. The\nconsole holds no DELETE privilege on `companies` at all (migration\n0024), so this route could not destroy the row if it tried.\n\nTakes effect within one request, not one token lifetime: every\nauthenticated request re-checks `is_company_live` at the membership\nchokepoint, so sessions already open stop working too. Branches go with\nthe parent \u2014 that walk is why the check is SECURITY DEFINER.",
+        "operationId": "deactivate_tenant_platform_companies__company_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Tenant",
+        "tags": [
+          "platform"
+        ]
+      },
       "get": {
         "operationId": "get_tenant_platform_companies__company_id__get",
         "parameters": [
@@ -10105,6 +10308,58 @@
           }
         },
         "summary": "Get Tenant",
+        "tags": [
+          "platform"
+        ]
+      },
+      "patch": {
+        "description": "Correct a company's name.\n\nDeliberately NOT root-only, unlike the entitlement routes. A name is a\nproperty of the one company that carries it, so renaming a branch\nchanges that branch and nothing else \u2014 there is no tree-wide effect to\nwarn about, and refusing here would leave a typo in a branch office's\nname permanently uncorrectable.",
+        "operationId": "rename_tenant_platform_companies__company_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Tenant",
         "tags": [
           "platform"
         ]
@@ -10218,6 +10473,50 @@
           }
         },
         "summary": "Set Module Override",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/companies/{company_id}/restore": {
+      "post": {
+        "description": "Put a tenant back into service, exactly as it was.\n\nThe reason the delete above is soft: nothing was lost, so nothing has to\nbe rebuilt. A tenant whose PARENT is still out of service will restore\nits own row and remain unreachable, which is correct and is why the\nresponse carries `deleted_at` for the whole tree rather than a single\n\"restored\" boolean.",
+        "operationId": "restore_tenant_platform_companies__company_id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Tenant",
         "tags": [
           "platform"
         ]

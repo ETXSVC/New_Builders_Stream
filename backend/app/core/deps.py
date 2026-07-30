@@ -114,6 +114,21 @@ async def get_current_user():
         if membership is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Not a member of this company")
 
+        # A tenant the platform console has taken out of service (migration
+        # 0024) stops here, with its branches. Checked at the SAME chokepoint
+        # as membership, and for the same reason: this is the one place every
+        # authenticated request passes through, so an already-issued token
+        # stops working within one request rather than one token lifetime —
+        # matching how a revoked platform admin is treated.
+        #
+        # `is_company_live` is SECURITY DEFINER because it walks ANCESTORS,
+        # which this session's RLS scope cannot see; see migration 0024. It
+        # is called before `set_current_tenant` deliberately — nothing about
+        # it needs tenant context, and a company that is out of service
+        # should not have its context established at all.
+        if not await session.scalar(select(func.is_company_live(claimed_tenant_uuid))):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "This company is no longer active")
+
         await set_current_tenant(session, str(claimed_tenant_uuid))
 
         # Tag the event scope with the VERIFIED tenant, once membership has
