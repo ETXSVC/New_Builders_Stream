@@ -59,8 +59,36 @@ const securityHeaders = [
   },
 ];
 
+// Hostnames, besides localhost, that `next dev` should treat as its own
+// origin. Comma-separated, from the environment rather than hardcoded,
+// because the right value is whatever the developer's box is called and
+// baking one machine's name into a committed file helps exactly one person.
+//
+// What this fixes: Next's dev server serves its INTERNAL endpoints —
+// `/__nextjs_font/*`, `/_next/webpack-hmr` — only to origins it trusts, and
+// out of the box that means localhost. Browsing the dev stack by hostname
+// (http://solaris:3001) therefore gives a 403 on every font and a
+// webpack-hmr WebSocket that reconnects forever, with the app itself working
+// fine — which reads like a broken build and is not one.
+//
+// Dev only, by construction: `allowedDevOrigins` is not consulted by
+// `next build`/`next start`, so this cannot widen anything in production or
+// in CI. It is NOT a CSP relaxation and does not touch `securityHeaders`
+// above — app routes were always reachable from these origins; only Next's
+// own dev machinery was not.
+// Next matches these against the request Origin's HOSTNAME, so "solaris:3001"
+// or "http://solaris:3001" silently never match and the 403s continue with
+// the config looking correct. Both forms are the obvious things to write —
+// the browser reports the failing origin with its port, and that is what you
+// copy — so strip scheme and port here rather than document a trap.
+const allowedDevOrigins = (process.env.DEV_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => origin.trim().replace(/^[a-z]+:\/\//i, "").replace(/:\d+$/, ""))
+  .filter(Boolean);
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   // standalone output is what the production Docker image runs
   // (node server.js); env-gated because `next start` — used by e2e-ci and
   // local `npm run start` — does not serve a standalone build.

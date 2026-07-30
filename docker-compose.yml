@@ -225,6 +225,12 @@ services:
       # "localhost" resolves to itself, not the backend container. The backend
       # service is reachable at its Compose service name via Docker's internal DNS.
       NEXT_PUBLIC_API_URL: http://backend:8000
+      # Set this (in .env, comma-separated) when you browse the dev stack by
+      # hostname rather than at localhost — e.g. DEV_ALLOWED_ORIGINS=solaris:3001.
+      # Without it Next's dev server 403s its own fonts and HMR socket for that
+      # origin while the app works normally. Empty by default, and dev-only:
+      # `next build`/`next start` never read it. See frontend/next.config.ts.
+      DEV_ALLOWED_ORIGINS: ${DEV_ALLOWED_ORIGINS:-}
 
 volumes:
   pgdata:
