@@ -311,6 +311,30 @@ without it the next routine `customer.subscription.updated` silently reverts
 an operator's change. Entitlement changes are audited into the **target
 tenant's** `audit_log`, not a separate platform log.
 
+**Tenant lifecycle (migration 0024)** added create, rename and
+take-out-of-service to that surface, and the grant model is still the point:
+`platform_admin` gained INSERT on `companies`/`users`/`company_users`/
+`subscriptions` and UPDATE on `companies`, and **holds DELETE on nothing**
+(bar clearing a module override, which predates it and is how the third
+state is expressed). So `DELETE /platform/companies/{id}` is a SOFT delete
+setting `companies.deleted_at` — destroying a tenant for real means ~40
+tables of NO ACTION foreign keys and stays in
+`scripts/prune_dev_tenants.py`, behind a shell and the table owner.
+`tests/test_platform_admin.py` asserts both halves at the catalog level
+(which tables are writable, and that DELETE is held nowhere) rather than
+trusting this paragraph.
+
+Soft delete is enforced by `is_company_live(uuid)` — a **SECURITY DEFINER**
+function, called from `get_current_user` at the same chokepoint as
+membership, so a token already issued stops working within one request. It
+is SECURITY DEFINER because it walks **ancestors**: `companies`' RLS policy
+scopes rows to `get_all_descendant_ids(app.current_tenant)`, which contains
+a company's descendants and never its ancestors, so a branch asking "has my
+parent been retired?" would read zero rows and answer "no". Note this is
+NOT `companies.is_active` — that column has existed since migration 0001,
+is exposed in `CompanyResponse`, and is read by nothing; the routes keep it
+in step so it stops lying, but `deleted_at` is authoritative.
+
 ### Cross-module communication: in-process synchronous event bus
 
 `app/core/events.py` is a minimal `register`/`publish`/`clear` dispatcher —

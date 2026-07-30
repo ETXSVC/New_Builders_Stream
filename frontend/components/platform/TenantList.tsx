@@ -6,12 +6,17 @@ import type { components } from "@/lib/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CreateTenantModal } from "@/components/platform/CreateTenantModal";
+import { EditTenantModal } from "@/components/platform/EditTenantModal";
 import { endPlatformSession } from "@/lib/platform/client";
 import { useCursorListCore } from "@/lib/use-cursor-list";
 
 type TenantSummary = components["schemas"]["TenantSummary"];
 
 export function TenantList() {
+  const [creating, setCreating] = React.useState(false);
+  const [editing, setEditing] = React.useState<TenantSummary | null>(null);
+  const [showDeleted, setShowDeleted] = React.useState(false);
   // `search` is what is typed; `applied` is what is queried. Submitting
   // rather than debouncing keeps one request per intent — this list is an
   // operator tool, not a type-ahead, and every keystroke firing a
@@ -20,7 +25,8 @@ export function TenantList() {
   const [applied, setApplied] = React.useState("");
   const [rootsOnly, setRootsOnly] = React.useState(false);
 
-  const { items, nextCursor, loading, error, loadMore } = useCursorListCore<TenantSummary>({
+  const { items, nextCursor, loading, error, loadMore, reload } =
+    useCursorListCore<TenantSummary>({
     path: "/api/platform/companies",
     label: "tenants",
     // Inline object is fine: the hook depends on the SERIALISED query, not on
@@ -28,6 +34,7 @@ export function TenantList() {
     params: {
       search: applied || undefined,
       roots_only: rootsOnly ? "true" : undefined,
+      include_deleted: showDeleted ? "true" : undefined,
     },
     // Same reaction the detail view gets from `platformFetch`: a 401 here is
     // an expired token or a privilege revoked mid-session, and either way
@@ -38,12 +45,15 @@ export function TenantList() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">Tenants</h1>
-        <p className="text-sm text-slate-500">
-          Entitlements are held by each tree&apos;s root company. Child branches inherit them and
-          cannot be changed on their own.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl font-semibold">Tenants</h1>
+          <p className="text-sm text-slate-500">
+            Entitlements are held by each tree&apos;s root company. Child branches inherit them and
+            cannot be changed on their own.
+          </p>
+        </div>
+        <Button onClick={() => setCreating(true)}>New tenant</Button>
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
@@ -90,6 +100,16 @@ export function TenantList() {
           />
           Root companies only
         </label>
+
+        <label className="flex items-center gap-2 pb-2.5 text-sm">
+          <input
+            type="checkbox"
+            checked={showDeleted}
+            onChange={(e) => setShowDeleted(e.target.checked)}
+            className="h-4 w-4"
+          />
+          Include out of service
+        </label>
       </div>
 
       {error && (
@@ -108,6 +128,9 @@ export function TenantList() {
               <th className="px-4 py-2 font-medium">Seats</th>
               <th className="px-4 py-2 font-medium">Users</th>
               <th className="px-4 py-2 font-medium">Writes</th>
+              <th className="px-4 py-2 font-medium">
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -123,6 +146,14 @@ export function TenantList() {
                   {!tenant.is_root && (
                     <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
                       branch
+                    </span>
+                  )}
+                  {tenant.deleted_at && (
+                    <span
+                      className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800"
+                      title={`Taken out of service ${new Date(tenant.deleted_at).toLocaleString()}`}
+                    >
+                      out of service
                     </span>
                   )}
                 </td>
@@ -147,11 +178,16 @@ export function TenantList() {
                     <span className="font-medium text-red-600">read-only</span>
                   )}
                 </td>
+                <td className="px-4 py-2 text-right">
+                  <Button variant="outline" size="sm" onClick={() => setEditing(tenant)}>
+                    Edit
+                  </Button>
+                </td>
               </tr>
             ))}
             {!loading && items.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
                   No tenants match.
                 </td>
               </tr>
@@ -168,6 +204,23 @@ export function TenantList() {
         )}
         {loading && !nextCursor && <span className="text-sm text-slate-500">Loading…</span>}
       </div>
+
+      <CreateTenantModal
+        open={creating}
+        onClose={() => setCreating(false)}
+        onCreated={reload}
+      />
+      {/* Keyed by tenant so the form's state initialisers re-run per row
+          rather than needing an effect to re-seed them — the same trick
+          TenantDetailView uses for its subscription card. */}
+      {editing && (
+        <EditTenantModal
+          key={editing.company_id}
+          tenant={editing}
+          onClose={() => setEditing(null)}
+          onSaved={reload}
+        />
+      )}
     </div>
   );
 }

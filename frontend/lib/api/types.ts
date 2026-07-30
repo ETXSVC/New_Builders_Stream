@@ -2021,7 +2021,26 @@ export interface paths {
         /** List Tenants */
         get: operations["list_tenants_platform_companies_get"];
         put?: never;
-        post?: never;
+        /**
+         * Create Tenant
+         * @description Bring a customer into existence: company, owner, membership, trial.
+         *
+         *     The same four rows `POST /auth/register` writes, because it is the same
+         *     act performed by a different actor — an operator onboarding a customer
+         *     who was sold the product rather than one who found the signup form. The
+         *     ordering is deliberately register's ordering too, including the Stripe
+         *     calls BEFORE the transaction opens: see the long comment there for why
+         *     a third-party call inside an open transaction is the thing to avoid.
+         *
+         *     Not shared with register as one function, despite the overlap. That
+         *     route additionally owns rate limiting, the refresh-token family and the
+         *     response shape a browser expects, and it runs as `app_user` under RLS
+         *     where this runs as `platform_admin` under none. Folding them together
+         *     would mean a function that behaves differently in nearly every respect
+         *     depending on who called it, which is how the branch that skips the RLS
+         *     step gets taken by accident.
+         */
+        post: operations["create_tenant_platform_companies_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2039,10 +2058,34 @@ export interface paths {
         get: operations["get_tenant_platform_companies__company_id__get"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Deactivate Tenant
+         * @description Take a tenant out of service. SOFT — no row is removed.
+         *
+         *     DELETE as the method because that is what an operator means and what the
+         *     console's button says; what it does is set `companies.deleted_at`. The
+         *     console holds no DELETE privilege on `companies` at all (migration
+         *     0024), so this route could not destroy the row if it tried.
+         *
+         *     Takes effect within one request, not one token lifetime: every
+         *     authenticated request re-checks `is_company_live` at the membership
+         *     chokepoint, so sessions already open stop working too. Branches go with
+         *     the parent — that walk is why the check is SECURITY DEFINER.
+         */
+        delete: operations["deactivate_tenant_platform_companies__company_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Rename Tenant
+         * @description Correct a company's name.
+         *
+         *     Deliberately NOT root-only, unlike the entitlement routes. A name is a
+         *     property of the one company that carries it, so renaming a branch
+         *     changes that branch and nothing else — there is no tree-wide effect to
+         *     warn about, and refusing here would leave a typo in a branch office's
+         *     name permanently uncorrectable.
+         */
+        patch: operations["rename_tenant_platform_companies__company_id__patch"];
         trace?: never;
     };
     "/platform/companies/{company_id}/modules/{module}": {
@@ -2062,6 +2105,32 @@ export interface paths {
          *     to false, which withholds a module the tier would otherwise allow.
          */
         delete: operations["clear_module_override_platform_companies__company_id__modules__module__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/companies/{company_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Tenant
+         * @description Put a tenant back into service, exactly as it was.
+         *
+         *     The reason the delete above is soft: nothing was lost, so nothing has to
+         *     be rebuilt. A tenant whose PARENT is still out of service will restore
+         *     its own row and remain unreachable, which is correct and is why the
+         *     response carries `deleted_at` for the whole tree rather than a single
+         *     "restored" boolean.
+         */
+        post: operations["restore_tenant_platform_companies__company_id__restore_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5828,6 +5897,66 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /**
+         * TenantCreateRequest
+         * @description Everything needed to bring a customer into existence.
+         *
+         *     Mirrors `RegisterRequest`'s fields minus the password, which the
+         *     operator does not choose — see `TenantCreateResponse`. `parent_id` is
+         *     absent on purpose: this always creates a ROOT company. Branches are
+         *     created by the tenant's own admins, and `companies.parent_id` is
+         *     immutable (migration 0021), so an operator picking the wrong parent here
+         *     would be a migration to undo rather than an edit.
+         */
+        TenantCreateRequest: {
+            /** Company Name */
+            company_name: string;
+            /**
+             * Owner Email
+             * Format: email
+             */
+            owner_email: string;
+            /** Owner Full Name */
+            owner_full_name: string;
+            /**
+             * Tier
+             * @default pro
+             * @enum {string}
+             */
+            tier: "starter" | "pro" | "enterprise";
+        };
+        /**
+         * TenantCreateResponse
+         * @description The new tenant, plus a credential shown exactly once.
+         *
+         *     The operator does not choose the owner's password and the API does not
+         *     store a recoverable copy — `temporary_password` is generated here,
+         *     hashed like any other, and returned in this response and nowhere else.
+         *     It is not in the audit log, not in the tenant detail, and not
+         *     retrievable afterwards: losing it means the owner uses the ordinary
+         *     password-reset path, which is the correct outcome.
+         *
+         *     Chosen over letting the operator type one because an operator inventing
+         *     passwords for customers converges on one weak password, and over the
+         *     invitation flow only because that leaves no owner user (and so a tenant
+         *     with `user_count: 0`) until the customer acts. Swapping to invitations
+         *     later is a contained change — see `app/routers/invitations.py`.
+         */
+        TenantCreateResponse: {
+            /**
+             * Owner Email
+             * Format: email
+             */
+            owner_email: string;
+            /**
+             * Owner User Id
+             * Format: uuid
+             */
+            owner_user_id: string;
+            /** Temporary Password */
+            temporary_password: string;
+            tenant: components["schemas"]["TenantDetail"];
+        };
         /** TenantDetail */
         TenantDetail: {
             /** Child Company Ids */
@@ -5842,6 +5971,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Deleted At */
+            deleted_at?: string | null;
             /** Included Seats */
             included_seats: number | null;
             /** Is Root */
@@ -5882,6 +6013,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Deleted At */
+            deleted_at?: string | null;
             /** Included Seats */
             included_seats: number | null;
             /** Is Root */
@@ -5900,6 +6033,19 @@ export interface components {
             user_count: number;
             /** Writes Enabled */
             writes_enabled: boolean;
+        };
+        /**
+         * TenantUpdateRequest
+         * @description Rename only.
+         *
+         *     Not `parent_id` (immutable, migration 0021), not `deleted_at` (its own
+         *     routes, so that taking a customer out of service can never be something
+         *     that happens as a side effect of fixing a typo), and not the
+         *     subscription (its own route already).
+         */
+        TenantUpdateRequest: {
+            /** Name */
+            name: string;
         };
         /** TokenResponse */
         TokenResponse: {
@@ -8621,6 +8767,8 @@ export interface operations {
                 search?: string | null;
                 /** @description Only companies with no parent — the level entitlements are held at. */
                 roots_only?: boolean;
+                /** @description Include tenants taken out of service. Excluded by default so the list answers 'who are my customers', but reachable — a soft delete nobody can find again is a hard one with extra steps. */
+                include_deleted?: boolean;
                 cursor?: string | null;
                 limit?: number;
             };
@@ -8650,6 +8798,39 @@ export interface operations {
             };
         };
     };
+    create_tenant_platform_companies_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantCreateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_tenant_platform_companies__company_id__get: {
         parameters: {
             query?: never;
@@ -8660,6 +8841,72 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deactivate_tenant_platform_companies__company_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_tenant_platform_companies__company_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantUpdateRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -8724,6 +8971,37 @@ export interface operations {
             path: {
                 company_id: string;
                 module: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_tenant_platform_companies__company_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
             };
             cookie?: never;
         };

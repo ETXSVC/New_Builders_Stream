@@ -65,6 +65,19 @@ UNGUARDABLE = {
     # `manual_status_override` (migration 0023) is what stops the genuine
     # conflicting writer here, POST /webhooks/stripe, from reverting them.
     "/platform/companies/{company_id}/subscription": "subscriptions has no updated_at column",
+    # The console's rename (migration 0024). Same schema reason as
+    # `/companies/{company_id}` above -- `companies` carries created_at and
+    # no updated_at, so there is no value for a caller's token to be
+    # compared against.
+    #
+    # Worth stating that this is a schema limit rather than a judgement that
+    # the race does not matter: two operators renaming one tenant at once
+    # would be last-write-wins, and the loser's change would vanish without
+    # a 409. The blast radius is one string that is visibly wrong
+    # afterwards, so adding a timestamp column to `companies` for it is not
+    # obviously worth the migration -- but if one is ever added for another
+    # reason, this route should move up into GUARDED_PATCH_ROUTES.
+    "/platform/companies/{company_id}": "companies has no updated_at column",
 }
 
 
@@ -145,7 +158,7 @@ def test_patch_route_count_is_pinned():
     turns that into a failure — the same reasoning, and the same lesson,
     behind test_tier_gating.py's own pinned count."""
     routes = _patch_routes()
-    assert len(routes) == 14, (
+    assert len(routes) == 15, (
         f"PATCH route count changed: {len(routes)} (paths: {sorted(routes)!r}). "
         "If a route was genuinely added or removed, update this literal AND "
         "classify it above. If the count collapsed, the introspection broke "

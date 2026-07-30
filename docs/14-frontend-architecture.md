@@ -87,6 +87,41 @@ revokes writes from both runtime DB roles, so `backend/scripts/grant_platform_ad
 (table owner) is the only path. Enrolling the second factor is two
 password-gated API calls.
 
+### 2.2 Tenant lifecycle, and why "delete" is not called delete
+
+The console creates tenants, renames them, and takes them out of service
+(migration 0024). Three things about that UI are deliberate:
+
+- **`components/ui/modal.tsx` wraps the native `<dialog>` element**, not a
+  positioned `<div>`. `showModal()` supplies a focus trap, Escape-to-close,
+  an inert background and top-layer rendering — four things a hand-rolled
+  modal reimplements and usually gets partly wrong, and the last of which
+  ends z-index arguments with the console's sticky header permanently. The
+  one thing it does not give is backdrop-click dismissal, because the
+  backdrop is a pseudo-element; the handler tests `e.target === dialog`,
+  which is true only when the click missed the content box.
+
+- **The button says "Take out of service", not "Delete".** The backend sets
+  `companies.deleted_at` and holds no DELETE privilege on that table at all,
+  so nothing is destroyed and Restore is a column going back to NULL.
+  Labelling it Delete would promise an irreversibility the console cannot
+  deliver and imply data loss it does not cause. Confirmation uses the
+  house `ConfirmButton` rather than a second modal.
+
+- **The create modal has two screens, and the second is why it is a modal.**
+  `POST /platform/companies` returns the new owner's password exactly once —
+  generated server-side, stored only as an Argon2id hash, absent from the
+  audit log and from tenant detail. So the success state cannot be a toast
+  that disappears; it has to be something the operator dismisses
+  deliberately, having copied the credential first. Closing resets the form
+  so reopening never shows the previous customer's password.
+
+Quick edits (name, tier, status, seats) live in a modal on the list, because
+an operator working through several tenants should not pay a round trip per
+row. Module overrides and the lifecycle actions stay on the detail page:
+the override table wants space, and taking a tenant out of service should
+not be one careless click away from a seat-count change.
+
 ## 3. Types are generated, never written
 
 `lib/api/types.ts` is generated from the committed `backend/openapi.json`

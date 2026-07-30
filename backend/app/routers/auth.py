@@ -2,7 +2,7 @@ import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -196,14 +196,48 @@ async def _default_membership(session, user_id) -> CompanyUser | None:
     actually stable. Not reachable today (registration only ever creates
     one membership), but this is exactly the ordering Task 14's
     invitation-acceptance flow will start exercising with multiple
-    memberships per user."""
+    memberships per user.
+
+    Memberships in a company the platform console has taken out of service
+    (migration 0024) are skipped, so a user who also belongs to a live
+    company still signs in and lands there. Filtered HERE rather than at the
+    two call sites precisely because of the rule above: login and refresh
+    must resolve the same default, and one shared query is what guarantees
+    that. A user with no live membership gets None, which both callers
+    already treat as "cannot sign in"."""
     await set_current_user(session, str(user_id))
     result = await session.execute(
         select(CompanyUser)
-        .where(CompanyUser.user_id == user_id)
+        .where(
+            CompanyUser.user_id == user_id,
+            func.is_company_live(CompanyUser.company_id),
+        )
         .order_by(CompanyUser.created_at, CompanyUser.company_id)
     )
     return result.scalars().first()
+
+
+async def _no_membership_detail(session, user_id) -> str:
+    """Why this user has no usable membership — "none" or "all retired".
+
+    `_default_membership` returning None used to mean exactly one thing.
+    Since migration 0024 it means two, and they are very different support
+    calls: a user who never had a company, versus a customer whose tenant an
+    operator has taken out of service. Telling the second group "user has no
+    company memberships" sends whoever fields that call looking in the wrong
+    place entirely.
+
+    Costs one query, on a failure path only. Discloses nothing to an
+    attacker: reaching this line already required the correct password (and
+    TOTP, where enrolled), and it says nothing about any account but the
+    caller's own.
+    """
+    any_membership = await session.execute(
+        select(CompanyUser.company_id).where(CompanyUser.user_id == user_id).limit(1)
+    )
+    if any_membership.first() is None:
+        return "User has no company memberships"
+    return "This company is no longer active. Contact your administrator."
 
 
 def _email_rate_limit_key(prefix: str, email: str) -> str:
@@ -322,7 +356,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
 
         membership = await _default_membership(session, user.id)
         if membership is None:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, await _no_membership_detail(session, user.id))
 
         # Refresh-token INSERT needs a commit; session_scope() never commits
         # on its own. Register can use an explicit session.begin() because it
@@ -391,7 +425,9 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             # rotation rolls back with the session (never committed),
             # so the presented token remains usable if memberships
             # are later restored.
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "User has no company memberships")
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, await _no_membership_detail(session, old_row.user_id)
+            )
 
         # mfa_enrollment_required is recomputed here (not carried over from
         # login) because it must re-evaluate on EVERY token issuance: an

@@ -1,0 +1,51 @@
+# Serve the frontend from the PRODUCTION image instead of `next dev`.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.frontend-prod.yml up -d frontend
+#
+# Why this exists: Turbopack's dev server does not register
+# `app/(platform)/api/platform/companies/{companyId}/modules/{module}` on a
+# Windows host — it 404s with no compile line and no error, while
+# `next build` produces it correctly (it is in routes-manifest.json and the
+# Playwright suite exercises it). Moving `.next` into a volume in
+# docker-compose.yml fixed the sibling routes; that one did not come back.
+# Rather than keep guessing at a dev-server bug, this serves the artifact
+# that actually ships, which is where the route demonstrably works.
+#
+# Also the honest way to smoke-test the console before merging: the
+# production bundle is what CI's `docker-build` job boots and what
+# docker-compose.prod.yml runs.
+#
+# TWO THINGS TO KNOW:
+#
+# 1. **Use http://localhost:3001, NOT a hostname.** `NODE_ENV=production`
+#    makes the session cookies `Secure` (lib/platform/session.ts), and a
+#    browser will not store a Secure cookie delivered over plain HTTP —
+#    with the deliberate exception of localhost, which Chrome treats as a
+#    secure context. At http://solaris:3001 login appears to succeed and
+#    then bounces straight back to the login page, because the cookie was
+#    silently dropped. That is not a bug in the console; it is the cookie
+#    flag doing its job.
+#
+# 2. **No hot reload, and no bind mount.** The image contains the build, so
+#    a frontend change means rebuilding:
+#
+#        docker compose -f docker-compose.yml -f docker-compose.frontend-prod.yml \
+#          up -d --build frontend
+#
+#    Drop back to the dev loop with a plain `docker compose up -d frontend`.
+services:
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    environment:
+      # Read at RUN time by the BFF, not inlined at build time — the
+      # frontend-ci docker-build job asserts exactly this, which is what
+      # makes overriding it here work at all.
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    # `!reset` rather than `[]`: Compose MERGES volume lists across files, so
+    # an empty list leaves the base file's `./frontend:/app` in place, which
+    # mounts the host source tree over the built application and the
+    # container dies with `Cannot find module '/app/server.js'`. `!reset`
+    # (Compose 2.24+) is the tag that actually clears an inherited list.
+    volumes: !reset []

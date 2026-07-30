@@ -219,6 +219,21 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+      # `.next` gets the same treatment as node_modules above, and for a
+      # sharper reason than tidiness. Turbopack writes its per-route
+      # compiled output here, and through the Windows bind mount that write
+      # SILENTLY FAILED for the more deeply nested routes: every
+      # `app/(platform)/api/.../{id}/<something>/route.ts` 404'd at runtime
+      # with no compile line and no error, while `next build` produced them
+      # all correctly. Confirmed by looking: `.next/dev/server/app/(app)/
+      # api/estimates/[id]/approve/` existed and the equivalent
+      # `(platform)` directories did not exist at all.
+      #
+      # Cost of an anonymous volume here is that `rm -rf frontend/.next` on
+      # the HOST no longer clears the dev server's cache — use
+      # `docker compose down frontend && docker compose up -d frontend`,
+      # which discards the volume with the container.
+      - /app/.next
     environment:
       # Docker Compose network hostname, not "localhost" — the frontend container's
       # server-side fetch (app/page.tsx) runs inside its own container, where

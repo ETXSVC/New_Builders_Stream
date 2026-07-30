@@ -74,6 +74,33 @@ test.describe("platform console access boundary", () => {
     expect(response.status()).toBe(401);
   });
 
+  test("every lifecycle route refuses without the console cookie", async ({ request }) => {
+    // These create and retire customers, so "closed to anyone not signed in"
+    // is worth asserting per-verb rather than inferring from the subscription
+    // route above. A BFF handler that forgot its `platformToken` check would
+    // otherwise reach the backend with no credential and 401 there instead —
+    // same status, but for the wrong reason and one trust boundary later.
+    const create = await request.post("/api/platform/companies", {
+      data: {
+        company_name: "Should Not Exist",
+        owner_email: "nobody@example.com",
+        owner_full_name: "Nobody",
+      },
+    });
+    expect(create.status(), "create must not answer unauthenticated").toBe(401);
+
+    const rename = await request.patch(`/api/platform/companies/${TENANT_ID}`, {
+      data: { name: "Renamed" },
+    });
+    expect(rename.status(), "rename must not answer unauthenticated").toBe(401);
+
+    const deactivate = await request.delete(`/api/platform/companies/${TENANT_ID}`);
+    expect(deactivate.status(), "deactivate must not answer unauthenticated").toBe(401);
+
+    const restore = await request.post(`/api/platform/companies/${TENANT_ID}/restore`);
+    expect(restore.status(), "restore must not answer unauthenticated").toBe(401);
+  });
+
   test("the product's gate still sends its own visitors to the product login", async ({ page }) => {
     // middleware.ts now serves two trust tiers from one function; this is the
     // regression that would catch it routing product traffic into the console.
