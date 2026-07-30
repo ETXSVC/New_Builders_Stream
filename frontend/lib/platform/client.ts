@@ -20,11 +20,25 @@
  * `middleware.ts` on their next navigation. This covers the tab left open
  * across the boundary that then tries to act.
  */
+/**
+ * The one reaction to "this session is over", exported so the surfaces that
+ * do NOT go through `platformFetch` react identically.
+ *
+ * `TenantList` is the case: it loads through `useCursorListCore`, which owns
+ * its own fetch, so without this it would render "Failed to load tenants"
+ * next to a console the operator is no longer signed in to — on the console's
+ * home page, which is the one most likely to be sitting open when a
+ * privilege is revoked.
+ */
+export function endPlatformSession(): void {
+  window.location.assign("/platform/login");
+}
+
 export async function platformFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
 
   if (response.status === 401) {
-    window.location.assign("/platform/login");
+    endPlatformSession();
     throw new Error("Your console session has ended. Sign in again.");
   }
 
@@ -37,5 +51,5 @@ export async function platformFetch<T>(path: string, init?: RequestInit): Promis
 
 export async function platformSignOut(): Promise<void> {
   await fetch("/api/platform/auth/logout", { method: "POST" });
-  window.location.assign("/platform/login");
+  endPlatformSession();
 }

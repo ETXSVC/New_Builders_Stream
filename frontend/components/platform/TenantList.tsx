@@ -6,6 +6,7 @@ import type { components } from "@/lib/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { endPlatformSession } from "@/lib/platform/client";
 import { useCursorListCore } from "@/lib/use-cursor-list";
 
 type TenantSummary = components["schemas"]["TenantSummary"];
@@ -28,6 +29,11 @@ export function TenantList() {
       search: applied || undefined,
       roots_only: rootsOnly ? "true" : undefined,
     },
+    // Same reaction the detail view gets from `platformFetch`: a 401 here is
+    // an expired token or a privilege revoked mid-session, and either way
+    // reporting "failed to load" on a console you are no longer signed in to
+    // is the wrong answer. Module-level function, so the reference is stable.
+    onUnauthorized: endPlatformSession,
   });
 
   return (
