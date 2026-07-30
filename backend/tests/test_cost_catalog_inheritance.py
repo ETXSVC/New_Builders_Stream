@@ -60,8 +60,10 @@ async def _insert_company_directly(name, parent_id=None):
     conn = await asyncpg.connect(OWNER_DSN)
     try:
         await conn.execute(
-            "INSERT INTO companies (id, parent_id, name, is_active, created_at) "
-            "VALUES ($1, $2, $3, true, now())",
+            # No `is_active`: migration 0025 makes it a generated column over
+            # `deleted_at`, and Postgres rejects an explicit value for one.
+            "INSERT INTO companies (id, parent_id, name, created_at) "
+            "VALUES ($1, $2, $3, now())",
             company_id,
             parent_id,
             name,

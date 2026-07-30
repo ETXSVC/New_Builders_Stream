@@ -330,10 +330,32 @@ membership, so a token already issued stops working within one request. It
 is SECURITY DEFINER because it walks **ancestors**: `companies`' RLS policy
 scopes rows to `get_all_descendant_ids(app.current_tenant)`, which contains
 a company's descendants and never its ancestors, so a branch asking "has my
-parent been retired?" would read zero rows and answer "no". Note this is
-NOT `companies.is_active` — that column has existed since migration 0001,
-is exposed in `CompanyResponse`, and is read by nothing; the routes keep it
-in step so it stops lying, but `deleted_at` is authoritative.
+parent been retired?" would read zero rows and answer "no".
+
+`companies.is_active` is **generated from `deleted_at`** since migration
+0025 (`GENERATED ALWAYS AS (deleted_at IS NULL) STORED`) — it had existed
+since 0001 reading nothing, 0024 had the routes write both together, and
+0025 removed the possibility of them disagreeing rather than maintaining
+the discipline. No application code can write it; assign to `deleted_at`.
+Two consequences are easy to undo by accident, both commented where they
+live:
+
+- `Company` sets `__mapper_args__ = {"eager_defaults": False}`. Without it
+  SQLAlchemy reads generated columns back with `INSERT ... RETURNING`, and
+  `POST /auth/register` inserts the root company *before* any tenant
+  context exists — so that RETURNING is evaluated under `tenant_select`
+  with `app.current_tenant` unset, and registration fails outright with
+  "new row violates row-level security policy". This broke 28 tests when
+  the column was first converted.
+- The column is deliberately **not** `deferred`. A deferred attribute
+  lazy-loads on access, and `CompanyResponse.model_validate(company)`
+  reaches for it from synchronous Pydantic code, which asyncpg cannot serve
+  (`MissingGreenlet`, not a slow query). **Any route that writes a `Company`
+  and then returns a `CompanyResponse` must call
+  `session.refresh(company, ["is_active"])` after its flush** — the two that
+  do today are `POST /companies/{id}/children` and
+  `PATCH /companies/{company_id}`. Missing it fails loudly in tests rather
+  than silently, which is how both were found.
 
 ### Cross-module communication: in-process synchronous event bus
 
