@@ -1,0 +1,5 @@
+/* The console's own stylesheet, following `(marketing)/styles.css` rather
+   than reaching across route groups for `(app)/globals.css`. Each group
+   brings its own, so the console can grow its own tokens without touching
+   the product's. */
+@import "tailwindcss";

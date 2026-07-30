@@ -99,13 +99,45 @@ export interface CursorListOptions {
   enabled?: boolean;
 }
 
-export function useCursorList<T>({
+export interface CursorListCoreOptions extends CursorListOptions {
+  /**
+   * Headers carrying the caller's credential. The product UI passes
+   * `Authorization: Bearer <token>` from AuthContext; the platform console
+   * passes nothing at all, because its token lives in an httpOnly cookie
+   * the browser attaches by itself (`lib/platform/session.ts`).
+   *
+   * Pass a memoised object — it is a dependency of the fetch callback, so a
+   * fresh literal every render would re-fetch every render.
+   */
+  headers?: Record<string, string>;
+  /**
+   * False while the caller's credential has not arrived yet. Deliberately
+   * distinct from `enabled`: a list waiting on a token is mid-load and must
+   * keep its spinner, whereas a disabled list is idle and clears itself.
+   * Folding the two together would make every cold load flash an empty
+   * list before the token resolves.
+   */
+  ready?: boolean;
+}
+
+/**
+ * The loader itself, independent of where the credential comes from.
+ *
+ * Split out from `useCursorList` below for the platform console
+ * (`app/(platform)`), which cannot use that hook: it calls `useAuth()`,
+ * which THROWS outside an AuthProvider, and the console deliberately has
+ * none — its token sits in an httpOnly cookie, unreadable from JavaScript.
+ * Copying this function to work around that would reintroduce precisely the
+ * duplication the docstring above exists to describe.
+ */
+export function useCursorListCore<T>({
   path,
   params,
   label,
   enabled = true,
-}: CursorListOptions): CursorListResult<T> {
-  const { accessToken } = useAuth();
+  ready = true,
+  headers,
+}: CursorListCoreOptions): CursorListResult<T> {
   const [items, setItems] = React.useState<T[]>([]);
   const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   // Seeded from `enabled`: a list waiting on a parent selection is not
@@ -127,16 +159,14 @@ export function useCursorList<T>({
 
   const load = React.useCallback(
     async (cursor: string | null, replace: boolean) => {
-      if (!accessToken || !enabled) return;
+      if (!ready || !enabled) return;
       const generation = replace ? ++generationRef.current : generationRef.current;
       setLoading(true);
       setError(null);
       try {
         const search = new URLSearchParams(query);
         if (cursor) search.set("cursor", cursor);
-        const response = await fetch(`${path}?${search}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
+        const response = await fetch(`${path}?${search}`, { headers });
         const data = await response.json();
         // Above the !response.ok branch on purpose — see the module docstring.
         if (generation !== generationRef.current) return;
@@ -154,7 +184,7 @@ export function useCursorList<T>({
         if (generation === generationRef.current) setLoading(false);
       }
     },
-    [accessToken, enabled, label, path, query]
+    [enabled, headers, label, path, query, ready]
   );
 
   React.useEffect(() => {
@@ -188,4 +218,23 @@ export function useCursorList<T>({
   }, [load]);
 
   return { items, nextCursor, loading, error, loadMore, reload, setItems, setError };
+}
+
+/**
+ * The product UI's loader: `useCursorListCore` with the bearer token from
+ * AuthContext. Every existing call site uses this and is unaffected by the
+ * split above — the signature is unchanged.
+ */
+export function useCursorList<T>(options: CursorListOptions): CursorListResult<T> {
+  const { accessToken } = useAuth();
+  // Memoised on the token, not rebuilt per render: `headers` is a dependency
+  // of the core's fetch callback.
+  const headers = React.useMemo(
+    (): Record<string, string> =>
+      accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    [accessToken]
+  );
+  // `ready` reproduces the old `if (!accessToken) return` exactly: a list
+  // whose token has not arrived keeps its spinner rather than rendering empty.
+  return useCursorListCore<T>({ ...options, ready: !!accessToken, headers });
 }

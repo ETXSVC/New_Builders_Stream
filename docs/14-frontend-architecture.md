@@ -39,6 +39,8 @@ This is load-bearing in three ways that are easy to undo by accident:
 
 - `app/(app)/` — authenticated product UI. Everything behind login.
 - `app/(marketing)/` — public pages.
+- `app/(platform)/` — the operator console at `/platform`, a different trust
+  tier (see §2.1).
 - `app/api/` — the BFF handlers.
 
 `middleware.ts` gates `(app)` on the *presence* of the refresh cookie. It
@@ -47,6 +49,43 @@ a page can still render for a stale cookie. Components that ask a user for
 credentials must therefore gate on a *confirmed* session, not merely on
 "not hydrating"; `components/account/MfaPanel.tsx` documents the concrete
 trap.
+
+### 2.1 The platform console is not the product UI
+
+`app/(platform)/` serves `/platform`, the cross-tenant admin surface over the
+`/platform/*` API (migration 0023). Four differences from `(app)` are
+deliberate, and each one is load-bearing:
+
+- **Its own session, in a cookie rather than in memory.**
+  `POST /platform/auth/login` returns an access token and **no refresh
+  token** — a credential reaching every tenant's subscription state is not
+  silently renewable. So `lib/platform/session.ts` puts the token itself in
+  an httpOnly, `sameSite: "strict"` cookie whose lifetime is the token's own
+  (`expires_in_minutes`, read from the response rather than hardcoded). It
+  therefore never touches JavaScript, which is strictly better than the
+  product's in-memory access token, and it lets one `middleware.ts`
+  mechanism gate both trees. A hard refresh survives; expiry means
+  re-entering a TOTP code.
+- **No `AuthProvider`, no `AppShell`.** The product nav would offer an
+  operator links their token cannot open, and `useAuth()` running here would
+  throw for want of a provider.
+- **Both factors are asked for up front.** MFA is optional for a tenant user
+  and mandatory for an operator, so the product login's "reveal the code
+  field after the backend asks" step has no code-less path to discover.
+- **`middleware.ts` now selects between two credentials.** `/platform/login`
+  is exempt (or the console is unenterable); everything else under
+  `/platform` needs the console cookie, and everything else needs the
+  refresh cookie.
+
+Writes go through `lib/platform/client.ts`, which turns a 401 into a full
+navigation back to the login page — a 401 here means either expiry or a
+privilege revoked mid-session, since `platform_admins` is re-read on every
+request.
+
+Minting an operator is **not** in the UI, and cannot be: `platform_admins`
+revokes writes from both runtime DB roles, so `backend/scripts/grant_platform_admin.py`
+(table owner) is the only path. Enrolling the second factor is two
+password-gated API calls.
 
 ## 3. Types are generated, never written
 
@@ -74,6 +113,16 @@ the list — stays exposed. And a superseded response must also skip its
 still in flight.
 
 `lib/use-latest-only.ts` is the same idea for single-record loaders.
+
+The hook is split in two: `useCursorListCore` is the loader, and
+`useCursorList` is a thin wrapper supplying the bearer token from
+`AuthContext`. That exists because the platform console cannot call the
+wrapper at all — `useAuth()` throws outside an `AuthProvider`, and the console
+deliberately has none (§2.1). Copying the loader to work around that would
+have reintroduced the exact duplication the hook exists to remove, so the
+console calls the core with no auth headers and lets the browser attach its
+cookie. Every existing call site uses the wrapper and its signature is
+unchanged.
 
 `app/(app)/integrations/page.tsx` deliberately does not use the hook: its
 envelope is `{connected_at, records, next_cursor}` rather than `{items,
