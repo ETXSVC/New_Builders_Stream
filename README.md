@@ -78,6 +78,15 @@ rather than an empty one.
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
 
+**The platform console** is at http://localhost:3001/platform, and needs an operator account that nothing in the UI can create — deliberately, since `platform_admins` revokes writes from both runtime database roles:
+
+```bash
+cd backend
+python scripts/grant_platform_admin.py grant you@example.com   # the user must already exist
+```
+
+Then enrol a second factor (`POST /platform/auth/mfa/enroll` → `/activate`, both password-gated); login refuses any account without one. The console also needs `PLATFORM_DATABASE_URL` set — `.env.example` has it, and leaving it unset disables the console entirely (every `/platform` route 503s) rather than quietly running it on a wider connection.
+
 **Production**: `docker-compose.prod.yml` is the hardened single-box stack (Caddy TLS termination, internal-only DB/Redis, auto-migrations, restart policies, nightly backups); `deploy/split/` holds three standalone stacks (backend API, middleware worker tier, frontend) for deploying each tier on its own machine with independent lifecycles. The full guide — server `.env` requirements, first-deploy smoke-test checklist, split-topology wiring — is [docs/11-production-deployment.md](docs/11-production-deployment.md).
 
 ## Open Questions
