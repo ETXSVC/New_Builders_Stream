@@ -43,7 +43,7 @@ Implemented against the [roadmap](docs/09-roadmap-implementation-plan.md), on `m
 | Platform console (cross-tenant admin) | ✅ Done | `/platform/*`: list every tenant, create one (company + owner + trial), rename, change tier/status, three-state per-module entitlement overrides, and take a tenant out of service (soft — the role holds no DELETE anywhere). Separate token scope, separate DB role, TOTP-gated. Operator UI at `/platform` (own login, own httpOnly session cookie, no product nav); operator accounts are still minted by `scripts/grant_platform_admin.py`, because no route can grant that privilege |
 | 5 — Offline/PWA, AI takeoff, multi-currency | ⬜ Not scheduled | Per roadmap |
 
-Backend test suite (`main`): 1,070 passing tests, plus a 26-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
+Backend test suite (`main`): 1,080 passing tests, plus a 26-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
 
 **Remaining gaps** (deliberate, tracked):
 - **Real external-service clients:** Stripe billing, QuickBooks/FreshBooks sync, and SMTP email all run behind Protocol interfaces with config-selected fake implementations. The wiring, webhooks, tier gating, idempotency, and tests are in place; production use needs real credentials and SDK-backed clients dropped in behind the existing interfaces.
@@ -79,7 +79,31 @@ rather than an empty one.
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
 
-**The platform console** is at http://localhost:3001/platform, and needs an operator account that nothing in the UI can create — deliberately, since `platform_admins` revokes writes from both runtime database roles:
+### The platform console
+
+Cross-tenant administration at http://localhost:3001/platform — a different
+trust tier from the product, with its own login, its own token scope, its own
+database role, and no product navigation. From it an operator can:
+
+| Action | Notes |
+|---|---|
+| List / search every tenant | Cursor-paginated; filter to root companies, or include ones out of service |
+| Create a tenant | Company + owner user + 14-day trial in one transaction. The owner's password is generated server-side and shown **once** — it is stored only as a hash and cannot be retrieved afterwards |
+| Rename | Works on branches too, unlike entitlements |
+| Change tier / status / seats | Setting a status takes it out of Stripe's hands until handed back, so a routine webhook cannot revert an operator's decision |
+| Override modules per tenant | Three-state: grant what the tier withholds, withhold what it grants, or defer to the tier |
+| Take out of service / restore | **Soft.** Sets `companies.deleted_at`; blocks sign-in for the company and every branch beneath it within one request, not one token lifetime. Reversible, and destroys nothing |
+
+Every change is written to the **target tenant's** own audit log, not to a
+separate operator stream — the customer can see that their entitlements
+changed, by whom, and from what to what.
+
+Two things the console deliberately cannot do. It cannot **hard-delete** a
+tenant: its database role holds `DELETE` on nothing, and removing a tenant's
+rows for real crosses ~40 tables of `NO ACTION` foreign keys, which lives in
+`backend/scripts/prune_dev_tenants.py` behind a shell and the table owner. And
+it cannot **create an operator**, because `platform_admins` revokes writes
+from both runtime database roles, so no route can grant that privilege:
 
 ```bash
 cd backend
@@ -88,7 +112,36 @@ python scripts/grant_platform_admin.py grant you@example.com   # the user must a
 
 Then enrol a second factor (`POST /platform/auth/mfa/enroll` → `/activate`, both password-gated); login refuses any account without one. The console also needs `PLATFORM_DATABASE_URL` set — `.env.example` has it, and leaving it unset disables the console entirely (every `/platform` route 503s) rather than quietly running it on a wider connection.
 
-**Production**: `docker-compose.prod.yml` is the hardened single-box stack (Caddy TLS termination, internal-only DB/Redis, auto-migrations, restart policies, nightly backups); `deploy/split/` holds three standalone stacks (backend API, middleware worker tier, frontend) for deploying each tier on its own machine with independent lifecycles. The full guide — server `.env` requirements, first-deploy smoke-test checklist, split-topology wiring — is [docs/11-production-deployment.md](docs/11-production-deployment.md).
+### Local development notes
+
+Two things about the dev stack that look like bugs and are not:
+
+- **Browsing by hostname rather than `localhost`.** `next dev` serves its own
+  internal endpoints (fonts, the HMR socket) only to origins it trusts, which
+  out of the box means localhost — so `http://your-box:3001` gives a 403 on
+  every font and a WebSocket that reconnects forever while the app works
+  fine. Set `DEV_ALLOWED_ORIGINS` in `.env` (comma-separated hostnames;
+  `.env.example` documents it). Dev-only: `next build` never reads it.
+
+- **Serving the frontend as it actually ships.** Turbopack does not register
+  every deeply nested API route on a Windows host, so a route can 404 in the
+  dev container while `next build` produces it correctly. To run the built
+  artifact instead:
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.frontend-prod.yml up -d frontend
+  ```
+
+  Use **http://localhost:3001** with that overlay, not a hostname:
+  `NODE_ENV=production` makes the session cookies `Secure`, and browsers
+  refuse to store those over plain HTTP except on localhost — otherwise login
+  appears to succeed and bounces straight back. No hot reload in this mode;
+  add `--build` after a frontend change, or drop back with a plain
+  `docker compose up -d frontend`.
+
+### Production
+
+`docker-compose.prod.yml` is the hardened single-box stack (Caddy TLS termination, internal-only DB/Redis, auto-migrations, restart policies, nightly backups); `deploy/split/` holds three standalone stacks (backend API, middleware worker tier, frontend) for deploying each tier on its own machine with independent lifecycles. The full guide — server `.env` requirements, first-deploy smoke-test checklist, split-topology wiring — is [docs/11-production-deployment.md](docs/11-production-deployment.md).
 
 ## Open Questions
 
