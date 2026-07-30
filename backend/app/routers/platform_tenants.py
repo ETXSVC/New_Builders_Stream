@@ -585,10 +585,9 @@ async def deactivate_tenant(
     if company.deleted_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "This tenant is already out of service")
 
+    # `is_active` follows automatically: migration 0025 made it a generated
+    # column over this one, so there is nothing to keep in step by hand.
     company.deleted_at = utcnow()
-    # The vestigial flag from migration 0001, kept in step so it stops
-    # lying. `deleted_at` is what anything actually reads.
-    company.is_active = False
     await actor.session.flush()
 
     await write_audit_log(
@@ -620,7 +619,6 @@ async def restore_tenant(
         raise HTTPException(status.HTTP_409_CONFLICT, "This tenant is already in service")
 
     company.deleted_at = None
-    company.is_active = True
     await actor.session.flush()
 
     await write_audit_log(

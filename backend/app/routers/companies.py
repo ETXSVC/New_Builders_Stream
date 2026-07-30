@@ -171,6 +171,13 @@ async def create_child_company(
     child = Company(parent_id=company_id, name=payload.name)
     current.session.add(child)
     await current.session.flush()
+    # `is_active` is a generated column (migration 0025) and Company sets
+    # `eager_defaults=False`, so the INSERT does not read it back — see that
+    # model's comment for why RETURNING is unavailable here. It has to be
+    # fetched before the response is built, because doing it implicitly
+    # means a lazy load from Pydantic's synchronous code and a
+    # `MissingGreenlet`. Explicit and awaited is the async-safe form.
+    await current.session.refresh(child, ["is_active"])
 
     await write_audit_log(
         current.session,
@@ -320,6 +327,12 @@ async def rename_company(
     previous_name = company.name
     company.name = payload.name
     await current.session.flush()
+    # Same reason as create_child_company above: `is_active` is a generated
+    # column and `eager_defaults=False` means the flush expires it rather
+    # than reading it back, so it must be re-fetched with an await before
+    # Pydantic reaches for it synchronously. Any route that writes a Company
+    # and then returns a CompanyResponse needs this line.
+    await current.session.refresh(company, ["is_active"])
 
     await write_audit_log(
         current.session,

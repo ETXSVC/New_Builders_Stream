@@ -26,6 +26,7 @@ import uuid
 
 import asyncpg
 import pyotp
+import pytest
 
 from app.core.security import create_platform_token
 from app.services.token_encryption import decrypt_token
@@ -690,6 +691,22 @@ async def _deleted_at(company_id):
         await conn.close()
 
 
+async def _is_active(company_id) -> bool:
+    """The generated column's value, read from the database.
+
+    Deliberately NOT from an API response: `is_active` being correct in
+    `CompanyResponse` would also be true if some route were computing it,
+    and the claim under test is that POSTGRES derives it.
+    """
+    conn = await _owner_conn()
+    try:
+        return await conn.fetchval(
+            "SELECT is_active FROM companies WHERE id = $1", uuid.UUID(str(company_id))
+        )
+    finally:
+        await conn.close()
+
+
 async def test_creating_a_tenant_produces_a_working_customer(client):
     """The whole point of the create route: what comes out is a tenant its
     owner can actually sign in to and use, not four rows that look right.
@@ -830,8 +847,10 @@ async def test_deactivating_a_parent_takes_its_branches_with_it(client):
     conn = await _owner_conn()
     try:
         await conn.execute(
-            "INSERT INTO companies (id, parent_id, name, is_active, created_at) "
-            "VALUES ($1, $2, 'Branch Office', true, now())",
+            # No `is_active`: generated from `deleted_at` since migration
+            # 0025, and a generated column rejects an explicit value.
+            "INSERT INTO companies (id, parent_id, name, created_at) "
+            "VALUES ($1, $2, 'Branch Office', now())",
             branch_id,
             uuid.UUID(str(parent["company_id"])),
         )
@@ -947,3 +966,68 @@ async def test_a_tenant_admin_cannot_reach_any_lifecycle_route(client):
         f"/platform/companies/{company_id}/restore", headers=headers
     )
     assert restore.status_code == 401, restore.text
+
+
+async def test_is_active_cannot_disagree_with_deleted_at(client):
+    """The reason migration 0025 exists.
+
+    0024 kept `is_active` in step with `deleted_at` by having the routes
+    write both. That is an invariant maintained by discipline, and it holds
+    until someone adds the third writer. Now Postgres computes it, so the
+    two disagreeing is not a bug that can be introduced -- it is a state the
+    schema cannot represent.
+
+    Asserted through the real routes rather than by writing the columns, so
+    what is checked is the behaviour an operator produces.
+    """
+    operator = await _platform_operator(client, "ops-generated@platform.example")
+    tenant = await register_and_login(client, "Derived Co", "admin@derived.example")
+
+    assert await _is_active(tenant["company_id"]) is True
+
+    await client.delete(
+        f"/platform/companies/{tenant['company_id']}", headers=operator["platform_headers"]
+    )
+    assert await _is_active(tenant["company_id"]) is False
+
+    await client.post(
+        f"/platform/companies/{tenant['company_id']}/restore",
+        headers=operator["platform_headers"],
+    )
+    assert await _is_active(tenant["company_id"]) is True
+
+
+async def test_is_active_rejects_being_written_at_all():
+    """Not merely 'nothing writes it' -- nothing CAN.
+
+    A plain column with no current writer looks identical to this one from
+    the application's side; the difference is only visible by trying. Uses
+    the table OWNER, the most privileged role available, so this says the
+    column is unwritable rather than that some role lacks a grant.
+    """
+    conn = await _owner_conn()
+    try:
+        company_id = uuid.uuid4()
+        with pytest.raises(asyncpg.PostgresError) as insert_attempt:
+            await conn.execute(
+                "INSERT INTO companies (id, parent_id, name, is_active, created_at) "
+                "VALUES ($1, NULL, 'Should Fail', true, now())",
+                company_id,
+            )
+        assert "generated" in str(insert_attempt.value).lower()
+
+        # And the same for an UPDATE, which is the shape a future writer is
+        # far more likely to take than an INSERT.
+        await conn.execute(
+            "INSERT INTO companies (id, parent_id, name, created_at) "
+            "VALUES ($1, NULL, 'Update Target', now())",
+            company_id,
+        )
+        with pytest.raises(asyncpg.PostgresError) as update_attempt:
+            await conn.execute(
+                "UPDATE companies SET is_active = false WHERE id = $1", company_id
+            )
+        assert "generated" in str(update_attempt.value).lower()
+    finally:
+        await conn.execute("DELETE FROM companies WHERE id = $1", company_id)
+        await conn.close()
