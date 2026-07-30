@@ -22,6 +22,8 @@ The full document set lives in [`docs/`](docs/) and a combined, presentation-rea
 | [10-test-strategy.md](docs/10-test-strategy.md) | Test pyramid, tenant-isolation release gate, test cases |
 | [11-production-deployment.md](docs/11-production-deployment.md) | Production runbook: server `.env`, first deploy, smoke tests, backups, split topology |
 | [12-project-review.md](docs/12-project-review.md) | Full-codebase review (2026-07-24): findings, strengths, prioritized follow-ups |
+| [13-database-erd.md](docs/13-database-erd.md) | Per-domain ERD generated from the live schema, plus the RLS boundary it can't draw |
+| [14-frontend-architecture.md](docs/14-frontend-architecture.md) | Next.js App Router structure, BFF pattern, shared list/loader conventions |
 
 Start with the [PRD](docs/01-prd.md) for the "why," then [Technical Architecture](docs/03-technical-architecture.md) for the "how." For working in the code, [`CLAUDE.md`](CLAUDE.md) is the maintained architecture/commands reference. Per-feature design specs and implementation plans live under [`docs/superpowers/`](docs/superpowers/).
 
@@ -38,9 +40,10 @@ Implemented against the [roadmap](docs/09-roadmap-implementation-plan.md), on `m
 | 3 — Accounting/Billing | ✅ Done | Invoices/payments, bills, expenses, auto-drafted deposit + final invoices (event-driven), Stripe subscription lifecycle behind a fake client |
 | 4 — External Integrations | ✅ Done | QuickBooks/FreshBooks OAuth connect + idempotent sync behind fake clients |
 | Frontend (all of the above) | ✅ Done | Next.js App Router product UI: CRM, projects, estimation + client e-signature, billing, compliance, integrations, invitation accept |
+| Platform console (cross-tenant admin) | ✅ Done (API only) | `/platform/*`: list every tenant, change tier/status, three-state per-module entitlement overrides. Separate token scope, separate DB role, TOTP-gated. **No UI yet** — API and `scripts/grant_platform_admin.py` only |
 | 5 — Offline/PWA, AI takeoff, multi-currency | ⬜ Not scheduled | Per roadmap |
 
-Backend test suite (`main`): 1,049 passing tests, plus an 18-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
+Backend test suite (`main`): 1,070 passing tests, plus an 18-test Playwright e2e suite, including dedicated tenant-isolation/RLS regression suites (both a `company_id`-index and an RLS-*policy* coverage gate, each catalog-driven so a future tenant table can't slip past either) and a tier-gating completeness gate. Three CI workflows (six jobs) gate every merge: backend ([backend-ci.yml](.github/workflows/backend-ci.yml) — a `deploy-config` job validating every compose file and the backup scripts, a `docker-build` job that builds the backend image *and runs it* to prove it's serviceable, and a `test` job running pytest against real Postgres 16 + Redis 7, ruff, mypy, and an OpenAPI schema-diff), frontend ([frontend-ci.yml](.github/workflows/frontend-ci.yml) — eslint + typechecked build, plus a `docker-build` job that boots the standalone production image against a stand-in backend), and end-to-end ([e2e-ci.yml](.github/workflows/e2e-ci.yml) — the full stack with a Playwright suite driving real browser flows).
 
 **Remaining gaps** (deliberate, tracked):
 - **Real external-service clients:** Stripe billing, QuickBooks/FreshBooks sync, and SMTP email all run behind Protocol interfaces with config-selected fake implementations. The wiring, webhooks, tier gating, idempotency, and tests are in place; production use needs real credentials and SDK-backed clients dropped in behind the existing interfaces.
@@ -49,6 +52,7 @@ Backend test suite (`main`): 1,049 passing tests, plus an 18-test Playwright e2e
 - **Backend package layout:** organized by technical layer (`models/`, `routers/`, `services/`) rather than the doc's domain-bounded packages. The no-cross-module-imports rule is enforced by an AST sweep (`tests/test_module_boundaries.py`), not by review.
 - **Alert delivery:** the monitoring stack (Prometheus + Grafana + Alertmanager + node-exporter + cAdvisor, in `docker-compose.prod.yml`) evaluates and groups the alerts [docs/06 §5](docs/06-nonfunctional-requirements.md) requires, but ships with no notifier wired up — Alertmanager cannot read environment variables, so the SMTP details have to be filled in on the box ([runbook §10](docs/11-production-deployment.md)). Backup failure has an independent cron-mail path regardless.
 - **mypy:** gates `backend/app` in CI alongside ruff; the test suite itself stays outside the type gate (exercised by pytest instead).
+- **Platform console UI:** the cross-tenant admin surface is API-only. Operating it today means an HTTP client plus `backend/scripts/grant_platform_admin.py` (which needs database access and a shell — deliberately, since no route can grant that privilege). A Next.js surface for it is not built.
 
 ## Architecture (Summary)
 
@@ -65,9 +69,12 @@ Full rationale and diagrams are in [03-technical-architecture.md](docs/03-techni
 
 ```bash
 cp .env.example .env   # then set INTEGRATION_TOKEN_ENCRYPTION_KEY (see comments)
-docker compose up      # Postgres, Redis, backend :8000, worker, scheduler, frontend :3001
-docker compose exec backend alembic upgrade head
+docker compose up      # Postgres, Redis, migrate, backend :8000, worker, scheduler, frontend :3001
 ```
+
+A one-shot `migrate` service applies `alembic upgrade head` before the
+backend and worker start, so `up` leaves you with a migrated database
+rather than an empty one.
 
 Register a company at http://localhost:3001/register — registration creates a pro-tier trial. Backend tests: `cd backend && pip install -e ".[dev]" && pytest` (needs Postgres + Redis per `.env`). E2E: `cd frontend && npm run test:e2e` against a running stack.
 

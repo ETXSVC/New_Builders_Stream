@@ -17,6 +17,15 @@ with no CurrentUser: the OAuth callback (which authenticates via a signed
 state token) and the event handlers (which gate event-driven writes into
 gated modules, spec Decision 4).
 
+Since migration 0023 a per-tenant OVERRIDE takes precedence over the tier.
+`company_module_overrides` is written only by the platform console (the
+runtime `app_user` role holds SELECT on it and nothing else), and a row
+there answers the question outright: `enabled=True` grants a module the
+plan would withhold, `enabled=False` withholds one the plan would grant,
+and no row at all defers to the tier as before. `_module_allowed` is the
+single place that resolves this, so `require_module`, the OAuth callback
+and the event handlers cannot drift apart on what a tenant may use.
+
 Missing subscription row fails OPEN in both — mirroring block_if_read_only's
 documented "unreachable state (every root company gets a subscription
 atomically at registration), not something to build defensive handling
@@ -29,7 +38,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, get_current_user
-from app.models import Subscription
+from app.models import CompanyModuleOverride, Subscription
 
 TIER_RANK = {"starter": 0, "pro": 1, "enterprise": 2}
 
@@ -56,11 +65,47 @@ async def _root_tier(session: AsyncSession, company_id: uuid.UUID) -> str | None
     return result.scalar_one_or_none()
 
 
-async def tier_allows(session: AsyncSession, company_id: uuid.UUID, module: str) -> bool:
+async def _module_override(
+    session: AsyncSession, company_id: uuid.UUID, module: str
+) -> bool | None:
+    """The platform-console override for this module, or None to defer.
+
+    Three states, and the middle one is why this returns `bool | None`
+    rather than a bool: no row means "use the tier", `True` grants a module
+    the tier would withhold, and `False` withholds one the tier would grant.
+    Collapsing the first two would make "off" unexpressible.
+
+    Same one-query, root-resolution-inlined shape as `_root_tier` above, and
+    it reads through the caller's own RLS-scoped session — the overrides
+    table carries the same upward-visibility policy `subscriptions` does
+    (migration 0023), so a child branch sees its root's row.
+    """
+    result = await session.execute(
+        select(CompanyModuleOverride.enabled).where(
+            CompanyModuleOverride.company_id == func.get_root_company_id(company_id),
+            CompanyModuleOverride.module == module,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _module_allowed(session: AsyncSession, company_id: uuid.UUID, module: str) -> bool:
+    """THE resolution path. Both public entry points below go through this
+    so the OAuth callback, the event handlers and every gated route can
+    never disagree about what a tenant is entitled to.
+    """
+    override = await _module_override(session, company_id, module)
+    if override is not None:
+        return override
+
     tier = await _root_tier(session, company_id)
     if tier is None:
         return True  # fail open — see module docstring
     return TIER_RANK[tier] >= TIER_RANK[MODULE_MIN_TIER[module]]
+
+
+async def tier_allows(session: AsyncSession, company_id: uuid.UUID, module: str) -> bool:
+    return await _module_allowed(session, company_id, module)
 
 
 def require_module(module: str):
@@ -69,8 +114,7 @@ def require_module(module: str):
     min_tier = MODULE_MIN_TIER[module]
 
     async def dependency(current: CurrentUser = Depends(get_current_user, scope="function")) -> CurrentUser:
-        tier = await _root_tier(current.session, current.company_id)
-        if tier is not None and TIER_RANK[tier] < TIER_RANK[min_tier]:
+        if not await _module_allowed(current.session, current.company_id, module):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"This feature requires the {min_tier} plan",

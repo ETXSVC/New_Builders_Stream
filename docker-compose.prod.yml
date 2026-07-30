@@ -87,6 +87,19 @@ services:
     env_file: .env
     environment:
       APP_ENV: production
+      # The `platform_admin` role (migration 0023): the cross-tenant console's
+      # connection. BYPASSRLS like `scanner` on the worker below, because
+      # listing every tenant is the job, but far narrower on writes — SELECT
+      # everywhere, DML on company_module_overrides, UPDATE on subscriptions,
+      # INSERT on audit_log, nothing else.
+      #
+      # Unlike SCANNER_DATABASE_URL there is NO fallback in app/config.py:
+      # unset disables the console (every /platform route 503s) rather than
+      # quietly running it on a wider connection. Set here rather than left to
+      # .env precisely so this stack is not the deployment that discovers that
+      # the hard way. Only `backend` needs it — no task in app/tasks/ touches
+      # the console, so worker and scheduler deliberately do not carry it.
+      PLATFORM_DATABASE_URL: postgresql+asyncpg://platform_admin:${PLATFORM_DB_PASSWORD:-platform_password}@postgres:5432/${POSTGRES_DB}
     volumes:
       - documents_data:/data/documents
     networks: [internal]

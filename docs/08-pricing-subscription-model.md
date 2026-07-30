@@ -31,13 +31,25 @@ Three tiers gate access by **module availability** and scale cost by **active us
 | QuickBooks / FreshBooks Integration | — | — | ✓ |
 | Nested child-branch companies | — | Single branch only | ✓ |
 
-Enforcement happens server-side: a per-route FastAPI dependency (`require_module`, see [`docs/superpowers/specs/2026-07-15-tier-gating-design.md`](superpowers/specs/2026-07-15-tier-gating-design.md)) resolves the active company's ROOT-company `subscriptions.tier` and rejects requests with `403` if the tier doesn't include that module — never enforced only in the frontend UI. (Earlier versions of this document attributed tier resolution to the `TenantMiddleware`; the middleware has no database session — enforcement lives in the same per-route dependency layer as role checks and read-only enforcement.) Gating applies to a module's **mutating** routes; read routes stay open at every tier so existing data remains visible after a downgrade — see Section 6.
+**The table above is the default, not the last word.** A per-tenant override
+(`company_module_overrides`, [Database Schema](04-database-schema.md),
+Section 9) takes precedence over the tier in either direction: support can
+grant a module the plan withholds — a pilot, a goodwill concession, an
+enterprise trial — or withhold one the plan grants, without moving the
+customer's plan or touching Stripe. Overrides are set through the platform
+console ([API Spec](05-api-specification.md), Section 10), are held by the
+**root** company so they apply to every branch in that tree, and are recorded
+in that tenant's audit log. A tenant with no override row behaves exactly as
+this table says.
+
+Enforcement happens server-side: a per-route FastAPI dependency (`require_module`, see [`docs/superpowers/specs/2026-07-15-tier-gating-design.md`](superpowers/specs/2026-07-15-tier-gating-design.md)) resolves the active company's ROOT-company `subscriptions.tier`, applies any override, and rejects requests with `403` if the result doesn't include that module — never enforced only in the frontend UI. (Earlier versions of this document attributed tier resolution to the `TenantMiddleware`; the middleware has no database session — enforcement lives in the same per-route dependency layer as role checks and read-only enforcement.) Gating applies to a module's **mutating** routes; read routes stay open at every tier so existing data remains visible after a downgrade — see Section 6.
 
 ## 4. Stripe Implementation Mapping
 
 - Each tier is a Stripe **Product** with a **Price** (monthly and annual variants).
 - Seat overage is modeled as a Stripe **metered/usage-based** line item on the subscription, incremented when a company's active user count exceeds the tier's included seats.
 - `subscriptions` table (see [Database Schema](04-database-schema.md), Section 7) stores `stripe_customer_id`, `stripe_subscription_id`, `tier`, `status`, and `current_period_end`, kept in sync via the `/webhooks/stripe` endpoint ([API Specification](05-api-specification.md), Section 9).
+- That sync is **last-write-wins on `status`**, which is why the table also carries `manual_status_override`. When an operator sets a status by hand from the platform console, the flag is set and the webhook stops applying Stripe's `status` to that row — otherwise the next routine `customer.subscription.updated` event would silently revert the decision, with no error and nothing in the logs. `current_period_end` keeps syncing regardless: that is Stripe's own fact to own, and suppressing it would leave the row claiming a period that has passed. Clearing the override hands `status` back to Stripe.
 - Plan changes (upgrade/downgrade) and cancellations are handled through Stripe's Customer Portal rather than custom UI, per the original architectural decision to avoid building billing logic from scratch.
 
 ## 5. Trial & Conversion

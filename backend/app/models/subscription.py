@@ -1,7 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    false as sa_false,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +45,15 @@ class Subscription(Base, UUIDPKMixin):
     included_seats: Mapped[int] = mapped_column(Integer, nullable=False)
     current_period_end: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Migration 0023. Set when a platform admin edits `status` by hand, and
+    # read by POST /webhooks/stripe, which is otherwise last-write-wins on
+    # that column: without this, the next routine customer.subscription.updated
+    # event silently reverts the operator's change, with no error and nothing
+    # in the logs. While it is set the webhook still applies
+    # current_period_end (Stripe's own fact) and leaves status alone.
+    manual_status_override: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
     )
 
     __table_args__ = (

@@ -3994,6 +3994,84 @@
         "title": "MfaEnrollResponse",
         "type": "object"
       },
+      "ModuleEntitlement": {
+        "properties": {
+          "allowed_by_tier": {
+            "title": "Allowed By Tier",
+            "type": "boolean"
+          },
+          "effective": {
+            "title": "Effective",
+            "type": "boolean"
+          },
+          "module": {
+            "enum": [
+              "estimation",
+              "compliance",
+              "accounting",
+              "integrations",
+              "child_branches"
+            ],
+            "title": "Module",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
+          }
+        },
+        "required": [
+          "module",
+          "allowed_by_tier",
+          "override",
+          "effective"
+        ],
+        "title": "ModuleEntitlement",
+        "type": "object"
+      },
+      "ModuleOverrideRequest": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ModuleOverrideRequest",
+        "type": "object"
+      },
       "MyTaskListResponse": {
         "description": "NOT cursor-paginated: one user's open assignment list is bounded\nsmall in practice; capped at 200 in the route.",
         "properties": {
@@ -4242,6 +4320,127 @@
           "tasks"
         ],
         "title": "PhaseWithTasksResponse",
+        "type": "object"
+      },
+      "PlatformLoginRequest": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          },
+          "totp_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totp Code"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "PlatformLoginRequest",
+        "type": "object"
+      },
+      "PlatformMfaActivateRequest": {
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          },
+          "totp_code": {
+            "title": "Totp Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "totp_code"
+        ],
+        "title": "PlatformMfaActivateRequest",
+        "type": "object"
+      },
+      "PlatformMfaEnrollRequest": {
+        "description": "Enrollment is password-gated rather than session-gated: a platform\nadmin may hold no company membership at all, so the ordinary\n/auth/mfa/enroll route (which needs a tenant session) is unreachable for\nthem.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "PlatformMfaEnrollRequest",
+        "type": "object"
+      },
+      "PlatformMfaEnrollResponse": {
+        "properties": {
+          "otpauth_uri": {
+            "title": "Otpauth Uri",
+            "type": "string"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret",
+          "otpauth_uri"
+        ],
+        "title": "PlatformMfaEnrollResponse",
+        "type": "object"
+      },
+      "PlatformTokenResponse": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "expires_in_minutes": {
+            "title": "Expires In Minutes",
+            "type": "integer"
+          },
+          "token_type": {
+            "default": "bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in_minutes",
+          "email"
+        ],
+        "title": "PlatformTokenResponse",
         "type": "object"
       },
       "PortalSessionResponse": {
@@ -5043,6 +5242,58 @@
         "title": "SubscriptionResponse",
         "type": "object"
       },
+      "SubscriptionUpdateRequest": {
+        "description": "Every field optional \u2014 a PATCH that sets only `tier` must not blank\nthe rest. `None` means \"leave alone\".",
+        "properties": {
+          "clear_manual_status_override": {
+            "default": false,
+            "title": "Clear Manual Status Override",
+            "type": "boolean"
+          },
+          "included_seats": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Seats"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "starter",
+                  "pro",
+                  "enterprise"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          }
+        },
+        "title": "SubscriptionUpdateRequest",
+        "type": "object"
+      },
       "SyncRecordResponse": {
         "properties": {
           "attempt_count": {
@@ -5321,6 +5572,249 @@
           }
         },
         "title": "TaskUpdateRequest",
+        "type": "object"
+      },
+      "TenantDetail": {
+        "properties": {
+          "child_company_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Child Company Ids",
+            "type": "array"
+          },
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "included_seats": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Seats"
+          },
+          "is_root": {
+            "title": "Is Root",
+            "type": "boolean"
+          },
+          "manual_status_override": {
+            "title": "Manual Status Override",
+            "type": "boolean"
+          },
+          "modules": {
+            "items": {
+              "$ref": "#/components/schemas/ModuleEntitlement"
+            },
+            "title": "Modules",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "starter",
+                  "pro",
+                  "enterprise"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "user_count": {
+            "title": "User Count",
+            "type": "integer"
+          },
+          "writes_enabled": {
+            "title": "Writes Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "company_id",
+          "name",
+          "parent_id",
+          "is_root",
+          "tier",
+          "status",
+          "included_seats",
+          "manual_status_override",
+          "writes_enabled",
+          "user_count",
+          "created_at",
+          "modules",
+          "child_company_ids"
+        ],
+        "title": "TenantDetail",
+        "type": "object"
+      },
+      "TenantPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TenantSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "TenantPage",
+        "type": "object"
+      },
+      "TenantSummary": {
+        "properties": {
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "included_seats": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Included Seats"
+          },
+          "is_root": {
+            "title": "Is Root",
+            "type": "boolean"
+          },
+          "manual_status_override": {
+            "title": "Manual Status Override",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "starter",
+                  "pro",
+                  "enterprise"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "user_count": {
+            "title": "User Count",
+            "type": "integer"
+          },
+          "writes_enabled": {
+            "title": "Writes Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "company_id",
+          "name",
+          "parent_id",
+          "is_root",
+          "tier",
+          "status",
+          "included_seats",
+          "manual_status_override",
+          "writes_enabled",
+          "user_count",
+          "created_at"
+        ],
+        "title": "TenantSummary",
         "type": "object"
       },
       "TokenResponse": {
@@ -9362,6 +9856,423 @@
         "summary": "Create Bom Line Receipt",
         "tags": [
           "bom"
+        ]
+      }
+    },
+    "/platform/auth/login": {
+      "post": {
+        "operationId": "platform_login_platform_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformTokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Platform Login",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/auth/mfa/activate": {
+      "post": {
+        "description": "Prove possession of the enrolled secret. Only after this does\n/platform/auth/login issue tokens for the account.",
+        "operationId": "platform_mfa_activate_platform_auth_mfa_activate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformMfaActivateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Platform Mfa Activate",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/auth/mfa/enroll": {
+      "post": {
+        "description": "Begin (or restart) TOTP enrollment for a platform admin.\n\nPassword-gated rather than session-gated, because a platform admin may\nbelong to no company and so cannot obtain the tenant session\n`/auth/mfa/enroll` requires. Re-enrolling while PENDING rotates the\nsecret; re-enrolling while ACTIVE is refused, matching that route.",
+        "operationId": "platform_mfa_enroll_platform_auth_mfa_enroll_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformMfaEnrollRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformMfaEnrollResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Platform Mfa Enroll",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/companies": {
+      "get": {
+        "operationId": "list_tenants_platform_companies_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "description": "Only companies with no parent \u2014 the level entitlements are held at.",
+            "in": "query",
+            "name": "roots_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Only companies with no parent \u2014 the level entitlements are held at.",
+              "title": "Roots Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tenants",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/companies/{company_id}": {
+      "get": {
+        "operationId": "get_tenant_platform_companies__company_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Tenant",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/companies/{company_id}/modules/{module}": {
+      "delete": {
+        "description": "Revert to whatever the tier says. Distinct from setting the override\nto false, which withholds a module the tier would otherwise allow.",
+        "operationId": "clear_module_override_platform_companies__company_id__modules__module__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "module",
+            "required": true,
+            "schema": {
+              "title": "Module",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Module Override",
+        "tags": [
+          "platform"
+        ]
+      },
+      "put": {
+        "operationId": "set_module_override_platform_companies__company_id__modules__module__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "module",
+            "required": true,
+            "schema": {
+              "title": "Module",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModuleOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Module Override",
+        "tags": [
+          "platform"
+        ]
+      }
+    },
+    "/platform/companies/{company_id}/subscription": {
+      "patch": {
+        "operationId": "update_subscription_platform_companies__company_id__subscription_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "company_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Company Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscriptionUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Subscription",
+        "tags": [
+          "platform"
         ]
       }
     },

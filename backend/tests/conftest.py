@@ -28,6 +28,25 @@ TEST_DB_NAME = "builders_stream_test"
 ADMIN_DSN = "postgresql://postgres:devpassword@localhost:5432/postgres"
 TEST_DATABASE_URL = f"postgresql+asyncpg://postgres:devpassword@localhost:5432/{TEST_DB_NAME}"
 TEST_APP_DATABASE_URL = f"postgresql+asyncpg://app_user:app_password@localhost:5432/{TEST_DB_NAME}"
+# The `platform_admin` role (migration 0023) against the TEST database.
+# Assigned unconditionally like the two above, not via setdefault: a
+# developer whose shell exports the dev value would otherwise have the
+# platform-console tests read and WRITE the development database.
+TEST_PLATFORM_DATABASE_URL = (
+    f"postgresql+asyncpg://platform_admin:platform_password@localhost:5432/{TEST_DB_NAME}"
+)
+# The `scanner` role (migration 0020) against the TEST database, and
+# assigned for exactly the reason described above — this one is not
+# hypothetical. `app/tasks/scanner_db.py` resolves
+# `scanner_database_url or migrations_database_url`, and only the second of
+# those was ever pointed at the test database here. CI has no `.env`, so the
+# fallback made it pass there; every developer machine has one (it ships in
+# `.env.example`), which means the three cross-tenant sweeps under test —
+# compliance expiry, seat usage, overdue financial records — connected to
+# the DEVELOPMENT database and wrote to it.
+TEST_SCANNER_DATABASE_URL = (
+    f"postgresql+asyncpg://scanner:scanner_password@localhost:5432/{TEST_DB_NAME}"
+)
 
 # Point the app at the test database BEFORE app.config is imported anywhere else.
 # This must run at conftest.py *module* import time, not inside a fixture body:
@@ -46,6 +65,8 @@ TEST_APP_DATABASE_URL = f"postgresql+asyncpg://app_user:app_password@localhost:5
 os.environ["DATABASE_URL"] = TEST_APP_DATABASE_URL
 os.environ["MIGRATIONS_DATABASE_URL"] = TEST_DATABASE_URL.replace("+asyncpg", "+asyncpg")
 os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
+os.environ["PLATFORM_DATABASE_URL"] = TEST_PLATFORM_DATABASE_URL
+os.environ["SCANNER_DATABASE_URL"] = TEST_SCANNER_DATABASE_URL
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_EXPIRE_MINUTES", "60")
@@ -239,6 +260,18 @@ async def _clean_tables():
     from app.db import engine
 
     await engine.dispose()
+
+    # The platform console's engine (migration 0023) is a second module-level
+    # singleton with the same lifetime, and it hits the same hazard from the
+    # other direction: a connection pooled during one test's event loop and
+    # reused in the next raises "got Future ... attached to a different loop"
+    # from inside the request, which surfaces as a 500 on a /platform route
+    # rather than anything pointing at pooling. Disposed here for the same
+    # reason and in the same place as app.db's engine above.
+    from app.core.platform_db import platform_engine
+
+    if platform_engine is not None:
+        await platform_engine.dispose()
 
 
 async def set_subscription_tier(company_id, tier) -> None:

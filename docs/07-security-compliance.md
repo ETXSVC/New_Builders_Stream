@@ -30,6 +30,38 @@ Enforced at two layers, per [Technical Architecture](03-technical-architecture.m
 
 Role gating composes with **tier gating** ([Pricing Model](08-pricing-subscription-model.md), Section 3; design: [`docs/superpowers/specs/2026-07-15-tier-gating-design.md`](superpowers/specs/2026-07-15-tier-gating-design.md)): role decides *who within a company* may act on a module; tier decides *which subscription plan* the company must be on for that module's mutating routes to be available at all. Both reject with `403`, alongside the subscription-status read-only gate — three orthogonal per-route dependencies on the same routes.
 
+### 2.1 The platform tier (cross-tenant operators)
+
+Every role above is a role *within a company*. A **platform administrator** is
+not on this matrix at all: they belong to no tenant, and their privilege is
+what lets support change a customer's plan or entitlements
+([API Spec](05-api-specification.md), Section 10).
+
+The security properties that matter, all of them structural rather than
+procedural:
+
+- **Separate credential surface.** Platform sessions are a distinct token
+  scope carrying no company claim, so no ordinary access token — however
+  privileged its holder is inside their own company — reaches `/platform`,
+  and no platform token reaches the product API. Both directions are
+  asserted by `tests/test_platform_admin.py`.
+- **Mandatory second factor.** `/platform/auth/login` refuses any account
+  without an activated TOTP secret. This is not configurable.
+- **Revocation is immediate, not eventual.** The `platform_admins` row is
+  re-read on *every* request rather than trusted from the token, so revoking
+  takes effect within one request instead of one token lifetime.
+- **Escalation is removed, not guarded.** No HTTP route and no background job
+  can write `platform_admins` — the runtime database roles hold no write
+  grant on it ([Database Schema](04-database-schema.md), Section 9). Granting
+  the privilege requires database access and a shell.
+- **Shorter sessions.** Platform tokens expire sooner than tenant tokens and
+  have no refresh flow behind them; expiry means signing in again with
+  password plus TOTP.
+
+Entitlement changes are written to the **target tenant's** audit log
+(Section 5), not a separate operator log, so "who changed our plan, and when?"
+is answerable from the same record as every other change to that tenant.
+
 ## 3. Tenant Isolation
 
 - Row-Level Security is the authoritative isolation mechanism (see [Technical Architecture](03-technical-architecture.md), Section 5) — application-layer `WHERE company_id = ...` filtering is a performance/clarity convenience, never the sole safeguard.

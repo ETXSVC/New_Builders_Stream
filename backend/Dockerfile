@@ -24,8 +24,26 @@ RUN pip install --no-cache-dir --prefix=/opt/python ".[observability]"
 FROM base AS dev
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
+# Dependencies first, from pyproject alone, so editing source does not
+# reinstall the world on every rebuild.
 RUN pip install --no-cache-dir -e ".[dev]"
 COPY . .
+# ...then redo the editable install, now that `app/` actually exists.
+#
+# The install above ran with only pyproject.toml present, so setuptools had
+# no package to find and wrote an editable finder whose MAPPING is EMPTY —
+# the install is real (pip lists it, `Editable project location: /app`) but
+# imports nothing. It went unnoticed because `uvicorn app.main:app` and
+# `python -m ...` both put the working directory on sys.path and so never
+# needed it; `python scripts/whatever.py` does NOT (sys.path[0] is
+# scripts/), and died with `ModuleNotFoundError: No module named 'app'` —
+# including on the invocation scripts/grant_platform_admin.py documents in
+# its own docstring.
+#
+# --no-deps keeps this to a metadata rewrite against the layer above rather
+# than a second dependency resolution. The `production` stage is unaffected:
+# its builder copies `app/` BEFORE installing, and installs non-editably.
+RUN pip install --no-cache-dir --no-deps -e .
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

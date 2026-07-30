@@ -1948,6 +1948,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/platform/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Platform Login */
+        post: operations["platform_login_platform_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/auth/mfa/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Platform Mfa Activate
+         * @description Prove possession of the enrolled secret. Only after this does
+         *     /platform/auth/login issue tokens for the account.
+         */
+        post: operations["platform_mfa_activate_platform_auth_mfa_activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/auth/mfa/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Platform Mfa Enroll
+         * @description Begin (or restart) TOTP enrollment for a platform admin.
+         *
+         *     Password-gated rather than session-gated, because a platform admin may
+         *     belong to no company and so cannot obtain the tenant session
+         *     `/auth/mfa/enroll` requires. Re-enrolling while PENDING rotates the
+         *     secret; re-enrolling while ACTIVE is refused, matching that route.
+         */
+        post: operations["platform_mfa_enroll_platform_auth_mfa_enroll_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/companies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tenants */
+        get: operations["list_tenants_platform_companies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/companies/{company_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Tenant */
+        get: operations["get_tenant_platform_companies__company_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/companies/{company_id}/modules/{module}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Module Override */
+        put: operations["set_module_override_platform_companies__company_id__modules__module__put"];
+        post?: never;
+        /**
+         * Clear Module Override
+         * @description Revert to whatever the tier says. Distinct from setting the override
+         *     to false, which withholds a module the tier would otherwise allow.
+         */
+        delete: operations["clear_module_override_platform_companies__company_id__modules__module__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/companies/{company_id}/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Subscription */
+        patch: operations["update_subscription_platform_companies__company_id__subscription_patch"];
+        trace?: never;
+    };
     "/projects": {
         parameters: {
             query?: never;
@@ -4849,6 +4985,29 @@ export interface components {
             /** Secret */
             secret: string;
         };
+        /** ModuleEntitlement */
+        ModuleEntitlement: {
+            /** Allowed By Tier */
+            allowed_by_tier: boolean;
+            /** Effective */
+            effective: boolean;
+            /**
+             * Module
+             * @enum {string}
+             */
+            module: "estimation" | "compliance" | "accounting" | "integrations" | "child_branches";
+            /** Note */
+            note?: string | null;
+            /** Override */
+            override: boolean | null;
+        };
+        /** ModuleOverrideRequest */
+        ModuleOverrideRequest: {
+            /** Enabled */
+            enabled: boolean;
+            /** Note */
+            note?: string | null;
+        };
         /**
          * MyTaskListResponse
          * @description NOT cursor-paginated: one user's open assignment list is bounded
@@ -4992,6 +5151,70 @@ export interface components {
             sequence: number;
             /** Tasks */
             tasks: components["schemas"]["TaskResponse"][];
+        };
+        /** PlatformLoginRequest */
+        PlatformLoginRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+            /** Totp Code */
+            totp_code?: string | null;
+        };
+        /** PlatformMfaActivateRequest */
+        PlatformMfaActivateRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+            /** Totp Code */
+            totp_code: string;
+        };
+        /**
+         * PlatformMfaEnrollRequest
+         * @description Enrollment is password-gated rather than session-gated: a platform
+         *     admin may hold no company membership at all, so the ordinary
+         *     /auth/mfa/enroll route (which needs a tenant session) is unreachable for
+         *     them.
+         */
+        PlatformMfaEnrollRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Password */
+            password: string;
+        };
+        /** PlatformMfaEnrollResponse */
+        PlatformMfaEnrollResponse: {
+            /** Otpauth Uri */
+            otpauth_uri: string;
+            /** Secret */
+            secret: string;
+        };
+        /** PlatformTokenResponse */
+        PlatformTokenResponse: {
+            /** Access Token */
+            access_token: string;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** Expires In Minutes */
+            expires_in_minutes: number;
+            /**
+             * Token Type
+             * @default bearer
+             */
+            token_type: string;
         };
         /** PortalSessionResponse */
         PortalSessionResponse: {
@@ -5455,6 +5678,24 @@ export interface components {
             /** Tier */
             tier: string;
         };
+        /**
+         * SubscriptionUpdateRequest
+         * @description Every field optional — a PATCH that sets only `tier` must not blank
+         *     the rest. `None` means "leave alone".
+         */
+        SubscriptionUpdateRequest: {
+            /**
+             * Clear Manual Status Override
+             * @default false
+             */
+            clear_manual_status_override: boolean;
+            /** Included Seats */
+            included_seats?: number | null;
+            /** Status */
+            status?: string | null;
+            /** Tier */
+            tier?: ("starter" | "pro" | "enterprise") | null;
+        };
         /** SyncRecordResponse */
         SyncRecordResponse: {
             /** Attempt Count */
@@ -5586,6 +5827,79 @@ export interface components {
             name?: string | null;
             /** Status */
             status?: string | null;
+        };
+        /** TenantDetail */
+        TenantDetail: {
+            /** Child Company Ids */
+            child_company_ids: string[];
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Included Seats */
+            included_seats: number | null;
+            /** Is Root */
+            is_root: boolean;
+            /** Manual Status Override */
+            manual_status_override: boolean;
+            /** Modules */
+            modules: components["schemas"]["ModuleEntitlement"][];
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id: string | null;
+            /** Status */
+            status: string | null;
+            /** Tier */
+            tier: ("starter" | "pro" | "enterprise") | null;
+            /** User Count */
+            user_count: number;
+            /** Writes Enabled */
+            writes_enabled: boolean;
+        };
+        /** TenantPage */
+        TenantPage: {
+            /** Items */
+            items: components["schemas"]["TenantSummary"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** TenantSummary */
+        TenantSummary: {
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Included Seats */
+            included_seats: number | null;
+            /** Is Root */
+            is_root: boolean;
+            /** Manual Status Override */
+            manual_status_override: boolean;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id: string | null;
+            /** Status */
+            status: string | null;
+            /** Tier */
+            tier: ("starter" | "pro" | "enterprise") | null;
+            /** User Count */
+            user_count: number;
+            /** Writes Enabled */
+            writes_enabled: boolean;
         };
         /** TokenResponse */
         TokenResponse: {
@@ -8191,6 +8505,272 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BomLineReceiptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_login_platform_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformLoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformTokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_mfa_activate_platform_auth_mfa_activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformMfaActivateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    platform_mfa_enroll_platform_auth_mfa_enroll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformMfaEnrollRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformMfaEnrollResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tenants_platform_companies_get: {
+        parameters: {
+            query?: {
+                search?: string | null;
+                /** @description Only companies with no parent — the level entitlements are held at. */
+                roots_only?: boolean;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_tenant_platform_companies__company_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_module_override_platform_companies__company_id__modules__module__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+                module: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModuleOverrideRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_module_override_platform_companies__company_id__modules__module__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+                module: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_subscription_platform_companies__company_id__subscription_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubscriptionUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantDetail"];
                 };
             };
             /** @description Validation Error */

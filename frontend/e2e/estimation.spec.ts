@@ -10,11 +10,24 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
   // is exactly how a missing `frame-src blob:` shipped — the PDF panel
   // rendered the browser's "This content is blocked" placeholder while
   // this spec went green on the Download button next to it.
+  //
+  // The collector lives HERE, in Node, rather than on `window`: this spec
+  // makes three hard `page.goto`s and two re-logins, and each one destroys
+  // the document. A window-scoped array would quietly start over at every
+  // one of them — dropping earlier violations while still asserting
+  // `[]` — so it could only ever cover the page it happened to end on.
+  // `exposeFunction` and `addInitScript` are both reinstalled on every new
+  // document, so this array spans the whole flow.
+  const cspViolations: string[] = [];
+  await page.exposeFunction("__recordCspViolation", (entry: string) => {
+    cspViolations.push(entry);
+  });
   await page.addInitScript(() => {
     document.addEventListener("securitypolicyviolation", (e) => {
-      (window as unknown as { __csp: string[] }).__csp ??= [];
-      (window as unknown as { __csp: string[] }).__csp.push(
-        `${e.violatedDirective} blocked ${e.blockedURI}`
+      void (
+        window as unknown as { __recordCspViolation: (entry: string) => Promise<void> }
+      ).__recordCspViolation(
+        `${e.violatedDirective} blocked ${e.blockedURI} on ${location.pathname}`
       );
     });
   });
@@ -94,17 +107,11 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
     await expect(frame).toBeVisible({ timeout: 15_000 });
     await expect(frame).toHaveAttribute("src", /^blob:/);
 
-    const violations = await page.evaluate(
-      () => (window as unknown as { __csp?: string[] }).__csp ?? []
-    );
-    expect(violations, "the CSP blocked something while rendering the PDF preview").toEqual([]);
-  });
-
-  await test.step("no CSP violation anywhere in the flow so far", async () => {
-    const violations = await page.evaluate(
-      () => (window as unknown as { __csp?: string[] }).__csp ?? []
-    );
-    expect(violations).toEqual([]);
+    // Asserted here as well as at the end of the spec so a frame-src
+    // regression fails ON the PDF step, naming the cause, instead of in a
+    // catch-all further down. The two round trips above are what give a
+    // report raised by the frame load time to reach Node first.
+    expect(cspViolations, "the CSP blocked something while rendering the PDF preview").toEqual([]);
   });
 
   await test.step("send for signature", async () => {
@@ -233,5 +240,14 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
 
     await page.getByRole("button", { name: "Move to completed" }).click();
     await expect(page.getByText(/pending approval/i)).toBeVisible({ timeout: 15_000 });
+  });
+
+  await test.step("no CSP violation anywhere in the flow", async () => {
+    // The PDF check above can only speak for the estimate page. This one
+    // covers everything after it — the client's sign-off page, the
+    // duplicated draft, the project's change-order tab — which is where a
+    // future embed or third-party frame would most likely land, and which
+    // nothing else here would notice being blocked.
+    expect(cspViolations, "the CSP blocked something during the flow").toEqual([]);
   });
 });

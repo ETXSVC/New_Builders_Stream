@@ -34,6 +34,8 @@ from app.models.bom_line_receipt import BomLineReceipt
 from app.models.company_branding import CompanyBranding
 from app.models.project_client import ProjectClient
 from app.models.lead_client import LeadClient
+from app.models.platform_admin import PlatformAdmin
+from app.models.company_module_override import CompanyModuleOverride
 
 __all__ = [
     "Base",
@@ -74,4 +76,6 @@ __all__ = [
     "CompanyBranding",
     "ProjectClient",
     "LeadClient",
+    "PlatformAdmin",
+    "CompanyModuleOverride",
 ]

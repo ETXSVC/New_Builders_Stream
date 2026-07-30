@@ -89,22 +89,27 @@ is loud, not silent.
 | `APP_DB_PASSWORD` | `openssl rand -hex 24` — migration `0020` applies it to `app_user` (see below) |
 | `SCANNER_DB_PASSWORD` | `openssl rand -hex 24` — same, for the `scanner` role |
 | `SCANNER_DATABASE_URL` | `postgresql+asyncpg://scanner:<SCANNER_DB_PASSWORD>@postgres:5432/builders_stream` (the prod compose sets this per-service from the two values above) |
+| `PLATFORM_DB_PASSWORD` | `openssl rand -hex 24` — same again, for the `platform_admin` role created by migration `0023`. **Set it before the first migration run**: `migrate` reads it when creating the role, and `backend` builds its connection URL from the same value, so the two only agree if it is present from the start |
+| `PLATFORM_DATABASE_URL` | leave unset — the prod compose sets it per-service from `PLATFORM_DB_PASSWORD`. Unlike `SCANNER_DATABASE_URL` this setting has **no fallback**: if it is somehow empty the platform console 503s rather than running on a wider connection |
 | `SMTP_*` | set to enable invitation emails; unset = recording fake (no email leaves the box) |
 
 **Database role passwords.** Migration `0001` creates `app_user` with the
 password hardcoded as `'app_password'` — a value published in this
 repository. Migration `0020` rotates it, and creates the `scanner` role,
 using `APP_DB_PASSWORD` and `SCANNER_DB_PASSWORD` **read from the
-environment when `alembic upgrade head` runs**.
+environment when `alembic upgrade head` runs**. Migration `0023` creates
+`platform_admin` the same way, from `PLATFORM_DB_PASSWORD`, and defaults to a
+published value if that variable is absent — so an unset value there is the
+same class of mistake as leaving `app_password` in place.
 
 Because the prod compose's one-shot `migrate` service reads `.env`, setting
-both values in `.env` before the first `up` is all that is required — the
-rotation happens as part of the normal deploy, with no manual `ALTER ROLE`
-step. Verify afterwards:
+all three values in `.env` before the first `up` is all that is required —
+the rotation happens as part of the normal deploy, with no manual
+`ALTER ROLE` step. Verify afterwards:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec postgres \
-  psql -U postgres -d builders_stream -c "\du app_user scanner"
+  psql -U postgres -d builders_stream -c "\du app_user scanner platform_admin"
 ```
 
 Rotating later is the same mechanism: change the values in `.env` and
@@ -142,7 +147,7 @@ block used to say. Verify the roles and then run §4's checklist:
 
 ```bash
 docker compose -f docker-compose.prod.yml ps          # every service Up/healthy
-docker compose -f docker-compose.prod.yml logs migrate # "Running upgrade ... -> 0022"
+docker compose -f docker-compose.prod.yml logs migrate # "Running upgrade ... -> 0023"
 docker compose -f docker-compose.prod.yml exec postgres \
   psql -U postgres -d builders_stream -c "\du app_user scanner"
 ```
@@ -266,6 +271,45 @@ the backend unreachable from the host network and the internet
 (docs/06 §6). Adding a `ports:` mapping to any internal service silently
 undoes it, and would additionally make the backend's
 `--forwarded-allow-ips=*` unsafe (see backend/Dockerfile's comment).
+
+## 6c. The platform console (cross-tenant support access)
+
+`/platform/*` is how you change a customer's plan, status or module
+entitlements without a `psql` session (migration `0023`; the API is
+[docs/05](05-api-specification.md) §10). It has no UI — an HTTP client is the
+interface today.
+
+**Creating the first operator.** There is no route that grants this, by
+design: no runtime database role can write `platform_admins`, so the only
+path is the table owner, which means a shell on the box.
+
+```bash
+docker compose -f docker-compose.prod.yml exec backend \
+  python scripts/grant_platform_admin.py grant ops@yourcompany.com
+docker compose -f docker-compose.prod.yml exec backend \
+  python scripts/grant_platform_admin.py list
+```
+
+The account must already exist as an ordinary user, and **cannot sign in to
+the console until it enrols TOTP** — `POST /platform/auth/mfa/enroll`, then
+`/platform/auth/mfa/activate`. `grant` says so in its own output.
+
+**Revoking is immediate.** `revoke <email>` takes effect on that operator's
+very next request, not when their token expires — the grant is re-checked
+every request rather than trusted from the token. Use it the moment someone
+leaves; there is no session to hunt down.
+
+**What an operator can and cannot do.** They can read every tenant and change
+subscriptions and module overrides. They cannot write tenant business
+data — the `platform_admin` role holds no grant on those tables — so this
+access cannot be used to alter a customer's projects, invoices or estimates.
+Entitlement changes land in the **target tenant's** audit log.
+
+**One thing to know before setting a status by hand.** Doing so sets
+`manual_status_override`, which deliberately stops `/webhooks/stripe`
+applying Stripe's `status` to that subscription — otherwise the next routine
+event would revert you. That means the row can then disagree with Stripe
+indefinitely. Clear the override when the manual intervention is over.
 
 ## 7. Incident basics
 

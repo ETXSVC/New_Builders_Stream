@@ -73,6 +73,18 @@ def _alembic(command: list[str], database_url: str) -> subprocess.CompletedProce
             "TEST_DATABASE_URL": database_url,
             "JWT_SECRET": "downgrade-test-secret",
             "INTEGRATION_TOKEN_ENCRYPTION_KEY": "Rewy1h1FRZkZ2sxynenqVW39Vu1r573swS_UOr1uiUk=",
+            # ...plus SystemRoot on Windows, which is not optional however
+            # minimal we want to be: Winsock resolves its service providers
+            # through it, so without it the CHILD interpreter dies during
+            # startup on `import _overlapped` with WinError 10106, before it
+            # ever reaches Alembic. The failure reads like a broken migration
+            # (the assertion says "upgrade to head failed") and is not one.
+            # Linux needs no equivalent, which is why CI never caught this.
+            **(
+                {"SYSTEMROOT": os.environ["SYSTEMROOT"]}
+                if sys.platform == "win32" and "SYSTEMROOT" in os.environ
+                else {}
+            ),
         },
     )
 

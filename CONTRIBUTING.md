@@ -34,14 +34,18 @@ npm run test:e2e            # needs the full stack up
 Whole stack:
 
 ```bash
-docker compose up
-docker compose exec backend alembic upgrade head   # creates the schema
+docker compose up          # creates the schema for you, then serves
 ```
 
-The second line is not optional. The dev stack has no one-shot `migrate`
-service (the production stack does, and gates the backend on it), so `up`
-alone leaves you with six healthy containers and an empty database — and
-the first registration 500s with nothing pointing at why.
+`up` alone is enough: a one-shot `migrate` service runs `alembic upgrade
+head` first and `backend`/`worker` are gated on it completing, the same
+shape the production stack uses. Until that service was added, `up` alone
+left you with six healthy containers and an empty database — and the
+first registration 500'd with nothing pointing at why.
+
+To migrate out of band — say you hand-wrote a revision while the stack was
+already running — it is still `docker compose exec backend alembic upgrade
+head`.
 
 Four footguns worth knowing before you lose an hour to them:
 

@@ -36,8 +36,8 @@ pass all ten rejection cases and be worthless.
 ### `run_checklist.py`
 
 ```bash
-# dev stack
-docker compose up -d && docker compose exec backend alembic upgrade head
+# dev stack (the one-shot `migrate` service creates the schema)
+docker compose up -d
 python scripts/smoke/run_checklist.py
 
 # production stack, from the box
