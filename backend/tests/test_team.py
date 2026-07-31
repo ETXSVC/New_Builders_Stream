@@ -472,7 +472,164 @@ async def test_a_project_manager_cannot_change_a_photo(client):
 
 
 # --------------------------------------------------------------------------
-# 7. Offboarding, and concurrent edits
+# 7. Your own record
+# --------------------------------------------------------------------------
+
+
+async def test_a_member_edits_their_own_contact_details(client):
+    """`/team/me` exists so somebody who cannot open the directory at all can
+    still fix their own phone number. Field crew is the case that proves it:
+    they are 403 on every other route in this module."""
+    host = await register_and_login(client, "Self Co", "admin@self.example")
+    crew = await _add_member(client, host, "crew@self.example", "field_crew")
+
+    assert (await client.get("/team", headers=crew["headers"])).status_code == 403
+
+    saved = await client.patch(
+        "/team/me",
+        json={
+            "first_name": "Sam",
+            "last_name": "Okafor",
+            "city": "Longview",
+            "phones": [{"label": "mobile", "number": "903-555-0102"}],
+        },
+        headers=crew["headers"],
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["first_name"] == "Sam"
+    assert [p["number"] for p in saved.json()["phones"]] == ["903-555-0102"]
+
+    # And the admin sees it in the directory — one record, two doors.
+    listed = await _member_in_list(client, host["headers"], crew["user_id"])
+    assert listed is not None
+    assert listed["first_name"] == "Sam"
+    assert listed["city"] == "Longview"
+
+
+async def test_a_member_cannot_write_the_fields_that_are_not_theirs(client):
+    """`notes` is the company's record ABOUT somebody and `profession_id` is
+    how the company classifies them. `MemberSelfUpdateRequest` does not have
+    either field and forbids extras, so this is a 422 rather than a silently
+    dropped key that reports success."""
+    host = await register_and_login(client, "Bounds Co", "admin@bounds.example")
+    crew = await _add_member(client, host, "crew@bounds.example", "field_crew")
+    trade = await client.post(
+        "/team/professions", json={"name": "Framer"}, headers=host["headers"]
+    )
+
+    refused_notes = await client.patch(
+        "/team/me", json={"notes": "I am a delight to work with"}, headers=crew["headers"]
+    )
+    assert refused_notes.status_code == 422, refused_notes.text
+
+    refused_trade = await client.patch(
+        "/team/me",
+        json={"profession_id": trade.json()["id"]},
+        headers=crew["headers"],
+    )
+    assert refused_trade.status_code == 422, refused_trade.text
+
+
+async def test_a_member_never_reads_the_notes_kept_about_them(client):
+    """The read half of the same rule. Withholding the write while handing
+    the value back would be theatre."""
+    host = await register_and_login(client, "Notes Co", "admin@notes.example")
+    crew = await _add_member(client, host, "crew@notes.example", "field_crew")
+
+    await client.patch(
+        f"/team/{crew['user_id']}",
+        json={"notes": "Do not put on the Harrison job", "city": "Kilgore"},
+        headers=host["headers"],
+    )
+
+    mine = await client.get("/team/me", headers=crew["headers"])
+    assert mine.status_code == 200, mine.text
+    # The rest of the record is theirs to see; the note is not.
+    assert mine.json()["city"] == "Kilgore"
+    assert mine.json()["notes"] is None
+
+    # And it is still there for the people it was written for.
+    assert (
+        (await client.get(f"/team/{crew['user_id']}", headers=host["headers"])).json()["notes"]
+        == "Do not put on the Harrison job"
+    )
+
+
+async def test_a_member_still_cannot_read_somebody_else(client):
+    """Self-service is not a way into the directory."""
+    host = await register_and_login(client, "Nosy Co", "admin@nosy.example")
+    crew = await _add_member(client, host, "crew@nosy.example", "field_crew")
+    other = await _add_member(client, host, "other@nosy.example", "field_crew")
+
+    assert (
+        await client.get(f"/team/{other['user_id']}", headers=crew["headers"])
+    ).status_code == 403
+    assert (
+        await client.patch(
+            f"/team/{other['user_id']}", json={"city": "Nope"}, headers=crew["headers"]
+        )
+    ).status_code == 403
+
+
+async def test_a_client_has_no_profile_of_their_own(client):
+    """A client is somebody else's customer with row-scoped access to a
+    project, not one of this company's people — so they are not in
+    `_SELF_ROLES` and `/team/me` is not theirs."""
+    host = await register_and_login(client, "Client Co", "admin@clientco.example")
+    outsider = await _add_member(client, host, "buyer@clientco.example", "client")
+
+    assert (await client.get("/team/me", headers=outsider["headers"])).status_code == 403
+    assert (
+        await client.patch("/team/me", json={"city": "Nope"}, headers=outsider["headers"])
+    ).status_code == 403
+
+
+async def test_your_own_photo_round_trips_without_the_directory(client):
+    host = await register_and_login(client, "Selfie Co", "admin@selfie.example")
+    crew = await _add_member(client, host, "crew@selfie.example", "field_crew")
+    content = b"\x89PNG\r\n\x1a\n" + b"y" * 256
+
+    uploaded = await client.post(
+        "/team/me/photo",
+        files={"file": ("me.png", content, "image/png")},
+        headers=crew["headers"],
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["has_photo"] is True
+
+    served = await client.get("/team/me/photo", headers=crew["headers"])
+    assert served.status_code == 200
+    assert served.content == content
+
+    # The same bytes, reached the admin's way.
+    assert (
+        await client.get(f"/team/{crew['user_id']}/photo", headers=host["headers"])
+    ).status_code == 200
+
+
+async def test_your_own_save_is_guarded_against_a_concurrent_admin_edit(client):
+    """The admin and the member can be in the same record at once, which is
+    the version of this race most likely to happen."""
+    host = await register_and_login(client, "Race Me Co", "admin@raceme.example")
+    crew = await _add_member(client, host, "crew@raceme.example", "field_crew")
+
+    mine = await client.patch("/team/me", json={"city": "Tyler"}, headers=crew["headers"])
+    stale_token = mine.json()["updated_at"]
+
+    await client.patch(
+        f"/team/{crew['user_id']}", json={"city": "Athens"}, headers=host["headers"]
+    )
+
+    conflicted = await client.patch(
+        "/team/me",
+        json={"city": "Palestine", "expected_updated_at": stale_token},
+        headers=crew["headers"],
+    )
+    assert conflicted.status_code == 409, conflicted.text
+
+
+# --------------------------------------------------------------------------
+# 8. Offboarding, and concurrent edits
 # --------------------------------------------------------------------------
 
 

@@ -3090,6 +3090,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/team/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get My Profile
+         * @description Your own record, minus the part that is not about you but about how
+         *     your employer files you: `notes` is always null here.
+         */
+        get: operations["get_my_profile_team_me_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update My Profile
+         * @description Your name, your address, your phone numbers.
+         *
+         *     Audited into the same log as an admin's edit, with `self: true`, because
+         *     "who changed this address" is the question the log exists to answer and
+         *     the answer is different in the two cases.
+         */
+        patch: operations["update_my_profile_team_me_patch"];
+        trace?: never;
+    };
+    "/team/me/photo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get My Photo
+         * @description Your own photo.
+         *
+         *     A route of its own rather than `/team/{your id}/photo`, because that one
+         *     is behind the directory's read roles — and field crew, who can edit
+         *     their own record, cannot open the directory at all.
+         */
+        get: operations["get_my_photo_team_me_photo_get"];
+        put?: never;
+        /** Upload My Photo */
+        post: operations["upload_my_photo_team_me_photo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/team/professions": {
         parameters: {
             query?: never;
@@ -3423,6 +3477,11 @@ export interface components {
             file: string;
             /** File Name */
             file_name: string;
+        };
+        /** Body_upload_my_photo_team_me_photo_post */
+        Body_upload_my_photo_team_me_photo_post: {
+            /** File */
+            file: string;
         };
         /** Body_upload_team_member_photo_team__user_id__photo_post */
         Body_upload_team_member_photo_team__user_id__photo_post: {
@@ -5187,6 +5246,43 @@ export interface components {
         MemberRoleUpdateRequest: {
             /** Role */
             role: string;
+        };
+        /**
+         * MemberSelfUpdateRequest
+         * @description What a person may change about themselves: how to reach them.
+         *
+         *     A separate model rather than the one above with a role check around it,
+         *     and the difference is the safety. `notes` is the company's private record
+         *     ABOUT somebody and `profession_id` is how the company classifies them for
+         *     assignment — neither is theirs to state. Here they are not optional-and-
+         *     ignored, they are absent, so `PATCH /team/me` cannot write them however
+         *     it is called.
+         *
+         *     `extra="forbid"` closes the other half: without it, Pydantic drops an
+         *     unknown `notes` key silently and the caller is told their edit succeeded.
+         *     A 422 that names the field is the honest answer, and it is also what
+         *     stops a future field added to `MemberProfileUpdateRequest` from quietly
+         *     becoming self-writable if somebody ever merges the two.
+         */
+        MemberSelfUpdateRequest: {
+            /** Address Line1 */
+            address_line1?: string | null;
+            /** Address Line2 */
+            address_line2?: string | null;
+            /** City */
+            city?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
+            /** First Name */
+            first_name?: string | null;
+            /** Last Name */
+            last_name?: string | null;
+            /** Phones */
+            phones?: components["schemas"]["PhoneEntry"][] | null;
+            /** Postal Code */
+            postal_code?: string | null;
+            /** State */
+            state?: string | null;
         };
         /** MfaActivateRequest */
         MfaActivateRequest: {
@@ -10659,6 +10755,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TeamPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_profile_team_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
+                };
+            };
+        };
+    };
+    update_my_profile_team_me_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberSelfUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_my_photo_team_me_photo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    upload_my_photo_team_me_photo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_my_photo_team_me_photo_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
                 };
             };
             /** @description Validation Error */

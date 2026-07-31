@@ -22,13 +22,21 @@ import { useAuth } from "@/contexts/AuthContext";
  * photo is the normal state, not a failure.
  */
 export function MemberPhoto({
-  userId,
+  src: endpoint,
   hasPhoto,
   name,
   version,
   size = 40,
 }: {
-  userId: string;
+  /**
+   * The BFF endpoint serving these bytes — `/api/team/{id}/photo` for the
+   * directory, `/api/team/me/photo` for your own.
+   *
+   * A URL rather than a user id, because the self route deliberately takes
+   * no id: the product session has no user id in it (AuthContext holds a
+   * token and a role), and `/team/me` exists so the browser never needs one.
+   */
+  src: string;
   hasPhoto: boolean;
   /** Used for the initials fallback, and as the alt text. */
   name: string;
@@ -62,7 +70,7 @@ export function MemberPhoto({
       setSrc(null);
       if (!hasPhoto || !accessToken) return;
       try {
-        const response = await fetch(`/api/team/${userId}/photo`, {
+        const response = await fetch(endpoint, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         if (!response.ok) return;
@@ -82,7 +90,7 @@ export function MemberPhoto({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [accessToken, hasPhoto, userId, version]);
+  }, [accessToken, endpoint, hasPhoto, version]);
 
   const initials = name
     .split(/\s+/)

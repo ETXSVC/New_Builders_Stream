@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/contexts/AuthContext";
 import { MfaPanel } from "@/components/account/MfaPanel";
+import { MyProfilePanel } from "@/components/account/MyProfilePanel";
 
 export default function AccountPage() {
   const { mfaEnrollmentRequired } = useAuth();
@@ -19,6 +20,10 @@ export default function AccountPage() {
           safe, if slightly indirect, proxy for MfaPanel's mfaActive prop
           until a dedicated "am I MFA-active" field exists on the client. */}
       <MfaPanel mfaActive={!mfaEnrollmentRequired} />
+      {/* Your entry in the team directory. Here rather than under /team,
+          which field crew cannot open at all — and this has to work for
+          them, since it is the only way they can fix their own number. */}
+      <MyProfilePanel />
     </main>
   );
 }

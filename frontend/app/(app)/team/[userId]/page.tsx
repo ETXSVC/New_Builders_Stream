@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { MemberPhoto } from "@/components/team/MemberPhoto";
+import { PhonesEditor, filledPhones } from "@/components/team/PhonesEditor";
 import { displayName } from "@/components/team/display-name";
 
 type TeamMember = components["schemas"]["TeamMemberResponse"];
@@ -152,10 +153,7 @@ export default function TeamMemberPage() {
           ...Object.fromEntries(
             Object.entries(draft).map(([key, value]) => [key, value.trim() || null])
           ),
-          // Only the numbers that were actually filled in. A row left blank
-          // by someone who clicked "Add a phone" and changed their mind is
-          // not a phone number.
-          phones: phones.filter((phone) => phone.number.trim() !== ""),
+          phones: filledPhones(phones),
           // Opt-in optimistic concurrency (app/services/concurrency.py). Null
           // for a member whose profile row does not exist yet, which is the
           // state a first edit starts from — there is nothing to conflict
@@ -237,7 +235,7 @@ export default function TeamMemberPage() {
         </Link>
         <div className="flex items-center gap-4">
           <MemberPhoto
-            userId={member.user_id}
+            src={`/api/team/${member.user_id}/photo`}
             hasPhoto={member.has_photo}
             name={displayName(member)}
             // Moves on every write to the profile, including the photo one —
@@ -308,74 +306,11 @@ export default function TeamMemberPage() {
           </div>
         </div>
 
-        <fieldset className="flex flex-col gap-2">
-          <legend className="text-sm font-medium">Phone numbers</legend>
-          {phones.map((phone, index) => (
-            <div key={index} className="flex items-end gap-2">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`phone-label-${index}`}>Label</Label>
-                <Input
-                  id={`phone-label-${index}`}
-                  value={phone.label ?? ""}
-                  maxLength={50}
-                  placeholder="mobile"
-                  disabled={!canEdit || saving}
-                  className="w-40"
-                  onChange={(event) =>
-                    setPhones((previous) =>
-                      previous.map((entry, i) =>
-                        i === index ? { ...entry, label: event.target.value } : entry
-                      )
-                    )
-                  }
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`phone-number-${index}`}>Number</Label>
-                <Input
-                  id={`phone-number-${index}`}
-                  value={phone.number}
-                  maxLength={40}
-                  disabled={!canEdit || saving}
-                  className="w-56"
-                  onChange={(event) =>
-                    setPhones((previous) =>
-                      previous.map((entry, i) =>
-                        i === index ? { ...entry, number: event.target.value } : entry
-                      )
-                    )
-                  }
-                />
-              </div>
-              {canEdit && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={saving}
-                  aria-label={`Remove phone ${index + 1}`}
-                  onClick={() => setPhones((previous) => previous.filter((_, i) => i !== index))}
-                >
-                  Remove
-                </Button>
-              )}
-            </div>
-          ))}
-          {phones.length === 0 && <p className="text-sm text-slate-600">No phone numbers.</p>}
-          {canEdit && (
-            <div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={saving}
-                onClick={() => setPhones((previous) => [...previous, { label: "", number: "" }])}
-              >
-                Add a phone
-              </Button>
-            </div>
-          )}
-        </fieldset>
+        <PhonesEditor
+          phones={phones}
+          onChange={setPhones}
+          disabled={!canEdit || saving}
+        />
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="team-notes">Notes</Label>

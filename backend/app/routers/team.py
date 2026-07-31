@@ -18,10 +18,14 @@ manager picking an assignee should see who exists. Writes are `admin`
 only: a directory entry is an HR record, and the role that can invite and
 offboard is the role that can edit it.
 
-NOT COVERED HERE, deliberately: a member editing their OWN profile. It is
-an obvious next step and a different authorization question (`self or
-admin`), and mixing it in would mean every write route below growing a
-branch before the feature it belongs to exists.
+A MEMBER EDITING THEMSELVES is `/team/me`, not this file's `/{user_id}`
+routes with a self check bolted on. Two rules, two surfaces: an admin
+writes the company's whole record of a person; a person writes only how to
+reach them — name, address, phones, photo. `notes` and `profession_id`
+stay with the admin because neither is theirs to state, and the split is
+made of a separate request schema rather than an `if`, so it cannot be
+undone by accident. `_SELF_ROLES` excludes `client` for the same reason
+the directory is called the team: a client is somebody else's customer.
 """
 import uuid
 from pathlib import Path
@@ -38,6 +42,7 @@ from app.core.uploads import read_upload_limited
 from app.models import CompanyUser, MemberPhone, MemberProfile, Profession, User
 from app.schemas.team import (
     MemberProfileUpdateRequest,
+    MemberSelfUpdateRequest,
     PhoneEntry,
     ProfessionCreateRequest,
     ProfessionResponse,
@@ -55,6 +60,27 @@ from app.services.document_storage import (
 router = APIRouter(prefix="/team", tags=["team"])
 
 _READ_ROLES = ("admin", "project_manager")
+
+# Who has a profile of their own to edit. `client` is deliberately absent:
+# a client is somebody else's customer with row-scoped access to a project,
+# not one of this company's people, and giving them a directory entry would
+# put an external contact in the staff list.
+_SELF_ROLES = ("admin", "project_manager", "field_crew", "accountant")
+
+# The fields a person may change about THEMSELVES. Everything a company
+# records about somebody that is not in this tuple — `notes` and
+# `profession_id` — stays with the admin, because neither is theirs to
+# state: one is the company's private record about them, the other is how
+# the company classifies them for assignment.
+_CONTACT_FIELDS = (
+    "first_name",
+    "last_name",
+    "address_line1",
+    "address_line2",
+    "city",
+    "state",
+    "postal_code",
+)
 
 
 async def _membership_or_404(current: CurrentUser, user_id: uuid.UUID) -> CompanyUser:
@@ -86,6 +112,39 @@ async def _profile_for(current: CurrentUser, user_id: uuid.UUID) -> MemberProfil
     return result.scalar_one_or_none()
 
 
+async def _profile_or_create(current: CurrentUser, user_id: uuid.UUID) -> MemberProfile:
+    """The profile row, made on first edit rather than at accept time.
+
+    Creating it lazily is why the directory has no half-empty rows for
+    members nobody has got round to filling in.
+    """
+    profile = await _profile_for(current, user_id)
+    if profile is not None:
+        return profile
+    # `phones=[]` explicitly: a freshly constructed instance has an UNLOADED
+    # collection, so the first read of it would attempt a lazy load —
+    # synchronous IO under asyncpg, i.e. MissingGreenlet rather than a slow
+    # query. Handing it an empty list marks it loaded.
+    profile = MemberProfile(company_id=current.company_id, user_id=user_id, phones=[])
+    current.session.add(profile)
+    await current.session.flush()
+    return profile
+
+
+def _replace_phones(current: CurrentUser, profile: MemberProfile, entries: list[PhoneEntry]) -> None:
+    """The list sent IS the list.
+
+    `delete-orphan` on the relationship turns the clear() into DELETEs;
+    assigning a fresh list instead would leave the old rows behind with a
+    null parent.
+    """
+    profile.phones.clear()
+    for entry in entries:
+        profile.phones.append(
+            MemberPhone(company_id=current.company_id, label=entry.label, number=entry.number)
+        )
+
+
 async def _profession_map(current: CurrentUser) -> dict[uuid.UUID, Profession]:
     result = await current.session.execute(
         select(Profession).where(Profession.company_id == current.company_id)
@@ -98,12 +157,20 @@ def _to_response(
     user: User,
     profile: MemberProfile | None,
     professions: dict[uuid.UUID, Profession],
+    *,
+    include_notes: bool = True,
 ) -> TeamMemberResponse:
     """One person, assembled from the three places their data lives.
 
     A member with no profile row yet is a normal state, not an error: the
     row is created on first edit, so somebody who has just accepted an
     invitation appears immediately with only their account details.
+
+    `include_notes=False` is how the `/team/me` routes below answer: `notes`
+    is the company's private record ABOUT a person (migration 0026), so
+    handing it back to that person would leak it exactly as badly as letting
+    them edit it. It is dropped here rather than in the schema so there is
+    one response model and one place that decides.
     """
     profession = (
         professions.get(profile.profession_id)
@@ -123,7 +190,7 @@ def _to_response(
         city=profile.city if profile else None,
         state=profile.state if profile else None,
         postal_code=profile.postal_code if profile else None,
-        notes=profile.notes if profile else None,
+        notes=(profile.notes if profile else None) if include_notes else None,
         profession=(
             ProfessionResponse(id=profession.id, name=profession.name) if profession else None
         ),
@@ -249,6 +316,129 @@ async def delete_profession(
     await current.session.delete(profession)
 
 
+# --- your own record ------------------------------------------------------
+#
+# Declared before `/{user_id}`, for the same registration-order reason as the
+# professions routes above.
+#
+# A SEPARATE ROUTE RATHER THAN "the same route, if the id is yours". Both
+# would work; this one cannot be got wrong later. `MemberSelfUpdateRequest`
+# has no `notes` and no `profession_id` and forbids extras, so the self path
+# cannot accept a field it should not accept even if somebody adds one to the
+# admin's schema and forgets this file exists. The reads are the same story:
+# `include_notes=False` means the company's private record about a person is
+# not handed to that person, which a shared route would have to remember to
+# strip.
+#
+# It also means the client never needs its own user id to edit itself, which
+# is one less thing for a browser to get wrong.
+
+
+async def _self_context(current: CurrentUser) -> tuple[CompanyUser, User]:
+    membership = await _membership_or_404(current, current.user.id)
+    return membership, current.user
+
+
+@router.get("/me", response_model=TeamMemberResponse)
+async def get_my_profile(
+    current: CurrentUser = Depends(require_role(*_SELF_ROLES)),
+) -> TeamMemberResponse:
+    """Your own record, minus the part that is not about you but about how
+    your employer files you: `notes` is always null here."""
+    membership, user = await _self_context(current)
+    return _to_response(
+        membership,
+        user,
+        await _profile_for(current, current.user.id),
+        await _profession_map(current),
+        include_notes=False,
+    )
+
+
+@router.patch("/me", response_model=TeamMemberResponse)
+async def update_my_profile(
+    payload: MemberSelfUpdateRequest,
+    current: CurrentUser = Depends(require_role(*_SELF_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> TeamMemberResponse:
+    """Your name, your address, your phone numbers.
+
+    Audited into the same log as an admin's edit, with `self: true`, because
+    "who changed this address" is the question the log exists to answer and
+    the answer is different in the two cases.
+    """
+    membership, user = await _self_context(current)
+
+    existing = await _profile_for(current, current.user.id)
+    if existing is not None:
+        guard_stale_write(existing, payload.expected_updated_at, entity_name="your profile")
+    profile = await _profile_or_create(current, current.user.id)
+
+    fields = payload.model_fields_set
+    for name in _CONTACT_FIELDS:
+        if name in fields:
+            setattr(profile, name, getattr(payload, name))
+
+    if payload.phones is not None:
+        _replace_phones(current, profile, payload.phones)
+
+    await current.session.flush()
+
+    await write_audit_log(
+        current.session,
+        company_id=current.company_id,
+        actor_id=current.user.id,
+        action="team.profile_updated",
+        entity_type="member_profile",
+        entity_id=profile.id,
+        metadata={"user_id": str(current.user.id), "fields": sorted(fields), "self": True},
+    )
+
+    return _to_response(
+        membership, user, profile, await _profession_map(current), include_notes=False
+    )
+
+
+@router.post("/me/photo", response_model=TeamMemberResponse)
+async def upload_my_photo(
+    file: UploadFile = File(...),
+    current: CurrentUser = Depends(require_role(*_SELF_ROLES)),
+    _ro: None = Depends(block_if_read_only),
+) -> TeamMemberResponse:
+    membership, user = await _self_context(current)
+    content = await read_upload_limited(file, MAX_LOGO_SIZE_BYTES)
+    try:
+        relative_path = write_member_photo_file(
+            company_id=current.company_id,
+            user_id=current.user.id,
+            content_type=file.content_type or "",
+            content=content,
+        )
+    except UnsupportedLogoError as err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(err)) from err
+
+    profile = await _profile_or_create(current, current.user.id)
+    profile.image_path = relative_path
+    await current.session.flush()
+
+    return _to_response(
+        membership, user, profile, await _profession_map(current), include_notes=False
+    )
+
+
+@router.get("/me/photo")
+async def get_my_photo(
+    current: CurrentUser = Depends(require_role(*_SELF_ROLES)),
+) -> FileResponse:
+    """Your own photo.
+
+    A route of its own rather than `/team/{your id}/photo`, because that one
+    is behind the directory's read roles — and field crew, who can edit
+    their own record, cannot open the directory at all.
+    """
+    return _photo_response(await _profile_for(current, current.user.id))
+
+
 # --- one person -----------------------------------------------------------
 
 
@@ -281,33 +471,17 @@ async def update_team_member(
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not a member of this company")
 
-    profile = await _profile_for(current, user_id)
-    if profile is None:
-        # `phones=[]` explicitly: a freshly constructed instance has an
-        # UNLOADED collection, so the first read of it would attempt a lazy
-        # load — synchronous IO under asyncpg, i.e. MissingGreenlet rather
-        # than a slow query. Handing it an empty list marks it loaded.
-        profile = MemberProfile(company_id=current.company_id, user_id=user_id, phones=[])
-        current.session.add(profile)
-        await current.session.flush()
-    else:
+    existing = await _profile_for(current, user_id)
+    if existing is not None:
         # Immediately after loading and BEFORE the first setattr, so a
         # rejected request stages nothing for the commit get_current_user
-        # performs after this handler returns. A profile created just above
-        # is skipped because there is nothing for it to conflict with.
-        guard_stale_write(profile, payload.expected_updated_at, entity_name="team member")
+        # performs after this handler returns. A profile created below is
+        # skipped because there is nothing for it to conflict with.
+        guard_stale_write(existing, payload.expected_updated_at, entity_name="team member")
+    profile = await _profile_or_create(current, user_id)
 
     fields = payload.model_fields_set
-    for name in (
-        "first_name",
-        "last_name",
-        "address_line1",
-        "address_line2",
-        "city",
-        "state",
-        "postal_code",
-        "notes",
-    ):
+    for name in (*_CONTACT_FIELDS, "notes"):
         # `model_fields_set` rather than `is not None`: without it there is
         # no way to CLEAR a field, because "absent" and "explicitly null"
         # would both arrive as None.
@@ -331,18 +505,7 @@ async def update_team_member(
         profile.profession_id = payload.profession_id
 
     if payload.phones is not None:
-        # Replace the set. `delete-orphan` on the relationship turns the
-        # clear() into DELETEs; assigning a fresh list would leave the old
-        # rows behind with a null parent.
-        profile.phones.clear()
-        for entry in payload.phones:
-            profile.phones.append(
-                MemberPhone(
-                    company_id=current.company_id,
-                    label=entry.label,
-                    number=entry.number,
-                )
-            )
+        _replace_phones(current, profile, payload.phones)
 
     await current.session.flush()
 
@@ -391,14 +554,7 @@ async def upload_team_member_photo(
         # discovers the hard way.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(err)) from err
 
-    profile = await _profile_for(current, user_id)
-    if profile is None:
-        # `phones=[]` explicitly: a freshly constructed instance has an
-        # UNLOADED collection, so the first read of it would attempt a lazy
-        # load — synchronous IO under asyncpg, i.e. MissingGreenlet rather
-        # than a slow query. Handing it an empty list marks it loaded.
-        profile = MemberProfile(company_id=current.company_id, user_id=user_id, phones=[])
-        current.session.add(profile)
+    profile = await _profile_or_create(current, user_id)
     profile.image_path = relative_path
     await current.session.flush()
 
@@ -416,7 +572,15 @@ async def get_team_member_photo(
     uploads, and "unguessable path" is not an access control.
     """
     await _membership_or_404(current, user_id)
-    profile = await _profile_for(current, user_id)
+    return _photo_response(await _profile_for(current, user_id))
+
+
+def _photo_response(profile: MemberProfile | None) -> FileResponse:
+    """The bytes, or a 404 that says so.
+
+    Shared by `/team/{user_id}/photo` and `/team/me/photo` so the
+    missing-file case cannot be handled two ways.
+    """
     if profile is None or not profile.image_path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No photo for this member")
 

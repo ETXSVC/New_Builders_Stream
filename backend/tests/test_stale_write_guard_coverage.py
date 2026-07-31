@@ -41,6 +41,11 @@ GUARDED_PATCH_ROUTES = {
     # updated_at, and two admins editing one person at once would
     # otherwise silently discard the first save's phone numbers.
     "/team/{user_id}",
+    # The same row from its subject's side. Guarded for a sharper reason
+    # than the admin route: the likely second writer here is not another
+    # admin but the person themselves, editing their own phone number
+    # while an admin has their record open.
+    "/team/me",
 }
 
 # PATCH routes deliberately NOT guarded, each with the reason it cannot be.
@@ -162,7 +167,7 @@ def test_patch_route_count_is_pinned():
     turns that into a failure — the same reasoning, and the same lesson,
     behind test_tier_gating.py's own pinned count."""
     routes = _patch_routes()
-    assert len(routes) == 16, (
+    assert len(routes) == 17, (
         f"PATCH route count changed: {len(routes)} (paths: {sorted(routes)!r}). "
         "If a route was genuinely added or removed, update this literal AND "
         "classify it above. If the count collapsed, the introspection broke "
