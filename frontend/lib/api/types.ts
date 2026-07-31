@@ -3066,6 +3066,115 @@ export interface paths {
         patch: operations["patch_task_tasks__task_id__patch"];
         trace?: never;
     };
+    "/team": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Team
+         * @description Everyone in the caller's active tenant.
+         *
+         *     Paginated over `company_users`, which is the source of truth for
+         *     membership — profiles are joined on afterwards precisely because a
+         *     member without one must still appear.
+         */
+        get: operations["list_team_team_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team/professions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Professions */
+        get: operations["list_professions_team_professions_get"];
+        put?: never;
+        /** Create Profession */
+        post: operations["create_profession_team_professions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team/professions/{profession_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Profession */
+        delete: operations["delete_profession_team_professions__profession_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Team Member */
+        get: operations["get_team_member_team__user_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Team Member
+         * @description Update this company's record of a person.
+         *
+         *     Creates the profile row on first edit rather than at invitation-accept
+         *     time, so the directory has no half-empty rows for members nobody has
+         *     got round to filling in.
+         */
+        patch: operations["update_team_member_team__user_id__patch"];
+        trace?: never;
+    };
+    "/team/{user_id}/photo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Team Member Photo
+         * @description Serve the photo bytes.
+         *
+         *     Behind the same role check as the rest of the directory rather than
+         *     served as a static file: the storage volume holds every tenant's
+         *     uploads, and "unguessable path" is not an access control.
+         */
+        get: operations["get_team_member_photo_team__user_id__photo_get"];
+        put?: never;
+        /** Upload Team Member Photo */
+        post: operations["upload_team_member_photo_team__user_id__photo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/vendors": {
         parameters: {
             query?: never;
@@ -3314,6 +3423,11 @@ export interface components {
             file: string;
             /** File Name */
             file_name: string;
+        };
+        /** Body_upload_team_member_photo_team__user_id__photo_post */
+        Body_upload_team_member_photo_team__user_id__photo_post: {
+            /** File */
+            file: string;
         };
         /** BomLineListResponse */
         BomLineListResponse: {
@@ -5028,6 +5142,45 @@ export interface components {
             profit_pct: string;
         };
         /**
+         * MemberProfileUpdateRequest
+         * @description Every field optional — a PATCH setting only `city` must not blank the
+         *     rest. An OMITTED key means "leave alone"; an explicit `null` CLEARS the
+         *     field. The router tells the two apart through `model_fields_set`, because
+         *     Pydantic gives both the same value and collapsing them would leave no way
+         *     to erase an address somebody entered by mistake.
+         *
+         *     EXCEPT `phones`, which is a REPLACED SET when present. Sending
+         *     `[{"label": "mobile", "number": "..."}]` makes that the complete list;
+         *     sending `[]` removes every number; omitting the key changes nothing.
+         *     Per-phone add/remove endpoints would be three more routes and a
+         *     client-side id to track, for an edit that is always "here is the list
+         *     now" in practice.
+         */
+        MemberProfileUpdateRequest: {
+            /** Address Line1 */
+            address_line1?: string | null;
+            /** Address Line2 */
+            address_line2?: string | null;
+            /** City */
+            city?: string | null;
+            /** Expected Updated At */
+            expected_updated_at?: string | null;
+            /** First Name */
+            first_name?: string | null;
+            /** Last Name */
+            last_name?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Phones */
+            phones?: components["schemas"]["PhoneEntry"][] | null;
+            /** Postal Code */
+            postal_code?: string | null;
+            /** Profession Id */
+            profession_id?: string | null;
+            /** State */
+            state?: string | null;
+        };
+        /**
          * MemberRoleUpdateRequest
          * @description Change an existing member's role within the caller's active tenant.
          */
@@ -5221,6 +5374,17 @@ export interface components {
             /** Tasks */
             tasks: components["schemas"]["TaskResponse"][];
         };
+        /**
+         * PhoneEntry
+         * @description One phone number. No `id`: phones are addressed as a set, not
+         *     individually — see `MemberProfileUpdateRequest.phones`.
+         */
+        PhoneEntry: {
+            /** Label */
+            label?: string | null;
+            /** Number */
+            number: string;
+        };
         /** PlatformLoginRequest */
         PlatformLoginRequest: {
             /**
@@ -5289,6 +5453,21 @@ export interface components {
         PortalSessionResponse: {
             /** Url */
             url: string;
+        };
+        /** ProfessionCreateRequest */
+        ProfessionCreateRequest: {
+            /** Name */
+            name: string;
+        };
+        /** ProfessionResponse */
+        ProfessionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
         };
         /** ProfitabilityReportResponse */
         ProfitabilityReportResponse: {
@@ -5896,6 +6075,73 @@ export interface components {
             name?: string | null;
             /** Status */
             status?: string | null;
+        };
+        /**
+         * TeamMemberResponse
+         * @description A person in this company: their membership, their account, and this
+         *     company's own record of them.
+         *
+         *     `email`, `full_name` and `role` are not on `member_profiles` — the first
+         *     two belong to the global `users` row (the login) and the third to
+         *     `company_users`. They are joined in here because a directory that made
+         *     you fetch three things to show one person would be a poor API.
+         */
+        TeamMemberResponse: {
+            /** Account Name */
+            account_name: string | null;
+            /** Address Line1 */
+            address_line1?: string | null;
+            /** Address Line2 */
+            address_line2?: string | null;
+            /** City */
+            city?: string | null;
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+            /** First Name */
+            first_name?: string | null;
+            /**
+             * Has Photo
+             * @default false
+             */
+            has_photo: boolean;
+            /**
+             * Joined At
+             * Format: date-time
+             */
+            joined_at: string;
+            /** Last Name */
+            last_name?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Phones
+             * @default []
+             */
+            phones: components["schemas"]["PhoneEntry"][];
+            /** Postal Code */
+            postal_code?: string | null;
+            profession?: components["schemas"]["ProfessionResponse"] | null;
+            /** Role */
+            role: string;
+            /** State */
+            state?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** TeamPage */
+        TeamPage: {
+            /** Items */
+            items: components["schemas"]["TeamMemberResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /**
          * TenantCreateRequest
@@ -10381,6 +10627,252 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_team_team_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_professions_team_professions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfessionResponse"][];
+                };
+            };
+        };
+    };
+    create_profession_team_professions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfessionCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_profession_team_professions__profession_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profession_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_team_member_team__user_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_team_member_team__user_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberProfileUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_team_member_photo_team__user_id__photo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_team_member_photo_team__user_id__photo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_team_member_photo_team__user_id__photo_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamMemberResponse"];
                 };
             };
             /** @description Validation Error */

@@ -453,3 +453,34 @@ def write_compliance_document_file(
         fh.write(content)
 
     return relative_path
+
+
+def write_member_photo_file(
+    *, company_id: uuid.UUID, user_id: uuid.UUID, content_type: str, content: bytes
+) -> str:
+    """Writes a team member's photo to
+    `{storage_root}/{company_id}/team/{user_id}{ext}` and returns the
+    RELATIVE storage path.
+
+    Deliberately the same shape as `write_company_logo_file` above,
+    including reusing its size cap and content-type allowlist: both are
+    small operator-supplied images, and a second set of rules for the same
+    class of upload is how one of them drifts into accepting SVG.
+
+    Under `{company_id}/` like everything else on the volume, so a tenant's
+    files stay in one subtree — and always overwritten, because a person
+    has one current photo and this app keeps no version history of images.
+    """
+    if len(content) > MAX_LOGO_SIZE_BYTES:
+        raise UnsupportedLogoError(f"photo must not exceed {MAX_LOGO_SIZE_BYTES} bytes")
+    if content_type not in _ALLOWED_LOGO_CONTENT_TYPES:
+        raise UnsupportedLogoError("photo must be image/png or image/jpeg")
+
+    ext = _ALLOWED_LOGO_CONTENT_TYPES[content_type]
+    relative_path = f"{company_id}/team/{user_id}{ext}"
+    absolute_path = Path(settings.storage_root) / str(company_id) / "team" / f"{user_id}{ext}"
+
+    absolute_path.parent.mkdir(parents=True, exist_ok=True)
+    absolute_path.write_bytes(content)
+
+    return relative_path

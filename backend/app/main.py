@@ -36,6 +36,7 @@ from app.routers import (
     subcontractors,
     subscriptions,
     tasks,
+    team,
     vendors,
     webhooks,
 )
@@ -115,6 +116,7 @@ app.include_router(reports.router)
 app.include_router(webhooks.router)
 app.include_router(integrations.router)
 app.include_router(dashboard.router)
+app.include_router(team.router)
 # Platform console (migration 0023). Registered last because nothing else
 # claims a `/platform` prefix, so ordering carries no meaning here — unlike
 # the branding/companies pair above. These routes authenticate through

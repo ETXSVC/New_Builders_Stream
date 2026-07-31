@@ -37,6 +37,10 @@ GUARDED_PATCH_ROUTES = {
     "/catalogs/items/{item_id}",
     "/materials/{bom_line_id}",
     "/vendors/{vendor_id}",
+    # The team directory (migration 0026). `member_profiles` carries
+    # updated_at, and two admins editing one person at once would
+    # otherwise silently discard the first save's phone numbers.
+    "/team/{user_id}",
 }
 
 # PATCH routes deliberately NOT guarded, each with the reason it cannot be.
@@ -158,7 +162,7 @@ def test_patch_route_count_is_pinned():
     turns that into a failure — the same reasoning, and the same lesson,
     behind test_tier_gating.py's own pinned count."""
     routes = _patch_routes()
-    assert len(routes) == 15, (
+    assert len(routes) == 16, (
         f"PATCH route count changed: {len(routes)} (paths: {sorted(routes)!r}). "
         "If a route was genuinely added or removed, update this literal AND "
         "classify it above. If the count collapsed, the introspection broke "
