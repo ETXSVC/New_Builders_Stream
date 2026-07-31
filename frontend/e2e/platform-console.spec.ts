@@ -8,16 +8,17 @@ import { test, expect } from "@playwright/test";
  * signed in, that its BFF refuses to act without the cookie, and that the
  * product's own gate is untouched by the shared `middleware.ts`.
  *
- * What it deliberately does NOT cover is the signed-in happy path. Reaching
- * it needs an account minted by `backend/scripts/grant_platform_admin.py`
- * (deliberately unreachable from any route — see the platform console section
- * of CLAUDE.md) and a live TOTP code, and there is no TOTP library in this
- * project's Node dependencies. Adding one, plus a database-owner grant step,
- * to the e2e stack in order to re-assert what
- * `backend/tests/test_platform_admin.py` already asserts from both sides
- * would buy coverage of the React rendering only, at the cost of putting a
- * privilege-granting script into CI's path. The authenticated surface is
- * covered by that suite plus manual verification.
+ * The signed-in surface lives in `platform-console-authenticated.spec.ts`
+ * and is deliberately a separate file: this one must keep passing with no
+ * operator provisioned, since it is the half that proves the console is
+ * closed to strangers. That one skips without credentials; this one never
+ * should.
+ *
+ * (For most of this feature's life the signed-in path was untested, on the
+ * grounds that reaching it needed a database-owner grant in CI's path and a
+ * TOTP library the project does not have. Both were answered rather than
+ * argued with once the console grew verbs that create and retire customers
+ * — see that file's header.)
  *
  * The redirects below are the load-bearing part: they are what stops
  * `/platform` being world-readable, and nothing else checks them.

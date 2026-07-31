@@ -82,6 +82,16 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://app_user:app_password@localhost:5432/builders_stream
           MIGRATIONS_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
           TEST_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          # The platform console's own connection (migration 0023). It has no
+          # fallback by design — unset means every /platform route answers 503
+          # rather than quietly running cross-tenant administration on the
+          # app_user connection. That is why it must be named here: without it
+          # the console spec signs in successfully (login reads through
+          # app_user) and then finds an empty tenant list, which reads as a
+          # broken loader rather than as unconfigured. The password is
+          # migration 0023's default, since the migrations step above does not
+          # set PLATFORM_DB_PASSWORD.
+          PLATFORM_DATABASE_URL: postgresql+asyncpg://platform_admin:platform_password@localhost:5432/builders_stream
           JWT_SECRET: e2e-ci-secret
           REDIS_URL: redis://localhost:6379/0
           STORAGE_ROOT: /tmp/e2e-documents
@@ -131,6 +141,36 @@ jobs:
             sleep 2
           done
           [ "${frontend_up:-}" = "1" ] || { echo "::error::frontend never became healthy"; tail -50 /tmp/frontend.log; exit 1; }
+
+      # The console refuses to sign anyone in without a platform_admins row
+      # and an activated second factor, and neither can be arranged from a
+      # Playwright spec: the first needs the table OWNER (migration 0023,
+      # deliberately — no route can grant it), and the second needs the
+      # enrollment secret. Doing it here, once, leaves the spec with only
+      # idempotent steps — which matters because /mfa/enroll returns 409
+      # once MFA is active, so a spec that enrolled itself would pass and
+      # then fail on a Playwright RETRY.
+      #
+      # Without this step the authenticated console spec SKIPS rather than
+      # fails, so a missing secret shows up as absent coverage in the report
+      # instead of a red X nobody can act on.
+      - name: Provision a platform operator for the console spec
+        working-directory: backend
+        env:
+          MIGRATIONS_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          DATABASE_URL: postgresql+asyncpg://app_user:app_password@localhost:5432/builders_stream
+          TEST_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          JWT_SECRET: e2e-ci-secret
+          INTEGRATION_TOKEN_ENCRYPTION_KEY: e2e-placeholder
+        run: |
+          # Captured rather than redirected straight into $GITHUB_ENV so the
+          # TOTP secret can be masked first. The account is throwaway and the
+          # database dies with the job, but an unmasked credential in a log
+          # is a bad habit to establish in the one place it looks harmless.
+          out=$(python scripts/provision_e2e_operator.py --base-url http://127.0.0.1:8000)
+          secret=$(printf '%s\n' "$out" | sed -n 's/^E2E_PLATFORM_TOTP_SECRET=//p')
+          echo "::add-mask::$secret"
+          printf '%s\n' "$out" >> "$GITHUB_ENV"
 
       - name: Run Playwright suite
         working-directory: frontend
