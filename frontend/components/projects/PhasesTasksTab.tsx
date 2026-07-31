@@ -30,6 +30,26 @@ interface Member {
   user_id: string;
   full_name: string;
   role: string;
+  // From the team directory, via GET /companies/members. Null for anybody
+  // whose profile has not been filled in yet, which is why every use below
+  // falls back to `full_name` (the name on their own account).
+  filed_name?: string | null;
+  profession?: string | null;
+}
+
+/** What this company calls somebody, falling back to their account name. */
+function memberLabel(member: Member): string {
+  return member.filed_name || member.full_name;
+}
+
+/**
+ * The same, with the trade — for the dropdown, where "who should do this?"
+ * is the actual question and two Daves are told apart by what they do.
+ * Kept out of the assigned-to line on a row, which has one name's worth of
+ * space and already sits next to the task it belongs to.
+ */
+function memberOption(member: Member): string {
+  return member.profession ? `${memberLabel(member)} · ${member.profession}` : memberLabel(member);
 }
 
 export function PhasesTasksTab({ projectId }: { projectId: string }) {
@@ -196,8 +216,13 @@ export function PhasesTasksTab({ projectId }: { projectId: string }) {
     }
   }
 
-  const memberName = (userId: string | null) =>
-    userId ? members.find((m) => m.user_id === userId)?.full_name ?? "Assigned" : "Unassigned";
+  const memberName = (userId: string | null) => {
+    if (!userId) return "Unassigned";
+    const member = members.find((m) => m.user_id === userId);
+    // "Assigned" rather than the id when the roster has not loaded or the
+    // person has left: the row still says an assignment exists.
+    return member ? memberLabel(member) : "Assigned";
+  };
 
   return (
     <section className="flex flex-col gap-4">
@@ -414,7 +439,7 @@ function NewTaskRow({
         <option value="">Unassigned</option>
         {members.map((m) => (
           <option key={m.user_id} value={m.user_id}>
-            {m.full_name}
+            {memberOption(m)}
           </option>
         ))}
       </Select>

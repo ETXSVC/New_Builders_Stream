@@ -629,7 +629,97 @@ async def test_your_own_save_is_guarded_against_a_concurrent_admin_edit(client):
 
 
 # --------------------------------------------------------------------------
-# 8. Offboarding, and concurrent edits
+# 8. What the assignee picker sees
+# --------------------------------------------------------------------------
+
+
+async def test_the_member_list_carries_the_filed_name_and_trade(client):
+    """`GET /companies/members` is the assignee picker's data source and could
+    only ever offer `users.full_name` — the name somebody set on their own
+    ACCOUNT. The directory holds what this company calls them and what they
+    do, which is what "who should do this?" actually needs."""
+    host = await register_and_login(client, "Picker Co", "admin@picker.example")
+    member = await _add_member(client, host, "sparks@picker.example", "field_crew")
+    trade = await client.post(
+        "/team/professions", json={"name": "Electrician"}, headers=host["headers"]
+    )
+    await client.patch(
+        f"/team/{member['user_id']}",
+        json={
+            "first_name": "Rosa",
+            "last_name": "Okafor",
+            "profession_id": trade.json()["id"],
+            "notes": "Only works Tuesdays",
+            "city": "Tyler",
+        },
+        headers=host["headers"],
+    )
+
+    listed = await client.get("/companies/members", headers=host["headers"])
+    assert listed.status_code == 200, listed.text
+    row = next(m for m in listed.json()["items"] if m["user_id"] == member["user_id"])
+
+    assert row["filed_name"] == "Rosa Okafor"
+    assert row["profession"] == "Electrician"
+    # The account name is still there to fall back on, and is NOT overwritten
+    # — the two names are separate facts about the same person.
+    assert row["full_name"] == "Invited Person"
+
+    # A dropdown needs a name and a trade. It does not need an address, and
+    # it must not carry the notes kept about somebody — the directory
+    # withholds those even from their subject, and a picker payload is a far
+    # wider audience than that.
+    assert "notes" not in row
+    assert "city" not in row
+
+
+async def test_a_member_with_no_profile_still_appears_in_the_picker(client):
+    """The fallback the picker relies on: a profile row exists only once
+    somebody has filled one in, so most people have none on day one."""
+    host = await register_and_login(client, "Fresh Co", "admin@fresh.example")
+    member = await _add_member(client, host, "new@fresh.example", "field_crew")
+
+    listed = await client.get("/companies/members", headers=host["headers"])
+    row = next(m for m in listed.json()["items"] if m["user_id"] == member["user_id"])
+
+    assert row["filed_name"] is None
+    assert row["profession"] is None
+    assert row["full_name"] == "Invited Person"
+
+
+async def test_the_picker_shows_this_companys_record_not_another_companys(client):
+    """The property the whole table shape exists for, seen from the picker:
+    one person, two employers, and the name each company filed them under."""
+    first = await register_and_login(client, "Filed First", "admin@filed-first.example")
+    second = await register_and_login(client, "Filed Second", "admin@filed-second.example")
+    shared_email = "shared@filed.example"
+    person = await _add_member(client, first, shared_email, "field_crew")
+
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await conn.execute(
+            "INSERT INTO company_users (company_id, user_id, role) VALUES ($1, $2, 'field_crew')",
+            uuid.UUID(second["company_id"]),
+            uuid.UUID(person["user_id"]),
+        )
+    finally:
+        await conn.close()
+
+    await client.patch(
+        f"/team/{person['user_id']}",
+        json={"first_name": "Bo", "last_name": "Iyer"},
+        headers=first["headers"],
+    )
+
+    seen_by_second = await client.get("/companies/members", headers=second["headers"])
+    row = next(
+        m for m in seen_by_second.json()["items"] if m["user_id"] == person["user_id"]
+    )
+    assert row["filed_name"] is None, "the other employer's record must not leak into this picker"
+
+
+# --------------------------------------------------------------------------
+# 9. Offboarding, and concurrent edits
 # --------------------------------------------------------------------------
 
 
