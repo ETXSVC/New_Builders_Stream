@@ -188,7 +188,7 @@ async def list_tenants(
     ),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
-    actor: PlatformActor = Depends(get_platform_admin),
+    actor: PlatformActor = Depends(get_platform_admin, scope="function"),
 ) -> TenantPage:
     query = select(Company)
     if search:
@@ -219,7 +219,7 @@ async def list_tenants(
 
 @router.post("", response_model=TenantCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_tenant(
-    payload: TenantCreateRequest, actor: PlatformActor = Depends(get_platform_admin)
+    payload: TenantCreateRequest, actor: PlatformActor = Depends(get_platform_admin, scope="function")
 ) -> TenantCreateResponse:
     """Bring a customer into existence: company, owner, membership, trial.
 
@@ -327,7 +327,7 @@ async def create_tenant(
 
 @router.get("/{company_id}", response_model=TenantDetail)
 async def get_tenant(
-    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin)
+    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin, scope="function")
 ) -> TenantDetail:
     company = await _get_company(actor, company_id)
     summary = await _summarise(actor, company)
@@ -348,7 +348,7 @@ async def get_tenant(
 async def update_subscription(
     company_id: uuid.UUID,
     payload: SubscriptionUpdateRequest,
-    actor: PlatformActor = Depends(get_platform_admin),
+    actor: PlatformActor = Depends(get_platform_admin, scope="function"),
 ) -> TenantDetail:
     company = await _require_root(actor, company_id)
     subscription = await _subscription_for_root(actor, company.id)
@@ -415,7 +415,7 @@ async def set_module_override(
     company_id: uuid.UUID,
     module: str,
     payload: ModuleOverrideRequest,
-    actor: PlatformActor = Depends(get_platform_admin),
+    actor: PlatformActor = Depends(get_platform_admin, scope="function"),
 ) -> TenantDetail:
     if module not in MODULE_MIN_TIER:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"No such module: {module}")
@@ -470,7 +470,7 @@ async def set_module_override(
 async def clear_module_override(
     company_id: uuid.UUID,
     module: str,
-    actor: PlatformActor = Depends(get_platform_admin),
+    actor: PlatformActor = Depends(get_platform_admin, scope="function"),
 ) -> TenantDetail:
     """Revert to whatever the tier says. Distinct from setting the override
     to false, which withholds a module the tier would otherwise allow."""
@@ -534,7 +534,7 @@ async def _detail_after_write(actor: PlatformActor, company: Company) -> TenantD
 async def rename_tenant(
     company_id: uuid.UUID,
     payload: TenantUpdateRequest,
-    actor: PlatformActor = Depends(get_platform_admin),
+    actor: PlatformActor = Depends(get_platform_admin, scope="function"),
 ) -> TenantDetail:
     """Correct a company's name.
 
@@ -567,7 +567,7 @@ async def rename_tenant(
 
 @router.delete("/{company_id}", response_model=TenantDetail)
 async def deactivate_tenant(
-    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin)
+    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin, scope="function")
 ) -> TenantDetail:
     """Take a tenant out of service. SOFT — no row is removed.
 
@@ -604,7 +604,7 @@ async def deactivate_tenant(
 
 @router.post("/{company_id}/restore", response_model=TenantDetail)
 async def restore_tenant(
-    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin)
+    company_id: uuid.UUID, actor: PlatformActor = Depends(get_platform_admin, scope="function")
 ) -> TenantDetail:
     """Put a tenant back into service, exactly as it was.
 

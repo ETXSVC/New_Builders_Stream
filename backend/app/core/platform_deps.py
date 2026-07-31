@@ -49,6 +49,21 @@ class PlatformActor:
 
 
 async def get_platform_admin():
+    """The console's actor, on its own BYPASSRLS connection.
+
+    **Every `Depends(get_platform_admin)` MUST pass `scope="function"`**, for
+    the reason `get_current_user`'s docstring sets out at length: a generator
+    dependency defaults to FastAPI's *request* exit stack, which closes after
+    `await response(scope, receive, send)`. The commit below would then land
+    after the client already holds the 200, and a caller that immediately
+    re-reads can beat it.
+
+    That is not hypothetical here either. Without it, the console's e2e spec
+    saved a tier change, got its 200, re-read the tenant list and rendered
+    the OLD tier — intermittently, because the window is one commit wide.
+    `tests/test_dependency_exit_scope.py` is the gate; this paragraph is
+    only the explanation.
+    """
     token = bearer_token_ctx.get()
     if token is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing bearer token")

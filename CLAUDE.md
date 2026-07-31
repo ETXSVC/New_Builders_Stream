@@ -44,7 +44,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (1101 tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (1104 tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test
@@ -296,6 +296,15 @@ and the separation is the design:
   That check reads through the ordinary RLS-scoped `app_user` connection
   under a `self_read` policy — a caller can ask "am *I* an admin?" without
   being able to enumerate who else is.
+- **Asked for with `scope="function"`, like `get_current_user`.** Both hold
+  a transaction open across the handler and commit in their exit code, and a
+  generator dependency defaults to FastAPI's *request* exit stack — which
+  closes after the response has been sent, handing the client a 200 for a
+  write that has not committed. The console shipped without it and the
+  symptom was a tier change that read back as its old value, intermittently.
+  `tests/test_dependency_exit_scope.py` now discovers every
+  transaction-holding dependency and fails on any call site that omits the
+  scope, so this is a gate rather than a docstring.
 - **No route grants the privilege.** `platform_admins` revokes writes from
   both `app_user` and `scanner`, so escalation into this tier is removed as a
   category rather than defended against. Minting an account is
