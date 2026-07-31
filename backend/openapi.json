@@ -557,6 +557,20 @@
         "title": "Body_upload_document_projects__project_id__documents_post",
         "type": "object"
       },
+      "Body_upload_team_member_photo_team__user_id__photo_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_team_member_photo_team__user_id__photo_post",
+        "type": "object"
+      },
       "BomLineListResponse": {
         "properties": {
           "items": {
@@ -3931,6 +3945,146 @@
         "title": "MarkupProfileResponse",
         "type": "object"
       },
+      "MemberProfileUpdateRequest": {
+        "description": "Every field optional \u2014 a PATCH setting only `city` must not blank the\nrest. An OMITTED key means \"leave alone\"; an explicit `null` CLEARS the\nfield. The router tells the two apart through `model_fields_set`, because\nPydantic gives both the same value and collapsing them would leave no way\nto erase an address somebody entered by mistake.\n\nEXCEPT `phones`, which is a REPLACED SET when present. Sending\n`[{\"label\": \"mobile\", \"number\": \"...\"}]` makes that the complete list;\nsending `[]` removes every number; omitting the key changes nothing.\nPer-phone add/remove endpoints would be three more routes and a\nclient-side id to track, for an edit that is always \"here is the list\nnow\" in practice.",
+        "properties": {
+          "address_line1": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line1"
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line2"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "phones": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PhoneEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phones"
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "profession_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profession Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "title": "MemberProfileUpdateRequest",
+        "type": "object"
+      },
       "MemberRoleUpdateRequest": {
         "description": "Change an existing member's role within the caller's active tenant.",
         "properties": {
@@ -4322,6 +4476,34 @@
         "title": "PhaseWithTasksResponse",
         "type": "object"
       },
+      "PhoneEntry": {
+        "description": "One phone number. No `id`: phones are addressed as a set, not\nindividually \u2014 see `MemberProfileUpdateRequest.phones`.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "number": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "number"
+        ],
+        "title": "PhoneEntry",
+        "type": "object"
+      },
       "PlatformLoginRequest": {
         "properties": {
           "email": {
@@ -4454,6 +4636,40 @@
           "url"
         ],
         "title": "PortalSessionResponse",
+        "type": "object"
+      },
+      "ProfessionCreateRequest": {
+        "properties": {
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ProfessionCreateRequest",
+        "type": "object"
+      },
+      "ProfessionResponse": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ProfessionResponse",
         "type": "object"
       },
       "ProfitabilityReportResponse": {
@@ -5572,6 +5788,201 @@
           }
         },
         "title": "TaskUpdateRequest",
+        "type": "object"
+      },
+      "TeamMemberResponse": {
+        "description": "A person in this company: their membership, their account, and this\ncompany's own record of them.\n\n`email`, `full_name` and `role` are not on `member_profiles` \u2014 the first\ntwo belong to the global `users` row (the login) and the third to\n`company_users`. They are joined in here because a directory that made\nyou fetch three things to show one person would be a poor API.",
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Name"
+          },
+          "address_line1": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line1"
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line2"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "has_photo": {
+            "default": false,
+            "title": "Has Photo",
+            "type": "boolean"
+          },
+          "joined_at": {
+            "format": "date-time",
+            "title": "Joined At",
+            "type": "string"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "phones": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PhoneEntry"
+            },
+            "title": "Phones",
+            "type": "array"
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "profession": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfessionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email",
+          "account_name",
+          "role",
+          "joined_at"
+        ],
+        "title": "TeamMemberResponse",
+        "type": "object"
+      },
+      "TeamPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TeamMemberResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "TeamPage",
         "type": "object"
       },
       "TenantCreateRequest": {
@@ -12736,6 +13147,356 @@
         "tags": [
           "phases",
           "tasks"
+        ]
+      }
+    },
+    "/team": {
+      "get": {
+        "description": "Everyone in the caller's active tenant.\n\nPaginated over `company_users`, which is the source of truth for\nmembership \u2014 profiles are joined on afterwards precisely because a\nmember without one must still appear.",
+        "operationId": "list_team_team_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Team",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/professions": {
+      "get": {
+        "operationId": "list_professions_team_professions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProfessionResponse"
+                  },
+                  "title": "Response List Professions Team Professions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Professions",
+        "tags": [
+          "team"
+        ]
+      },
+      "post": {
+        "operationId": "create_profession_team_professions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfessionCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Profession",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/professions/{profession_id}": {
+      "delete": {
+        "operationId": "delete_profession_team_professions__profession_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "profession_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Profession Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Profession",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/{user_id}": {
+      "get": {
+        "operationId": "get_team_member_team__user_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Team Member",
+        "tags": [
+          "team"
+        ]
+      },
+      "patch": {
+        "description": "Update this company's record of a person.\n\nCreates the profile row on first edit rather than at invitation-accept\ntime, so the directory has no half-empty rows for members nobody has\ngot round to filling in.",
+        "operationId": "update_team_member_team__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberProfileUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Team Member",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/{user_id}/photo": {
+      "get": {
+        "description": "Serve the photo bytes.\n\nBehind the same role check as the rest of the directory rather than\nserved as a static file: the storage volume holds every tenant's\nuploads, and \"unguessable path\" is not an access control.",
+        "operationId": "get_team_member_photo_team__user_id__photo_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Team Member Photo",
+        "tags": [
+          "team"
+        ]
+      },
+      "post": {
+        "operationId": "upload_team_member_photo_team__user_id__photo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_team_member_photo_team__user_id__photo_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Team Member Photo",
+        "tags": [
+          "team"
         ]
       }
     },

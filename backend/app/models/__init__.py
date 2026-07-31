@@ -15,6 +15,7 @@ from app.models.estimate import Estimate
 from app.models.estimate_line_item import EstimateLineItem
 from app.models.esignature import Esignature
 from app.models.change_order import ChangeOrder
+from app.models.team import MemberPhone, MemberProfile, Profession
 from app.models.subcontractor import Subcontractor
 from app.models.compliance_document import ComplianceDocument
 from app.models.subcontractor_assignment import SubcontractorAssignment
@@ -78,4 +79,7 @@ __all__ = [
     "LeadClient",
     "PlatformAdmin",
     "CompanyModuleOverride",
+    "Profession",
+    "MemberProfile",
+    "MemberPhone",
 ]
