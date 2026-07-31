@@ -31,6 +31,24 @@ npm run build               # this is the typecheck
 npm run test:e2e            # needs the full stack up
 ```
 
+The platform console's signed-in specs skip unless an operator exists —
+they need a `platform_admins` row (table owner only, by design) and a live
+TOTP secret. One command provides both, from `backend/`:
+
+```bash
+eval "$(python scripts/provision_e2e_operator.py --base-url http://localhost:8000 | sed 's/^/export /')"
+cd ../frontend && npm run test:e2e
+```
+
+Run them against a **production** frontend build, not `next dev` — the
+README's "Local development notes" explains why and gives the compose
+overlay. Two things that will bite otherwise: the login rate limiter counts
+these attempts (the
+spec signs in once per run for exactly that reason, but repeated debugging
+runs will trip it — clear `platform-login:*` from Redis), and re-running
+provisioning against an account whose MFA is already active fails with a
+409, so pass a fresh `--email`.
+
 `test:e2e` registers a fresh company per spec file and has no teardown, so
 a dev database accretes roughly 29 companies and 37 users per full run,
 cumulatively. When the tenant list gets noisy enough to make debugging
