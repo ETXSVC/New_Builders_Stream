@@ -93,8 +93,36 @@ test.describe("platform console, signed in", () => {
     await page.getByLabel("Authenticator code").fill(totpCode(SECRET!));
 
     await page.getByRole("button", { name: "Sign in" }).click();
+
+    // One retry, in a LATER timestep, before giving up.
+    //
+    // This is the replay guard again, seen from the other side. A Playwright
+    // retry runs in a fresh worker process, so nothing in this file can
+    // remember which code the previous attempt burned — and the retry starts
+    // seconds after the failure, i.e. usually inside the very timestep the
+    // first run signed in with. The login is then rejected as a replay and
+    // the report blames the login for whatever actually failed, which is
+    // exactly how a missing PLATFORM_DATABASE_URL first showed up as "the
+    // operator cannot sign in". Waiting out the window costs 30s on a retry
+    // and nothing at all on a green run.
+    if (!(await landedOnConsole(page, 5_000))) {
+      await page.waitForTimeout((secondsLeftInStep() + 1) * 1_000);
+      await page.getByLabel("Authenticator code").fill(totpCode(SECRET!));
+      await page.getByRole("button", { name: "Sign in" }).click();
+    }
+
     await expect(page).toHaveURL(/\/platform$/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "Tenants" })).toBeVisible();
+  }
+
+  /** Did the submit land on the tenant list within `timeout`? */
+  async function landedOnConsole(page: Page, timeout: number): Promise<boolean> {
+    try {
+      await expect(page).toHaveURL(/\/platform$/, { timeout });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   test.beforeEach(async ({ page, context }) => {

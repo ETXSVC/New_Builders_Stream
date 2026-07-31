@@ -82,6 +82,16 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://app_user:app_password@localhost:5432/builders_stream
           MIGRATIONS_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
           TEST_DATABASE_URL: postgresql+asyncpg://postgres:devpassword@localhost:5432/builders_stream
+          # The platform console's own connection (migration 0023). It has no
+          # fallback by design — unset means every /platform route answers 503
+          # rather than quietly running cross-tenant administration on the
+          # app_user connection. That is why it must be named here: without it
+          # the console spec signs in successfully (login reads through
+          # app_user) and then finds an empty tenant list, which reads as a
+          # broken loader rather than as unconfigured. The password is
+          # migration 0023's default, since the migrations step above does not
+          # set PLATFORM_DB_PASSWORD.
+          PLATFORM_DATABASE_URL: postgresql+asyncpg://platform_admin:platform_password@localhost:5432/builders_stream
           JWT_SECRET: e2e-ci-secret
           REDIS_URL: redis://localhost:6379/0
           STORAGE_ROOT: /tmp/e2e-documents
