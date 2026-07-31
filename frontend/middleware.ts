@@ -51,6 +51,7 @@ export const config = {
     "/billing/:path*",
     "/compliance/:path*",
     "/subcontractors/:path*",
+    "/team/:path*",
     "/integrations/:path*",
     // The platform console. ":path*" matches zero or more segments, so this
     // one entry covers "/platform" itself as well as everything under it —
