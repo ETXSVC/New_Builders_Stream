@@ -168,7 +168,10 @@ test("an admin enrols in MFA, reads their tasks, and reaches integrations and br
     expect(secret.length).toBeGreaterThan(0);
 
     enrolmentStep = currentTimeStep();
-    await page.getByLabel("Code").fill(totp(secret));
+    // `exact`, because accessible-name matching is substring by default and
+    // this page now also carries a "Postal code" field (the directory panel).
+    // Without it this resolves to two elements and fails strict mode.
+    await page.getByLabel("Code", { exact: true }).fill(totp(secret));
     await page.getByRole("button", { name: "Confirm" }).click();
 
     // Enrolment succeeded iff the panel now offers the DISABLE form —

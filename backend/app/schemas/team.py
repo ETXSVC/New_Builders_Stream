@@ -103,3 +103,33 @@ class MemberProfileUpdateRequest(BaseModel):
     # exists for: without it the second save silently discards the first's
     # phone numbers with no 409 and no trace.
     expected_updated_at: datetime | None = None
+
+
+class MemberSelfUpdateRequest(BaseModel):
+    """What a person may change about themselves: how to reach them.
+
+    A separate model rather than the one above with a role check around it,
+    and the difference is the safety. `notes` is the company's private record
+    ABOUT somebody and `profession_id` is how the company classifies them for
+    assignment — neither is theirs to state. Here they are not optional-and-
+    ignored, they are absent, so `PATCH /team/me` cannot write them however
+    it is called.
+
+    `extra="forbid"` closes the other half: without it, Pydantic drops an
+    unknown `notes` key silently and the caller is told their edit succeeded.
+    A 422 that names the field is the honest answer, and it is also what
+    stops a future field added to `MemberProfileUpdateRequest` from quietly
+    becoming self-writable if somebody ever merges the two.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
+    address_line1: str | None = Field(default=None, max_length=255)
+    address_line2: str | None = Field(default=None, max_length=255)
+    city: str | None = Field(default=None, max_length=100)
+    state: str | None = Field(default=None, max_length=100)
+    postal_code: str | None = Field(default=None, max_length=20)
+    phones: list[PhoneEntry] | None = None
+    expected_updated_at: datetime | None = None

@@ -59,7 +59,7 @@ export default function TeamPage() {
               className="flex items-center gap-4 px-4 py-3 hover:bg-slate-50"
             >
               <MemberPhoto
-                userId={member.user_id}
+                src={`/api/team/${member.user_id}/photo`}
                 hasPhoto={member.has_photo}
                 name={displayName(member)}
                 version={member.updated_at}

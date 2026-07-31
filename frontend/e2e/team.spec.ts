@@ -202,6 +202,52 @@ test("an admin fills in a teammate's record, and a project manager can only read
     await expect(page.getByLabel("First name")).toBeDisabled();
   });
 
+  await test.step("a member fixes their own details from their account page", async () => {
+    // Still signed in as the project manager from the step above. The panel
+    // lives here rather than in the directory because it has to work for
+    // field crew, who cannot open /team at all — and it reaches /team/me,
+    // which takes no user id, because the session has none to give it.
+    await page.getByRole("link", { name: "Account" }).click();
+    await expect(page.getByRole("heading", { name: "Your details" })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Seeded from what the admin already filed, not blank.
+    await expect(page.getByLabel("First name")).toHaveValue("Dale");
+
+    await page.getByLabel("Postal code").fill("75701");
+    await page.getByRole("button", { name: "Add a phone" }).click();
+    // `.last()`: the admin already filed one number for this person, so the
+    // row just added is the second — an unqualified getByLabel("Number")
+    // would match both and fail strict mode.
+    await page.getByLabel("Number").last().fill("903-555-0143");
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText("Saved.")).toBeVisible({ timeout: 15_000 });
+  });
+
+  await test.step("the record has no notes field for its subject", async () => {
+    // The company's private record ABOUT somebody. Withholding the write
+    // while rendering the value would be theatre, so the self route does
+    // not return it and this panel has no control for it.
+    await expect(page.getByLabel("Notes")).toBeHidden();
+    await expect(page.getByLabel("Profession")).toBeHidden();
+  });
+
+  await test.step("the admin sees the member's own edit", async () => {
+    await page.getByRole("button", { name: "Log out" }).click();
+    await expect(page).toHaveURL(/\/login/);
+    await page.getByLabel("Email").fill(adminEmail);
+    await page.getByLabel("Password").fill(password);
+    await page.getByRole("button", { name: "Log in" }).click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 });
+
+    await page.getByRole("link", { name: "Team", exact: true }).click();
+    await page.getByRole("link", { name: /Dale Rivera/ }).click();
+    // One record, two doors: what the member typed about themselves is what
+    // the directory shows.
+    await expect(page.getByLabel("Postal code")).toHaveValue("75701", { timeout: 15_000 });
+  });
+
   await test.step("signed out, /team redirects before it renders", async () => {
     await page.getByRole("button", { name: "Log out" }).click();
     await expect(page).toHaveURL(/\/login/);

@@ -557,6 +557,20 @@
         "title": "Body_upload_document_projects__project_id__documents_post",
         "type": "object"
       },
+      "Body_upload_my_photo_team_me_photo_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_my_photo_team_me_photo_post",
+        "type": "object"
+      },
       "Body_upload_team_member_photo_team__user_id__photo_post": {
         "properties": {
           "file": {
@@ -4097,6 +4111,124 @@
           "role"
         ],
         "title": "MemberRoleUpdateRequest",
+        "type": "object"
+      },
+      "MemberSelfUpdateRequest": {
+        "additionalProperties": false,
+        "description": "What a person may change about themselves: how to reach them.\n\nA separate model rather than the one above with a role check around it,\nand the difference is the safety. `notes` is the company's private record\nABOUT somebody and `profession_id` is how the company classifies them for\nassignment \u2014 neither is theirs to state. Here they are not optional-and-\nignored, they are absent, so `PATCH /team/me` cannot write them however\nit is called.\n\n`extra=\"forbid\"` closes the other half: without it, Pydantic drops an\nunknown `notes` key silently and the caller is told their edit succeeded.\nA 422 that names the field is the honest answer, and it is also what\nstops a future field added to `MemberProfileUpdateRequest` from quietly\nbecoming self-writable if somebody ever merges the two.",
+        "properties": {
+          "address_line1": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line1"
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line2"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "expected_updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Updated At"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          },
+          "phones": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PhoneEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phones"
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Postal Code"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          }
+        },
+        "title": "MemberSelfUpdateRequest",
         "type": "object"
       },
       "MfaActivateRequest": {
@@ -13207,6 +13339,127 @@
           }
         },
         "summary": "List Team",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/me": {
+      "get": {
+        "description": "Your own record, minus the part that is not about you but about how\nyour employer files you: `notes` is always null here.",
+        "operationId": "get_my_profile_team_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get My Profile",
+        "tags": [
+          "team"
+        ]
+      },
+      "patch": {
+        "description": "Your name, your address, your phone numbers.\n\nAudited into the same log as an admin's edit, with `self: true`, because\n\"who changed this address\" is the question the log exists to answer and\nthe answer is different in the two cases.",
+        "operationId": "update_my_profile_team_me_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberSelfUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update My Profile",
+        "tags": [
+          "team"
+        ]
+      }
+    },
+    "/team/me/photo": {
+      "get": {
+        "description": "Your own photo.\n\nA route of its own rather than `/team/{your id}/photo`, because that one\nis behind the directory's read roles \u2014 and field crew, who can edit\ntheir own record, cannot open the directory at all.",
+        "operationId": "get_my_photo_team_me_photo_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get My Photo",
+        "tags": [
+          "team"
+        ]
+      },
+      "post": {
+        "operationId": "upload_my_photo_team_me_photo_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_my_photo_team_me_photo_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeamMemberResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload My Photo",
         "tags": [
           "team"
         ]
