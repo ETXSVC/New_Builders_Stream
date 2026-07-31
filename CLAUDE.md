@@ -44,7 +44,7 @@ All backend commands run from `backend/`.
 # Install (editable, with dev/test deps)
 pip install -e ".[dev]"
 
-# Run the full test suite (1111 tests; needs Postgres + Redis reachable per .env)
+# Run the full test suite (1114 tests; needs Postgres + Redis reachable per .env)
 pytest
 
 # Run one file / one test

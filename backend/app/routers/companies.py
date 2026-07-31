@@ -15,10 +15,15 @@ from app.schemas.company import (
     MemberRoleUpdateRequest,
 )
 from app.services.audit import write_audit_log
+from app.services.team_directory import DirectoryLabel, labels_for_members
 
 router = APIRouter(prefix="/companies", tags=["companies"])
 
 _MEMBER_LIST_ROLES = ("admin", "project_manager")
+
+# Stands in for a member with no profile row yet — the normal state until
+# somebody first fills one in.
+_NO_LABEL = DirectoryLabel(filed_name=None, profession=None)
 
 
 async def _get_membership_or_404(
@@ -84,6 +89,17 @@ async def list_company_members(
         .where(CompanyUser.company_id == current.company_id)
         .order_by(User.full_name, User.email)
     )
+    rows = result.all()
+
+    # The directory's two display fields, through its service rather than a
+    # select() against its tables — see app/services/team_directory.py, and
+    # tests/test_module_boundaries.py, which enforces the distinction.
+    labels = await labels_for_members(
+        current.session,
+        current.company_id,
+        [membership.user_id for membership, _, _ in rows],
+    )
+
     return CompanyMemberListResponse(
         items=[
             CompanyMemberResponse(
@@ -91,8 +107,10 @@ async def list_company_members(
                 full_name=full_name,
                 email=email,
                 role=membership.role,
+                filed_name=labels.get(membership.user_id, _NO_LABEL).filed_name,
+                profession=labels.get(membership.user_id, _NO_LABEL).profession,
             )
-            for membership, full_name, email in result.all()
+            for membership, full_name, email in rows
         ]
     )
 

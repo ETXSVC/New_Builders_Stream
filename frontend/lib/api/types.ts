@@ -3884,8 +3884,12 @@ export interface components {
         CompanyMemberResponse: {
             /** Email */
             email: string;
+            /** Filed Name */
+            filed_name?: string | null;
             /** Full Name */
             full_name: string;
+            /** Profession */
+            profession?: string | null;
             /** Role */
             role: string;
             /**

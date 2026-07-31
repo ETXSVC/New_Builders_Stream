@@ -1319,9 +1319,31 @@
             "title": "Email",
             "type": "string"
           },
+          "filed_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filed Name"
+          },
           "full_name": {
             "title": "Full Name",
             "type": "string"
+          },
+          "profession": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profession"
           },
           "role": {
             "title": "Role",
