@@ -230,9 +230,18 @@ services:
       # `(platform)` directories did not exist at all.
       #
       # Cost of an anonymous volume here is that `rm -rf frontend/.next` on
-      # the HOST no longer clears the dev server's cache — use
-      # `docker compose down frontend && docker compose up -d frontend`,
-      # which discards the volume with the container.
+      # the HOST no longer clears the dev server's cache. To actually clear
+      # it:
+      #
+      #     docker compose rm -sfv frontend && docker compose up -d frontend
+      #
+      # `-v` is the whole point and is easy to leave off. `docker compose
+      # down frontend` does NOT remove an anonymous volume — only named
+      # volumes in the `volumes:` section, and only with its own `-v`. An
+      # earlier version of this comment recommended `down` and was simply
+      # wrong: the stale `.next` survived every "clean" restart, so a route
+      # that had failed to compile once stayed missing indefinitely and no
+      # amount of restarting brought it back.
       - /app/.next
     environment:
       # Docker Compose network hostname, not "localhost" — the frontend container's

@@ -123,21 +123,43 @@ Two things about the dev stack that look like bugs and are not:
   fine. Set `DEV_ALLOWED_ORIGINS` in `.env` (comma-separated hostnames;
   `.env.example` documents it). Dev-only: `next build` never reads it.
 
-- **Serving the frontend as it actually ships.** Turbopack does not register
-  every deeply nested API route on a Windows host, so a route can 404 in the
-  dev container while `next build` produces it correctly. To run the built
-  artifact instead:
+- **Clearing the dev server's cache.** `.next` lives in a container volume,
+  not the bind mount, so `rm -rf frontend/.next` on the host does nothing.
+  Use:
+
+  ```bash
+  docker compose rm -sfv frontend && docker compose up -d frontend
+  ```
+
+  The `-v` is the point. `docker compose down frontend` does **not** remove
+  an anonymous volume, so a stale `.next` survives what looks like a clean
+  restart.
+
+- **Serving the frontend as it actually ships.** Turbopack intermittently
+  fails to register `app/(platform)/api/platform/companies/[companyId]/modules/[module]`
+  on a Windows host — it 404s in the dev container while `next build`
+  produces it correctly, and the same route sometimes appears after an
+  unrelated change and disappears again. To run the built artifact instead:
 
   ```bash
   docker compose -f docker-compose.yml -f docker-compose.frontend-prod.yml up -d frontend
   ```
 
-  Use **http://localhost:3001** with that overlay, not a hostname:
-  `NODE_ENV=production` makes the session cookies `Secure`, and browsers
-  refuse to store those over plain HTTP except on localhost — otherwise login
-  appears to succeed and bounces straight back. No hot reload in this mode;
-  add `--build` after a frontend change, or drop back with a plain
+  All nine platform routes register reliably under that overlay. Use
+  **http://localhost:3001** with it, not a hostname: `NODE_ENV=production`
+  makes the session cookies `Secure`, and browsers refuse to store those
+  over plain HTTP except on localhost — otherwise login appears to succeed
+  and bounces straight back. No hot reload in this mode; add `--build`
+  after a frontend change, or drop back with a plain
   `docker compose up -d frontend`.
+
+  What this is *not*, each ruled out by experiment rather than reasoning:
+  the `[module]` segment name (a probe route with the same name under a
+  different parent registered fine), route depth alone (a short
+  eight-segment path registered), the parent directory being called
+  `modules`, and Windows' 260-character path limit (the longest artifact
+  Turbopack writes for this route is ~157 characters). Production is
+  unaffected, so this is a dev-server annoyance rather than a defect.
 
 ### Production
 
