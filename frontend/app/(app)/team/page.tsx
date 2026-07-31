@@ -62,6 +62,7 @@ export default function TeamPage() {
                 userId={member.user_id}
                 hasPhoto={member.has_photo}
                 name={displayName(member)}
+                version={member.updated_at}
               />
               <span className="flex flex-1 flex-col">
                 <span className="text-sm font-medium">{displayName(member)}</span>

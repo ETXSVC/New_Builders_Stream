@@ -25,12 +25,24 @@ export function MemberPhoto({
   userId,
   hasPhoto,
   name,
+  version,
   size = 40,
 }: {
   userId: string;
   hasPhoto: boolean;
   /** Used for the initials fallback, and as the alt text. */
   name: string;
+  /**
+   * Anything that changes when the BYTES change — in practice the profile's
+   * `updated_at`, which moves on the photo write.
+   *
+   * Without it, REPLACING a photo shows the old one until the page is left:
+   * `userId` is the same, the token is the same, and `has_photo` was already
+   * true and is true again, so the effect below has nothing to react to. The
+   * first upload works (false → true) and every later one appears to do
+   * nothing, which is the worst version of this bug to debug.
+   */
+  version?: string | null;
   size?: number;
 }) {
   const { accessToken } = useAuth();
@@ -70,7 +82,7 @@ export function MemberPhoto({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [accessToken, hasPhoto, userId]);
+  }, [accessToken, hasPhoto, userId, version]);
 
   const initials = name
     .split(/\s+/)

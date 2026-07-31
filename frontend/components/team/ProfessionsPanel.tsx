@@ -3,6 +3,7 @@
 import * as React from "react";
 import type { components } from "@/lib/api/types";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLatestOnly } from "@/lib/use-latest-only";
 import { Button } from "@/components/ui/button";
 import { ConfirmButton } from "@/components/ui/confirm-button";
 import { Input } from "@/components/ui/input";
@@ -31,22 +32,34 @@ export function ProfessionsPanel({ onChanged }: { onChanged?: () => void }) {
 
   const canEdit = role === "admin";
 
+  // This loader runs on mount AND after every add and remove, so two can be
+  // in flight at once — and the one issued first can land last, putting a
+  // profession that was just deleted back on screen until the next render
+  // that happens to refetch. Same guard, same reason, as every other loader
+  // here (lib/use-latest-only.ts).
+  const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    const isCurrent = beginLoad();
     try {
       const response = await fetch("/api/team/professions", {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       const data = await response.json();
+      // Above the !response.ok branch, so a superseded response can write
+      // neither the list nor an error.
+      if (!isCurrent()) return;
       if (!response.ok) {
         setError(data.detail ?? "Failed to load professions");
         return;
       }
       setProfessions(data);
     } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
+      if (isCurrent()) {
+        setError("Unable to reach the server. Check your connection and try again.");
+      }
     }
-  }, [accessToken]);
+  }, [accessToken, beginLoad]);
 
   React.useEffect(() => {
     void Promise.resolve().then(() => load());
@@ -160,6 +173,10 @@ export function ProfessionsPanel({ onChanged }: { onChanged?: () => void }) {
               maxLength={100}
               placeholder="e.g. Electrician"
               className="w-56"
+              // Matches the Button beside it: without this the field stays
+              // editable through the POST and is then cleared under whoever
+              // was already typing the next one.
+              disabled={busy}
             />
           </div>
           <Button type="submit" variant="outline" disabled={busy || !name.trim()}>

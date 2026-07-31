@@ -89,9 +89,24 @@ export default function TeamMemberPage() {
 
   const canEdit = role === "admin";
 
+  // Which member this form has already been seeded from.
+  //
+  // The load below runs whenever `accessToken` changes, and AuthContext
+  // replaces the token on a timer (a minute before its 15-minute life is up).
+  // Unlike every peer loader in this app, this one's target IS the editable
+  // state — so without this ref, an admin who fills the form in and is
+  // called away for a quarter of an hour comes back to it silently reset to
+  // the server's copy, and a save from there writes those blanks back.
+  //
+  // `member` is deliberately left alone too: quietly adopting a newer
+  // `updated_at` in the background would disarm the stale-write guard the
+  // save depends on.
+  const seededFor = React.useRef<string | null>(null);
+
   const beginLoad = useLatestOnly();
   const load = React.useCallback(async () => {
     if (!accessToken) return;
+    if (seededFor.current === userId) return;
     const isCurrent = beginLoad();
     try {
       const [memberResponse, professionsResponse] = await Promise.all([
@@ -104,6 +119,7 @@ export default function TeamMemberPage() {
         setError(memberData.detail ?? "Failed to load this team member");
         return;
       }
+      seededFor.current = userId;
       setMember(memberData);
       setDraft(draftFrom(memberData));
       setPhones(memberData.phones);
@@ -224,6 +240,9 @@ export default function TeamMemberPage() {
             userId={member.user_id}
             hasPhoto={member.has_photo}
             name={displayName(member)}
+            // Moves on every write to the profile, including the photo one —
+            // which is what makes a REPLACED photo appear without a reload.
+            version={member.updated_at}
             size={64}
           />
           <div>
@@ -383,15 +402,17 @@ export default function TeamMemberPage() {
         <section className="flex flex-col gap-2 rounded-lg border border-slate-200 p-4">
           <h2 className="text-sm font-semibold">Photo</h2>
           <p className="text-xs text-slate-500">PNG or JPEG, up to 2 MB.</p>
-          <input
-            ref={photoInputRef}
-            id="team-photo"
-            type="file"
-            accept="image/png,image/jpeg"
-            className="text-sm"
-            disabled={uploading}
-            onChange={(event) => setPhotoFile(event.target.files?.[0] ?? null)}
-          />
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="team-photo">Photo file</Label>
+            <Input
+              id="team-photo"
+              type="file"
+              ref={photoInputRef}
+              accept="image/png,image/jpeg"
+              disabled={uploading}
+              onChange={(event) => setPhotoFile(event.target.files?.[0] ?? null)}
+            />
+          </div>
           <div>
             <Button
               type="button"
