@@ -27,6 +27,7 @@ from app.models.bill import Bill
 from app.models.bill_payment import BillPayment
 from app.models.expense import Expense
 from app.models.integration_connection import IntegrationConnection
+from app.models.integration_entity_mapping import IntegrationEntityMapping
 from app.models.integration_sync_record import IntegrationSyncRecord
 from app.models.password_reset_token import PasswordResetToken
 from app.models.refresh_token import RefreshToken
@@ -71,6 +72,7 @@ __all__ = [
     "BillPayment",
     "Expense",
     "IntegrationConnection",
+    "IntegrationEntityMapping",
     "IntegrationSyncRecord",
     "PasswordResetToken",
     "RefreshToken",

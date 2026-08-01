@@ -150,6 +150,207 @@ async def _seed_connection_and_invoice(session_factory, *, provider="quickbooks"
     return {"company_id": company_id, "invoice_id": invoice_id, "connection_id": connection_id}
 
 
+# =============================================================================
+# What the real providers made the actor responsible for: refreshing an
+# expired access token (and PERSISTING the rotated pair), and resolving the
+# provider-side ids a record cannot be created without.
+# =============================================================================
+
+
+async def test_an_expired_access_token_is_refreshed_and_the_push_retried_once(monkeypatch):
+    """QuickBooks access tokens last an hour and FreshBooks' twelve, so an
+    auth failure here is the steady state, not an exception. Before this,
+    every sync more than an hour after connecting would 401, retry with the
+    same dead token, and fail permanently."""
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_connection_and_invoice(session_factory)
+
+        from app.services import accounting_client
+
+        # Fails auth exactly once, then succeeds — the shape of an expired
+        # access token, and the only way to prove the retry runs once.
+        client = accounting_client.FakeAccountingProviderClient(
+            provider="quickbooks", fail_auth_times=1
+        )
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        await _sync_financial_record(
+            connection_id=str(seeded["connection_id"]),
+            entity_type="invoice",
+            entity_id=str(seeded["invoice_id"]),
+            session_factory=session_factory,
+        )
+
+        assert client.refresh_calls == 1
+        assert len(client.pushed_invoices) == 1, "the push must be retried exactly once"
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status FROM integration_sync_records "
+                        "WHERE connection_id = :cid AND entity_id = :eid"
+                    ),
+                    {"cid": seeded["connection_id"], "eid": seeded["invoice_id"]},
+                )
+            ).fetchone()
+        assert row.status == "success"
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_the_rotated_refresh_token_is_persisted(monkeypatch):
+    """Both providers invalidate the old refresh token the moment a new pair
+    is issued. Refreshing without saving the result does not cost a retry —
+    it permanently breaks the connection, and the tenant has to reconnect by
+    hand. This asserts the stored token actually changed."""
+    from app.services.token_encryption import decrypt_token
+
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_connection_and_invoice(session_factory)
+
+        from app.services import accounting_client
+
+        client = accounting_client.FakeAccountingProviderClient(
+            provider="quickbooks", fail_auth_times=1
+        )
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        await _sync_financial_record(
+            connection_id=str(seeded["connection_id"]),
+            entity_type="invoice",
+            entity_id=str(seeded["invoice_id"]),
+            session_factory=session_factory,
+        )
+
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT access_token_encrypted, refresh_token_encrypted "
+                        "FROM integration_connections WHERE id = :id"
+                    ),
+                    {"id": seeded["connection_id"]},
+                )
+            ).fetchone()
+
+        assert decrypt_token(row.refresh_token_encrypted) != "fake-refresh-token", (
+            "the rotated refresh token must be persisted, or the connection is dead"
+        )
+        assert decrypt_token(row.access_token_encrypted) != "fake-access-token"
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_resolved_provider_ids_are_cached_and_not_re_resolved(monkeypatch):
+    """resolve_entity is find-or-CREATE. A cache miss on the second sync
+    would create a second "Acme Holdings" in the tenant's real accounting
+    file, which is why the mapping is persisted rather than recomputed."""
+    from app.services.accounting_client import RefSpec
+
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_connection_and_invoice(session_factory)
+
+        from app.services import accounting_client
+
+        class NeedsACustomer(accounting_client.FakeAccountingProviderClient):
+            def required_refs(self, record_type):
+                # Literal rather than from_payload, so this test is about
+                # caching and not about the project-client join.
+                return (
+                    RefSpec(payload_key="customer_id", kind="customer", literal="Acme Holdings"),
+                )
+
+        client = NeedsACustomer(provider="quickbooks")
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        for _ in range(2):
+            await _sync_financial_record(
+                connection_id=str(seeded["connection_id"]),
+                entity_type="invoice",
+                entity_id=str(seeded["invoice_id"]),
+                session_factory=session_factory,
+            )
+
+        assert client.resolved_entities == [("customer", "Acme Holdings")], (
+            "the second sync must read the cached mapping, not re-resolve"
+        )
+        assert client.pushed_invoices[0]["customer_id"], (
+            "the resolved id must reach the push payload"
+        )
+
+        async with session_factory() as session:
+            count = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM integration_entity_mappings "
+                        "WHERE connection_id = :cid"
+                    ),
+                    {"cid": seeded["connection_id"]},
+                )
+            ).scalar_one()
+        assert count == 1
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_a_missing_customer_name_fails_visibly_rather_than_pushing(monkeypatch):
+    """An invoice whose project has no client assigned has nobody to bill.
+    Failing into sync-status with an actionable message beats posting it
+    against whatever the provider would accept."""
+    from app.services.accounting_client import RefSpec
+
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_connection_and_invoice(session_factory)
+
+        from app.services import accounting_client
+
+        class NeedsANamedCustomer(accounting_client.FakeAccountingProviderClient):
+            def required_refs(self, record_type):
+                return (
+                    RefSpec(
+                        payload_key="customer_id",
+                        kind="customer",
+                        from_payload="customer_name",
+                    ),
+                )
+
+        client = NeedsANamedCustomer(provider="quickbooks")
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        with pytest.raises(AccountingProviderError):
+            await _sync_financial_record(
+                connection_id=str(seeded["connection_id"]),
+                entity_type="invoice",
+                entity_id=str(seeded["invoice_id"]),
+                session_factory=session_factory,
+            )
+
+        assert client.pushed_invoices == []
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status, last_error FROM integration_sync_records "
+                        "WHERE connection_id = :cid AND entity_id = :eid"
+                    ),
+                    {"cid": seeded["connection_id"], "eid": seeded["invoice_id"]},
+                )
+            ).fetchone()
+        assert row.status == "failed"
+        assert "client" in row.last_error.lower()
+    finally:
+        await owner_engine.dispose()
+
+
 async def test_successful_push_sets_status_success(monkeypatch):
     owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
     session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
@@ -183,8 +384,20 @@ async def test_successful_push_sets_status_success(monkeypatch):
         assert row.external_record_id is not None, (
             "a successful push must persist the provider's own external_record_id"
         )
+        # due_date and customer_name joined the payload when the real
+        # providers arrived: neither QuickBooks nor FreshBooks can create an
+        # invoice without knowing who it bills to, and `invoices` has no
+        # client column — the name is resolved through project_clients.
+        # None here because this fixture's project has no client assigned,
+        # which the fake does not care about and a real push would refuse.
         assert fake_client.pushed_invoices == [
-            {"invoice_number": "INV-TEST-0001", "amount": "500.00", "status": "draft"}
+            {
+                "invoice_number": "INV-TEST-0001",
+                "amount": "500.00",
+                "status": "draft",
+                "due_date": None,
+                "customer_name": None,
+            }
         ]
     finally:
         await owner_engine.dispose()

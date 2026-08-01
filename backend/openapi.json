@@ -1,4 +1,4 @@
-{
+﻿{
   "components": {
     "schemas": {
       "AgingEntry": {
@@ -9560,6 +9560,22 @@
             "schema": {
               "title": "State",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "realmId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Realmid"
             }
           }
         ],

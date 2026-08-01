@@ -208,6 +208,28 @@ class Settings(BaseSettings):
     # "Return to <business>". Falls back to frontend_base_url, which is
     # already required to be a real URL in production.
     stripe_portal_return_url: str | None = None
+
+    # --- Accounting integrations -------------------------------------
+    # Per-provider switches between FakeAccountingProviderClient and the
+    # real REST clients (app/services/accounting_client.py's
+    # get_accounting_client). Separate on purpose: QuickBooks and FreshBooks
+    # are two OAuth applications with two independent approval processes, so
+    # one going live must not wait on the other. Unset means the fake, and
+    # the fake is what the whole test suite exercises.
+    quickbooks_client_id: str | None = None
+    quickbooks_client_secret: str | None = None
+    # "sandbox" targets Intuit's sandbox API host. The two hosts hold
+    # entirely separate data, so pointing a live tenant at the wrong one
+    # silently writes their invoices somewhere they will never find them.
+    quickbooks_environment: str = "production"
+    freshbooks_client_id: str | None = None
+    freshbooks_client_secret: str | None = None
+    # The OAuth redirect the providers are registered against. Normally
+    # derived from frontend_base_url so the two cannot disagree — set this
+    # only when the backend's callback is reached on a different hostname
+    # than the frontend. Must match the provider's registered URI EXACTLY,
+    # or the code exchange is rejected outright.
+    integrations_redirect_base_url: str | None = None
     # Root logger level for app/core/logging.py's configure_logging().
     log_level: str = "INFO"
     # Upload byte caps enforced by app/core/uploads.read_upload_limited on

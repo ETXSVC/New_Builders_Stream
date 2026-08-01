@@ -55,7 +55,13 @@ async def connect(
 
 
 async def _upsert_connection(
-    session: AsyncSession, *, company_id: uuid.UUID, provider: str, access_token: str, refresh_token: str
+    session: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    provider: str,
+    access_token: str,
+    refresh_token: str,
+    provider_account_id: str | None = None,
 ) -> IntegrationConnection:
     """Reconnecting the same provider (callback firing again) replaces
     stale tokens rather than erroring — design spec Section 1's own
@@ -89,12 +95,18 @@ async def _upsert_connection(
             provider=provider,
             access_token_encrypted=access_token_encrypted,
             refresh_token_encrypted=refresh_token_encrypted,
+            provider_account_id=provider_account_id,
         )
         .on_conflict_do_update(
             index_elements=["company_id", "provider"],
             set_={
                 "access_token_encrypted": access_token_encrypted,
                 "refresh_token_encrypted": refresh_token_encrypted,
+                # Overwritten, not coalesced: reconnecting is how a tenant
+                # points Builders Stream at a DIFFERENT company file, and
+                # keeping the old realm id would post their invoices into
+                # the books they just disconnected.
+                "provider_account_id": provider_account_id,
             },
         )
         .returning(IntegrationConnection)
@@ -109,6 +121,7 @@ async def callback(
     provider: Provider,
     code: str = Query(...),
     state: str = Query(...),
+    realm_id: str | None = Query(None, alias="realmId"),
 ) -> RedirectResponse:
     """Task 4.9 (design spec Section 3): the OAuth redirect target.
 
@@ -192,14 +205,26 @@ async def callback(
                 )
 
             client = get_accounting_client(provider)
-            access_token, refresh_token = await client.exchange_code_for_tokens(code=code)
+            # `realmId` is QuickBooks' id for the company file, and it
+            # arrives HERE — as a callback query parameter — not in the
+            # token exchange response. It is a path segment of every
+            # subsequent QuickBooks request, so dropping it (as this route
+            # did before migration 0030) leaves a stored token that cannot
+            # address anything. FreshBooks sends nothing here and its
+            # client goes and fetches its own account id instead, which is
+            # why this is passed as a generic `callback_account_id` rather
+            # than a QuickBooks-shaped parameter.
+            tokens = await client.exchange_code_for_tokens(
+                code=code, callback_account_id=realm_id
+            )
 
             connection = await _upsert_connection(
                 session,
                 company_id=company_id,
                 provider=provider,
-                access_token=access_token,
-                refresh_token=refresh_token,
+                access_token=tokens.access_token,
+                refresh_token=tokens.refresh_token,
+                provider_account_id=tokens.account_id,
             )
 
             await write_audit_log(

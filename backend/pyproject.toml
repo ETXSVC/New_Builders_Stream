@@ -70,6 +70,17 @@ dependencies = [
     # a missing import would be a boot failure, not a degraded feature.
     # Pure Python, no native dependencies, no transitive deps of its own.
     "prometheus-client>=0.26.0,<1.0",
+    # Async HTTP. A core dependency rather than an extra, unlike the SDK
+    # extras below, because two independent optional features now need it
+    # and neither ships its own: the QuickBooks and FreshBooks clients are
+    # plain REST over this (no vendor SDK exists that is both maintained
+    # and async), and the Stripe SDK's `*_async` methods refuse to run
+    # without an async HTTP client installed.
+    #
+    # It was previously dev-only, which meant the entire test suite and
+    # every CI job had it while the production image did not — a gap that
+    # by construction could only ever appear in the artifact that ships.
+    "httpx>=0.27,<0.28",
 ]
 
 [project.optional-dependencies]
@@ -85,17 +96,14 @@ observability = ["sentry-sdk[fastapi]>=2.66.1,<3"]
 # payment SDK, and RealStripeClient imports `stripe` inside __post_init__
 # rather than at module scope so that stays true.
 #
-# httpx is NOT optional within this extra, and the pairing is the point: the
-# SDK's sync path uses requests, but every method this client calls is an
-# `*_async` one, and those raise a bare `ImportError: Import httpx not found`
-# from inside the first API call if no async HTTP client is installed. httpx
-# is already present in `dev`, so the entire test suite and CI would pass
-# while the production image — which installs neither dev nor a bare
-# `stripe` — failed on the first real registration. Same class of gap as the
-# package-data note below: present everywhere except in the artifact that
-# ships. RealStripeClient additionally checks for it at construction, so a
-# deployment that installs `stripe` without this extra fails at boot.
-stripe = ["stripe>=15.4,<16", "httpx>=0.27,<0.28"]
+# The SDK's sync path uses requests, but every method RealStripeClient calls
+# is an `*_async` one, and those raise a bare `ImportError: Import httpx not
+# found` from inside the first API call without an async HTTP client. That
+# is now covered by httpx being a core dependency above (the accounting
+# clients need it too), so this extra is just the SDK — but RealStripeClient
+# still checks for httpx at construction, because the failure it prevents is
+# invisible until a real payment is attempted.
+stripe = ["stripe>=15.4,<16"]
 dev = [
     # 9.0.3+: the 8.x line carries PYSEC-2026-1845, first fixed in 9.0.3.
     # Dev-only — pytest is not in the production image — but `pip-audit`

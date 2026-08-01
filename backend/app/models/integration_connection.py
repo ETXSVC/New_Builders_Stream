@@ -30,4 +30,14 @@ class IntegrationConnection(Base, UUIDPKMixin):
     # "unbounded free-form string" shape, in this same task.
     access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     refresh_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    # The provider's own id for the account this connection points at
+    # (migration 0030): QuickBooks' `realmId`, FreshBooks' `accountId`.
+    # Neither provider's token addresses anything without it — it is a path
+    # segment of every request — and QuickBooks only ever hands it over as a
+    # query parameter on the OAuth callback, never in the token response.
+    #
+    # Nullable because connections predating 0030 do not have one. The sync
+    # actor treats a missing value as "reconnect this provider" rather than
+    # guessing.
+    provider_account_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
