@@ -10,8 +10,11 @@ This document describes API contracts conceptually. The authoritative, machine-r
 > every route that now exists. Modules shipped afterwards — BOM/materials
 > (`/vendors`, `/materials`), MFA (`/mfa/*`), client access grants
 > (`/projects/{id}/clients`, `/leads/{id}/clients`), branding
-> (`/companies/branding`), readiness (`/ready`) — are covered by the
-> committed `backend/openapi.json` snapshot and its generated types, not
+> (`/companies/branding`), readiness (`/ready`), the team directory
+> (`/team`, `/team/me`, `/team/professions`), password reset
+> (`/auth/password-reset/request`, `/auth/password-reset/confirm`) and a
+> tenant's own mail server (`/companies/email-settings`) — are covered by
+> the committed `backend/openapi.json` snapshot and its generated types, not
 > here. That is the intended division of labour rather than a backlog
 > item: this file explains *why* a contract has the shape it does, and the
 > snapshot is the shape. Where the two disagree, the snapshot wins, and CI's

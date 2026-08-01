@@ -25,7 +25,10 @@ previously undocumented. `docs/12-project-review.md` is a dated audit
 trail rather than current-state documentation: useful for *why* something
 is the way it is, but its "open findings" are only accurate as of each
 dated follow-up section — re-derive any status claim from the code or the
-tooling before repeating it.
+tooling before repeating it. The same caution applies to the schema docs
+(`docs/04`, `docs/13`) for a structural reason: `backend/openapi.json`
+drifting from the code fails CI, while those two drifting fails nothing,
+so they are re-derived by hand and can lag a migration.
 
 `docs/superpowers/plans/` and `docs/superpowers/specs/` hold the
 per-feature implementation plans and design specs actually built against;
@@ -165,7 +168,8 @@ time.
 
 `backend/app/main.py` wires together one router per bounded module (`auth`,
 `leads`, `projects`, `estimates`, `compliance`, `invoices`/`bills`/`expenses`,
-`integrations`, `subscriptions`, `platform_auth`/`platform_tenants`, ...).
+`integrations`, `subscriptions`, `team`, `company_email_settings`,
+`platform_auth`/`platform_tenants`, ...).
 Router include order occasionally
 matters: `branding.router` is registered before `companies.router` because
 Starlette matches routes by registration order, and `companies.router`'s
