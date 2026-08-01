@@ -1,10 +1,12 @@
 # Database ERD
 
-Generated from the **live schema** — a scratch database with all 23 Alembic
+Generated from the **live schema** — a scratch database with all 29 Alembic
 migrations applied — rather than from the ORM models or by hand, so it cannot
 quietly drift from what `alembic upgrade head` actually produces.
 
-**39 tables** (excluding `alembic_version`).
+**44 tables** (excluding `alembic_version`). Last re-derived 2026-08-01
+against migration `0029`; the counts and the no-RLS list below come from
+`pg_class`/`pg_attribute`, not from memory.
 
 ## Read this first: the tenant boundary is in the database
 
@@ -14,8 +16,8 @@ application code. Every tenant table carries `company_id` and a `FOR ALL`
 policy scoped by `get_all_descendant_ids(current_setting('app.current_tenant'))`,
 so a query that forgets to filter by company still cannot cross tenants.
 
-- RLS enabled: **37 of 39** tables
-- Deliberately without RLS: `refresh_tokens`, `users`
+- RLS enabled: **41 of 44** tables
+- Deliberately without RLS: `refresh_tokens`, `users`, `password_reset_tokens`
 
 `users` is global by design (one person may belong to several companies, and
 login happens before any tenant is known); `refresh_tokens` hangs off `users`
@@ -70,7 +72,11 @@ be an admin of one branch and a client of another.
 
 ## Tenancy, identity and access
 
-> No RLS on: `users`, `refresh_tokens` — see above.
+> No RLS on: `users`, `refresh_tokens`, `password_reset_tokens` — see above.
+> A reset is requested with no session, no `X-Tenant-ID` and no membership
+> resolved, so there is no tenant to scope the row to; the credential is
+> protected by being a SHA-256 of a secret that lives in one email
+> (migration 0028).
 
 ```mermaid
 erDiagram
@@ -549,6 +555,92 @@ cannot simply be a boolean flag on `subscriptions`: **no row** means "use the
 tier", `true` grants a module the tier would withhold, and `false` withholds
 one the tier would grant. Collapsing the first two would make "off"
 unexpressible.
+
+## Team directory (migration 0026)
+
+> Each company's own record of its people. The profile hangs off the
+> MEMBERSHIP, not the user: `users` has no RLS by design (it is read before
+> any tenant context exists), so an address stored there would be readable
+> by every company that person also belongs to. The composite FK into
+> `company_users` with ON DELETE CASCADE is what stops a profile outliving
+> the membership it describes.
+
+```mermaid
+erDiagram
+    professions {
+        uuid id "PK"
+        uuid company_id "FK"
+        varchar name "unique per company, case-insensitive"
+        timestamptz created_at
+    }
+    member_profiles {
+        uuid id "PK"
+        uuid company_id "PK,FK"
+        uuid user_id "PK,FK"
+        varchar first_name
+        varchar last_name
+        varchar address_line1
+        varchar address_line2
+        varchar city
+        varchar state
+        varchar postal_code
+        text notes "the company's private record ABOUT them"
+        uuid profession_id "FK, ON DELETE SET NULL"
+        varchar image_path "relative to STORAGE_ROOT"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    member_phones {
+        uuid id "PK"
+        uuid company_id "FK"
+        uuid member_profile_id "FK, ON DELETE CASCADE"
+        varchar label "free text"
+        varchar number "stored as typed"
+        timestamptz created_at
+    }
+    companies ||--o{ professions : "defines"
+    companies ||--o{ member_profiles : "scopes"
+    company_users ||--|| member_profiles : "described by"
+    professions |o--o{ member_profiles : "classifies"
+    member_profiles ||--o{ member_phones : "reachable on"
+```
+
+## Outbound email and account recovery (migrations 0027–0029)
+
+> Two tables and one column that decide how mail leaves and how somebody
+> gets back in. `company_branding.email_sender_name` (0027) is the display
+> name in front of the address; `company_email_settings` (0029) is a
+> tenant's own SMTP server, with the password held as a Fernet ciphertext
+> and returned by no route. `password_reset_tokens` (0028) is the only
+> table here outside the tenant model — see the no-RLS note at the top.
+
+```mermaid
+erDiagram
+    company_email_settings {
+        uuid id "PK"
+        uuid company_id "FK, unique"
+        varchar host
+        int port
+        varchar username
+        text password_encrypted "Fernet; never returned by a route"
+        varchar from_address
+        bool starttls
+        bool enabled "false = fall back to the platform relay"
+        timestamptz verified_at "null until a test message got through"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    password_reset_tokens {
+        uuid id "PK"
+        uuid user_id "FK, ON DELETE CASCADE"
+        varchar token_hash "SHA-256; the secret lives in one email"
+        timestamptz created_at
+        timestamptz expires_at "one hour"
+        timestamptz used_at "single use"
+    }
+    companies ||--o| company_email_settings : "sends through"
+    users ||--o{ password_reset_tokens : "recovers with"
+```
 
 ## Cross-domain foreign keys
 

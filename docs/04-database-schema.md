@@ -455,6 +455,40 @@ Entitlement changes are audited into the **target tenant's** `audit_log`,
 not a separate platform log, so a customer-facing "why did this change?"
 question is answerable from the same place every other change is.
 
+## 9b. Team directory, outbound email, account recovery (migrations 0026–0029)
+
+Added after this document's original pass. Full column lists are in
+`docs/13-database-erd.md`, which is re-derived from the live schema; what
+follows is the reasoning a column list cannot carry.
+
+**`professions`, `member_profiles`, `member_phones` (0026).** Each company's
+own record of its people. `member_profiles` is keyed `(company_id, user_id)`
+and carries a composite FK into `company_users` with `ON DELETE CASCADE` —
+the profile describes a MEMBERSHIP, not a person, so offboarding takes the
+address with it. It deliberately does not live on `users`: that table has no
+RLS (it is read before any tenant context exists), so an address there would
+be readable by every company the same person belongs to. `professions` is
+unique per company on `lower(name)` via a functional index, and
+`member_profiles.profession_id` is `ON DELETE SET NULL` — retiring a trade
+neither blocks on its holders nor deletes them.
+
+**`company_branding.email_sender_name` (0027).** `NOT NULL DEFAULT ''`, where
+empty means "use the company's own name". Nullable would have made "unset"
+and "deliberately blank" indistinguishable for a field where blank is not
+something anyone wants to send.
+
+**`password_reset_tokens` (0028).** The one table added here with no
+`company_id` and no RLS policy, and the only one that needs the exception
+argued: a reset is requested with no session and no membership resolved.
+Only the SHA-256 of the secret is stored, `used_at` makes it single-use, and
+`app_user` holds no DELETE — a spent row is evidence.
+
+**`company_email_settings` (0029).** A tenant's own SMTP server, one row per
+company. `password_encrypted` is a Fernet ciphertext under the same key the
+integrations module uses for OAuth tokens, and no route returns it — the API
+answers `has_password`. `enabled=false` keeps the settings while falling back
+to the platform relay, which is what a company does during a provider outage.
+
 ## 10. Indexing & RLS Notes
 
 - Every `company_id` foreign key column should be indexed; most access patterns filter or join on it.

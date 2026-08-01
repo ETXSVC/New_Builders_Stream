@@ -581,3 +581,59 @@ still the standing rule, and is the rule §9.1 above followed.
 "what's left to do", not by reading the document. Review docs describe a
 moment; the code moves on. The pattern worth keeping is to re-derive a
 status claim from the tooling before repeating it.
+
+---
+
+## 10. Follow-up — 2026-08-01: the Low list, re-derived
+
+§2's Low list had not been revisited since it was written. Every item was
+checked against the code rather than against memory; six were already
+closed, and the two that looked like drift turned out to be corrections
+that had been made *in place*.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Dramatiq enqueued inside the uncommitted transaction | **Closed** | `app/core/after_commit.py`; `financial_record_sync_handler.py` parks the call and `get_current_user` fires it after the commit |
+| `projects/page.tsx` missing the stale-response guard | **Closed** | It uses the shared loader, which owns the guard |
+| Eight list components duplicating fetch/guard boilerplate | **Partly closed** | `lib/use-cursor-list.ts` exists and six surfaces use it; roughly seventeen still hand-roll — see `frontend/CLAUDE.md`, which says so rather than implying full adoption |
+| `_register_and_login` redefined across test files | **Closed** | `tests/conftest.py::register_and_login` — it replaced 24 divergent variants |
+| Config validator missing Fernet≠JWT and SMTP-credentials checks | **Closed** | Both are in `config.py`'s production validator, with tests in `test_config_validation.py` |
+| `Caddyfile.api` lacking `request_body max_size` | **Closed** | The cap is there |
+| `docs/06` says "Celery" | **Not drift** | It reads "**Dramatiq**, not Celery" — a correction, which a `grep -c Celery` counts as a hit |
+| `docs/03` says OIDC/Keycloak + Traefik/Nginx | **Not drift** | Both rows read "as built" with the original proposal noted beside them |
+| No frontend architecture doc, no CONTRIBUTING, no CHANGELOG, no ADR index | **Closed** | `docs/14`, `CONTRIBUTING.md`, `CHANGELOG.md`, `docs/adr/README.md` |
+| `send_invitation_email` has no failure surface after retries | **Open, deliberate** | The invitation row and its copyable link remain the source of truth; the email is an optimisation on top |
+| Five module-level owner engines in `app/tasks/` | **Open** | Unchanged |
+| Money schemas lack a `decimal_places=2` backstop | **Open** | Quantisation happens at the service layer (M1's fix); the schema-level backstop was never added |
+
+**Two lessons, both about method rather than about the findings.**
+
+A `grep -c` for the wrong word counts corrections as errors: "Celery" and
+"Keycloak" both appear in `docs/03`/`docs/06` precisely *because* someone
+wrote down what the reality is instead. Counting is not reading.
+
+And a doc that says it is generated is the one most worth re-deriving. §13's
+header claims it comes from the live schema — it did, in July, at 39 tables
+and 23 migrations. Five migrations later it still said 39, which is a
+stronger claim to be wrong about than a hand-written doc makes.
+
+## 11. Follow-up — 2026-08-01: what the docs did not know
+
+Migrations 0026–0029 added four tables and a column, and no design document
+mentioned any of them. Fixed in this pass:
+
+- **`docs/13`** — counts re-derived from `pg_class` (44 tables, 41 with
+  RLS, migration `0029`), `password_reset_tokens` added to the no-RLS list
+  with its justification, and two new domain diagrams: the team directory,
+  and outbound email + account recovery.
+- **`docs/04`** — §9b covers the same tables, carrying the reasoning a
+  column list cannot: why the profile hangs off the membership rather than
+  the user, why `email_sender_name` is `NOT NULL DEFAULT ''`, why
+  `password_reset_tokens` is the one new table outside the tenant model.
+- **`docs/05`** — its dated coverage note now names `/team`,
+  `/auth/password-reset/*` and `/companies/email-settings` among the
+  modules the `openapi.json` snapshot covers and this document does not.
+
+The gap existed because the schema docs are not gated by CI the way the API
+snapshot is: `openapi.json` drifting fails the build, `docs/13` drifting
+fails nothing. Worth knowing when deciding how much to trust each.
