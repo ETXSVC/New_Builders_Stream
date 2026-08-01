@@ -21,6 +21,10 @@ _DEV_FERNET_KEYS = frozenset(
 )
 _FAKE_WEBHOOK_SECRET = "fake_webhook_secret_for_tests"
 
+# The sender nobody can reply to. Fine while mail is going to the recording
+# fake; refused in production once SMTP_HOST turns real delivery on.
+_DEFAULT_FROM_ADDRESS = "no-reply@localhost"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_ENV_FILE, extra="ignore")
@@ -117,7 +121,10 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_username: str | None = None
     smtp_password: str | None = None
-    smtp_from_address: str = "no-reply@localhost"
+    # Named, because the production validator below refuses to boot on it —
+    # a placeholder sender is worse than no mail at all, since the send
+    # "succeeds" and the recipient never hears about it.
+    smtp_from_address: str = _DEFAULT_FROM_ADDRESS
     smtp_starttls: bool = True
     # Task 4.3: Fernet key (44-char urlsafe-base64, generate with
     # `Fernet.generate_key()`) for encrypting integration_connections'
@@ -247,6 +254,17 @@ class Settings(BaseSettings):
             problems.append(
                 "SMTP_STARTTLS is disabled while SMTP_USERNAME is set — the mail "
                 "password would cross the network in the clear on every send"
+            )
+        # Mail configured to go out, from a placeholder. Relays reject an
+        # unroutable sender domain outright and the ones that don't hand
+        # recipients an address that bounces — either way the invitation is
+        # lost, and the failure surfaces days later as "nobody can join".
+        # Cheap to state at boot, expensive to discover from a support
+        # ticket.
+        if self.smtp_host and self.smtp_from_address == _DEFAULT_FROM_ADDRESS:
+            problems.append(
+                f"SMTP_HOST is set while SMTP_FROM_ADDRESS is still {_DEFAULT_FROM_ADDRESS!r} — "
+                "mail would go out from a domain that cannot receive a reply or a bounce"
             )
 
         if problems:
