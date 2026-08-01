@@ -177,11 +177,37 @@ class Settings(BaseSettings):
     # still forgiving a clock-skewed authenticator app a few tries.
     totp_rate_limit_max_attempts: int = 5
     totp_rate_limit_window_seconds: int = 900
-    # Verifies POST /webhooks/stripe signatures (today via FakeStripeClient
-    # — see app/services/billing.py). Config-ized so a deployment can use a
-    # non-public value even while the fake client stays; the production
+    # Verifies POST /webhooks/stripe signatures (via whichever StripeClient
+    # app/services/billing.py selected). Config-ized so a deployment can use
+    # a non-public value even while the fake client stays; the production
     # validator below refuses the committed default.
     stripe_webhook_secret: str = "fake_webhook_secret_for_tests"
+    # THE switch between FakeStripeClient and RealStripeClient
+    # (app/services/billing.py). Unset (the default) means the fake, so every
+    # local run, test and CI job keeps working with zero configuration and no
+    # network — the same "one variable turns it on" shape as sentry_dsn above.
+    # Set it and real money starts moving, which is why nothing else infers
+    # it: there is no "looks like production so probably real Stripe".
+    stripe_api_key: str | None = None
+    # Stripe Price ids, one per tier — what create_trialing_subscription puts
+    # on the subscription's base line item. No defaults are possible: these
+    # are ids minted inside a specific Stripe account, and a wrong one bills
+    # the wrong amount rather than failing. RealStripeClient refuses to
+    # construct without the tier prices, so a misconfigured deployment fails
+    # at boot instead of at the first registration.
+    stripe_price_id_starter: str | None = None
+    stripe_price_id_pro: str | None = None
+    stripe_price_id_enterprise: str | None = None
+    # The per-unit Price for seats BEYOND subscriptions.included_seats, added
+    # to every subscription as a second line item with quantity 0 and driven
+    # by the daily seat-usage job. Optional: leave it unset and overage
+    # reporting becomes a no-op rather than an error, which is the right
+    # behaviour for an account that has not set up overage pricing yet.
+    stripe_seat_overage_price_id: str | None = None
+    # Where Stripe's hosted Customer Portal sends the user when they click
+    # "Return to <business>". Falls back to frontend_base_url, which is
+    # already required to be a real URL in production.
+    stripe_portal_return_url: str | None = None
     # Root logger level for app/core/logging.py's configure_logging().
     log_level: str = "INFO"
     # Upload byte caps enforced by app/core/uploads.read_upload_limited on
@@ -218,6 +244,15 @@ class Settings(BaseSettings):
             problems.append(
                 "STRIPE_WEBHOOK_SECRET is the public fake default "
                 "(generate one: openssl rand -hex 32)"
+            )
+        if self.stripe_api_key is not None and self.stripe_api_key.startswith("sk_test_"):
+            # A test-mode key in production is the quiet failure of this
+            # feature: every call succeeds, the portal opens, the webhook
+            # signature verifies — and not one cent is ever charged. Louder
+            # to refuse the boot than to discover it a billing cycle later.
+            problems.append(
+                "STRIPE_API_KEY is a test-mode key (sk_test_...) — a production "
+                "deployment would take no real payments"
             )
         for field_name in ("database_url", "migrations_database_url"):
             url = getattr(self, field_name)

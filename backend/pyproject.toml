@@ -78,6 +78,24 @@ dependencies = [
 # to do with a third-party error service should not have to install one,
 # and the code degrades to a logged warning if the DSN is set without it.
 observability = ["sentry-sdk[fastapi]>=2.66.1,<3"]
+# Real Stripe billing, off unless STRIPE_API_KEY is set
+# (app/services/billing.py selects FakeStripeClient otherwise). An extra for
+# the same reason as observability above: a deployment running on the fake —
+# every local run, every test, every CI job — should not have to install a
+# payment SDK, and RealStripeClient imports `stripe` inside __post_init__
+# rather than at module scope so that stays true.
+#
+# httpx is NOT optional within this extra, and the pairing is the point: the
+# SDK's sync path uses requests, but every method this client calls is an
+# `*_async` one, and those raise a bare `ImportError: Import httpx not found`
+# from inside the first API call if no async HTTP client is installed. httpx
+# is already present in `dev`, so the entire test suite and CI would pass
+# while the production image — which installs neither dev nor a bare
+# `stripe` — failed on the first real registration. Same class of gap as the
+# package-data note below: present everywhere except in the artifact that
+# ships. RealStripeClient additionally checks for it at construction, so a
+# deployment that installs `stripe` without this extra fails at boot.
+stripe = ["stripe>=15.4,<16", "httpx>=0.27,<0.28"]
 dev = [
     # 9.0.3+: the 8.x line carries PYSEC-2026-1845, first fixed in 9.0.3.
     # Dev-only — pytest is not in the production image — but `pip-audit`
@@ -109,6 +127,15 @@ dev = [
     # database. Runs in backend-ci; dependabot (.github/dependabot.yml)
     # is the other half — this one reports, that one proposes the upgrade.
     "pip-audit>=2.7,<3.0",
+    # Duplicated from the `stripe` extra above, deliberately. tests/
+    # test_real_stripe_client.py constructs RealStripeClient and asserts on
+    # the params it sends, so the SDK has to be importable under pytest even
+    # though it stays optional for a deployment. Listing it rather than
+    # self-referencing the extra keeps `pip install '.[dev]'` resolvable
+    # without pip having to resolve this package against itself. httpx is
+    # already here for the test client, which is the other half of what
+    # RealStripeClient's constructor checks for.
+    "stripe>=15.4,<16",
 ]
 
 [build-system]
@@ -187,4 +214,10 @@ exclude_also = [
 [[tool.mypy.overrides]]
 # Optional dependency — CI type-checks without it installed.
 module = ["sentry_sdk.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Optional dependency (the `stripe` extra) — CI type-checks without it
+# installed, same as sentry_sdk above.
+module = ["stripe.*"]
 ignore_missing_imports = true

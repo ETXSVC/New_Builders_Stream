@@ -77,7 +77,7 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
             await _sync_subscription(
                 stripe_subscription_id=obj["id"],
                 new_status=obj["status"],
-                current_period_end=obj.get("current_period_end"),
+                current_period_end=_period_end_of_event_object(obj),
             )
         elif event_type == "customer.subscription.deleted":
             await _sync_subscription(
@@ -97,6 +97,33 @@ async def stripe_webhook(request: Request) -> dict[str, bool]:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed webhook event payload")
 
     return {"received": True}
+
+
+def _period_end_of_event_object(obj: dict) -> int | None:
+    """The period end from a `customer.subscription.*` event's object.
+
+    Accepts BOTH shapes on purpose. `current_period_end` sat on the
+    subscription object until Stripe API version 2025-03-31.basil moved it
+    onto each subscription *item* (one subscription's items can bill on
+    different cycles). Which one arrives here depends on the API version
+    pinned to the webhook endpoint in the Stripe dashboard — a setting this
+    codebase does not control and an operator can change without deploying.
+
+    Reading only the old location is the failure this function exists to
+    prevent: against a current API version the key is simply absent, so
+    `current_period_end` would stay at whatever registration wrote and never
+    advance again — no error, no log, just a subscription whose period end
+    silently stops being true. Nothing caught it before because the fake
+    client never sends this event.
+    """
+    top_level = obj.get("current_period_end")
+    if top_level is not None:
+        return top_level
+    items = (obj.get("items") or {}).get("data") or []
+    # Max, not first: with several items the subscription is paid up until
+    # the last of them lapses, and this column gates read-only enforcement.
+    ends = [item["current_period_end"] for item in items if item.get("current_period_end")]
+    return max(ends) if ends else None
 
 
 async def _sync_subscription(
