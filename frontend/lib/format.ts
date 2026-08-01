@@ -10,9 +10,24 @@ export function formatDate(value: string | null | undefined): string {
   return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-export function formatCurrency(value: string | number | null | undefined): string {
+export function formatCurrency(
+  value: string | number | null | undefined,
+  // Whole dollars everywhere by default — list screens read better without
+  // a column of ".00". `precise` keeps the cents, for the surfaces someone
+  // reconciles against their accounting software, where a rounded figure
+  // that disagrees with QuickBooks by 40c is worse than a longer number.
+  // An option on the one formatter rather than a second function, so the
+  // two cannot drift into different currencies or locales.
+  options: { precise?: boolean } = {}
+): string {
   if (value === null || value === undefined || value === "") return "—";
   const numeric = typeof value === "number" ? value : Number(value);
   if (Number.isNaN(numeric)) return String(value);
-  return numeric.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  return numeric.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    ...(options.precise
+      ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+      : { maximumFractionDigits: 0 }),
+  });
 }

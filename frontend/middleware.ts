@@ -38,6 +38,7 @@ const PROTECTED_TREES = [
   "/catalog",
   "/materials",
   "/billing",
+  "/reports",
   "/compliance",
   "/subcontractors",
   "/team",

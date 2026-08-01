@@ -40,9 +40,17 @@ export function Nav({ companyId }: { companyId: string }) {
   }
 
   return (
-    <header className="border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-      <span className="font-semibold">{companyName ?? "Builders Stream"}</span>
-      <div className="flex items-center gap-4">
+    // flex-wrap, and a bounded company name. The links were a single
+    // non-wrapping row, so each one added brought the whole header closer
+    // to overflowing — adding "Reports" tipped it over at ~920px, which
+    // pushed "Log out" off-screen and made the entire PAGE scroll
+    // sideways. Wrapping absorbs the next link too; truncating stops a
+    // long tenant name doing the same thing on its own.
+    <header className="border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+      <span className="font-semibold truncate max-w-[16rem]">
+        {companyName ?? "Builders Stream"}
+      </span>
+      <div className="flex flex-wrap items-center gap-4">
         {(role === "admin" || role === "project_manager") && (
           <Link href="/leads" className="text-sm text-slate-600 hover:text-slate-900">
             Leads
@@ -76,6 +84,13 @@ export function Nav({ companyId }: { companyId: string }) {
         {(role === "admin" || role === "accountant") && (
           <Link href="/billing" className="text-sm text-slate-600 hover:text-slate-900">
             Billing
+          </Link>
+        )}
+        {/* Admin/accountant only, matching GET /reports/profitability's own
+            `_ROLES` — a link a role cannot open is worse than no link. */}
+        {(role === "admin" || role === "accountant") && (
+          <Link href="/reports" className="text-sm text-slate-600 hover:text-slate-900">
+            Reports
           </Link>
         )}
         {(role === "admin" || role === "project_manager" || role === "accountant") && (

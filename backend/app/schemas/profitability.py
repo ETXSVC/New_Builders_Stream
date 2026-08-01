@@ -7,6 +7,15 @@ from pydantic import BaseModel
 
 class ProjectProfitability(BaseModel):
     project_id: uuid.UUID
+    # Resolved server-side rather than left to the caller. The alternative
+    # is a client fetching /projects and joining by id, which cannot be done
+    # correctly: that list is cursor-paginated, so a client would have to
+    # walk every page to be sure of covering the ids in this report.
+    #
+    # Nullable because the join is a LEFT one — a project deleted after the
+    # invoices that reference it still belongs in the report, and dropping
+    # the row would quietly understate revenue.
+    project_name: str | None
     billed_revenue: Decimal
     actual_cost: Decimal
     profitability: Decimal

@@ -37,7 +37,7 @@ from sqlalchemy import func, select
 
 from app.core.deps import CurrentUser, require_role
 from app.core.money import CENTS
-from app.models import Bill, BillPayment, Expense, Invoice, InvoicePayment
+from app.models import Bill, BillPayment, Expense, Invoice, InvoicePayment, Project
 from app.schemas.profitability import AgingEntry, ProfitabilityReportResponse, ProjectProfitability
 from app.services.invoicing import DEFAULT_TAX_RATE
 
@@ -113,9 +113,20 @@ async def get_profitability_report(
         cost_by_project[project_id] = cost_by_project.get(project_id, Decimal("0.00")) + amount
 
     all_project_ids = set(revenue_by_project) | set(cost_by_project)
+
+    # One query for the names, not one per project. Missing ids stay missing
+    # rather than dropping the row: a project deleted after the invoices
+    # that reference it still belongs in the report, and omitting it would
+    # understate revenue for the period.
+    name_result = await current.session.execute(
+        select(Project.id, Project.name).where(Project.id.in_(all_project_ids))
+    )
+    names_by_project: dict[uuid.UUID, str] = dict(name_result.tuples().all())
+
     projects = [
         ProjectProfitability(
             project_id=project_id,
+            project_name=names_by_project.get(project_id),
             billed_revenue=revenue_by_project.get(project_id, Decimal("0.00")),
             actual_cost=cost_by_project.get(project_id, Decimal("0.00")),
             profitability=revenue_by_project.get(project_id, Decimal("0.00"))
@@ -123,6 +134,10 @@ async def get_profitability_report(
         )
         for project_id in all_project_ids
     ]
+    # Largest loss first: the report exists to surface projects that are
+    # bleeding, and an unordered set iteration put them anywhere. Ties broken
+    # on the name so the order is stable between identical requests.
+    projects.sort(key=lambda p: (p.profitability, p.project_name or ""))
 
     today = date.today()
 
