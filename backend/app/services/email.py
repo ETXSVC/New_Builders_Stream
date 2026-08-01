@@ -24,6 +24,7 @@ from email.utils import formataddr
 from typing import Protocol
 
 from app.config import settings
+from app.services.tenant_smtp import SmtpConfig, resolve_and_check
 
 
 class EmailClient(Protocol):
@@ -43,9 +44,41 @@ class FakeEmailClient:
 
 
 class SmtpEmailClient:
+    """Sends through one SMTP endpoint.
+
+    Takes an explicit `SmtpConfig` since migration 0029, defaulting to the
+    platform's own settings when given none. A tenant's mail server and the
+    platform relay are then the same code path with different values,
+    rather than one being a special case bolted onto the other — and the
+    tenant's credentials never have to reach module-level state to be used.
+    """
+
+    def __init__(self, config: SmtpConfig | None = None) -> None:
+        self._config = config
+
+    def _resolved(self) -> SmtpConfig:
+        if self._config is not None:
+            return self._config
+        # get_email_client() only hands out the platform client when
+        # smtp_host is set — this guard makes that invariant explicit (and
+        # narrows the str | None for the type checker) rather than letting a
+        # violated invariant surface as a confusing smtplib connection error.
+        if settings.smtp_host is None:
+            raise RuntimeError("SmtpEmailClient selected without SMTP_HOST configured")
+        return SmtpConfig(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            from_address=settings.smtp_from_address,
+            starttls=settings.smtp_starttls,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            operator_configured=True,
+        )
+
     async def send(
         self, *, to: str, subject: str, body: str, from_name: str | None = None
     ) -> None:
+        config = self._resolved()
         message = EmailMessage()
         # `formataddr`, not an f-string: it quotes a name containing a comma
         # or a quote (which would otherwise split the header into two
@@ -57,28 +90,28 @@ class SmtpEmailClient:
         # caller sent before this parameter existed — including any Dramatiq
         # message enqueued by the previous release and still in Redis.
         message["From"] = (
-            formataddr((from_name, settings.smtp_from_address))
-            if from_name
-            else settings.smtp_from_address
+            formataddr((from_name, config.from_address)) if from_name else config.from_address
         )
         message["To"] = to
         message["Subject"] = subject
         message.set_content(body)
-        await asyncio.to_thread(self._send_sync, message)
+        await asyncio.to_thread(self._send_sync, config, message)
 
     @staticmethod
-    def _send_sync(message: EmailMessage) -> None:
-        # get_email_client() only hands this client out when smtp_host is
-        # set — this guard makes that invariant explicit (and narrows the
-        # str | None for the type checker) rather than letting a violated
-        # invariant surface as a confusing smtplib connection error.
-        if settings.smtp_host is None:
-            raise RuntimeError("SmtpEmailClient selected without SMTP_HOST configured")
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
-            if settings.smtp_starttls:
+    def _send_sync(config: SmtpConfig, message: EmailMessage) -> None:
+        # Re-checked here, not only where the settings were saved: a
+        # hostname the tenant controls can be re-pointed at 127.0.0.1 after
+        # it passed validation, and this is the moment we would actually
+        # connect. Skipped for the operator's own relay, which may
+        # legitimately be a private-network mail gateway — see
+        # app/services/tenant_smtp.py for the whole argument.
+        if not config.operator_configured:
+            resolve_and_check(config.host, config.port)
+        with smtplib.SMTP(config.host, config.port, timeout=30) as smtp:
+            if config.starttls:
                 smtp.starttls()
-            if settings.smtp_username and settings.smtp_password:
-                smtp.login(settings.smtp_username, settings.smtp_password)
+            if config.username and config.password:
+                smtp.login(config.username, config.password)
             smtp.send_message(message)
 
 

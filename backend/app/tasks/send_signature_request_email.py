@@ -20,9 +20,11 @@ to a company's customers, who have no business seeing each other's
 addresses in a To: header. That is the same reasoning behind the client
 scoping in migration 0019, applied to the email layer.
 """
+import uuid
+
 import dramatiq
 
-from app.services import email as email_service
+from app.services.tenant_smtp import client_for_company
 from app.tasks import broker  # noqa: F401 - import-time side effect
 
 _DOCUMENT_LABELS = {"estimate": "estimate", "change_order": "change order"}
@@ -37,9 +39,15 @@ async def _send_signature_request_email(
     # See send_invitation_email.py: defaulted for in-flight messages,
     # resolved by the enqueuing route.
     from_name: str | None = None,
+    # Which company's mail server to send through (migration 0029).
+    # An id, never credentials: a Dramatiq payload lives in Redis and shows
+    # up in dead-letter inspection, and another company's mail password has
+    # no business being in either. Defaulted for messages enqueued before
+    # this existed and still in the queue at deploy time.
+    company_id: str | None = None,
 ) -> None:
     label = _DOCUMENT_LABELS.get(document_type, "document")
-    client = email_service.get_email_client()
+    client = await client_for_company(uuid.UUID(company_id) if company_id else None)
     await client.send(
         from_name=from_name,
         to=to_email,

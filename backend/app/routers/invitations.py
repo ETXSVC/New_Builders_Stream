@@ -71,6 +71,8 @@ async def create_invitation(
         from_name=await sender_name_for(
             current.session, current.company_id, company_name or "your team"
         ),
+        # Which mail server it leaves through (migration 0029).
+        company_id=str(current.company_id),
     )
 
     # No explicit commit here — get_current_user (design decision #8) commits

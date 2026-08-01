@@ -529,6 +529,7 @@ async def request_password_reset(payload: PasswordResetRequest, request: Request
                 "reset_url": f"{settings.frontend_base_url}/reset-password?token={secret}",
                 "expires_in_minutes": int(RESET_TOKEN_TTL.total_seconds() // 60),
                 "from_name": from_name,
+                "company_id": str(company_id) if company_id is not None else None,
             }
         await session.commit()
 

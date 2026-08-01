@@ -1306,6 +1306,129 @@
         "title": "CompanyBrandingResponse",
         "type": "object"
       },
+      "CompanyEmailSettingsPutRequest": {
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "from_address": {
+            "format": "email",
+            "title": "From Address",
+            "type": "string"
+          },
+          "host": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Host",
+            "type": "string"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "port": {
+            "default": 587,
+            "maximum": 65535.0,
+            "minimum": 1.0,
+            "title": "Port",
+            "type": "integer"
+          },
+          "starttls": {
+            "default": true,
+            "title": "Starttls",
+            "type": "boolean"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "host",
+          "from_address"
+        ],
+        "title": "CompanyEmailSettingsPutRequest",
+        "type": "object"
+      },
+      "CompanyEmailSettingsResponse": {
+        "description": "What the screen may see.\n\nEverything except the password, which is write-only: `has_password`\nsays whether one is stored so the form can show \"unchanged\" rather than\nan empty box that looks like a missing setting. Handing the password\nback would put another company's mail credential into a JSON response,\na browser cache and any error report that captured it.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "from_address": {
+            "title": "From Address",
+            "type": "string"
+          },
+          "has_password": {
+            "title": "Has Password",
+            "type": "boolean"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "port": {
+            "title": "Port",
+            "type": "integer"
+          },
+          "starttls": {
+            "title": "Starttls",
+            "type": "boolean"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "username",
+          "from_address",
+          "starttls",
+          "enabled",
+          "has_password"
+        ],
+        "title": "CompanyEmailSettingsResponse",
+        "type": "object"
+      },
       "CompanyMemberListResponse": {
         "description": "Not paginated: a company's member count is seat-bounded (billing's\nincluded_seats model), far below any size needing cursors.",
         "properties": {
@@ -2187,6 +2310,25 @@
           "created_at"
         ],
         "title": "DocumentResponse",
+        "type": "object"
+      },
+      "EmailSettingsTestResponse": {
+        "description": "The result of trying it for real.\n\n`detail` carries the mail server's own words on failure, because \"the\nrelay said 535 authentication failed\" is the difference between fixing\na password and guessing.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "detail"
+        ],
+        "title": "EmailSettingsTestResponse",
         "type": "object"
       },
       "EsignatureResponse": {
@@ -8166,6 +8308,111 @@
         "summary": "Upload Branding Logo",
         "tags": [
           "branding"
+        ]
+      }
+    },
+    "/companies/email-settings": {
+      "delete": {
+        "description": "Go back to the platform's relay, and forget the credentials.\n\nDistinct from `enabled=false`, which keeps them for an outage that is\nexpected to end.",
+        "operationId": "delete_email_settings_companies_email_settings_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Email Settings",
+        "tags": [
+          "email-settings"
+        ]
+      },
+      "get": {
+        "description": "The company's mail server, or null if they use the platform's.\n\nNull rather than a 404: \"not configured\" is the ordinary state for\nalmost every tenant, and a screen asking about it is not making a\nmistake.",
+        "operationId": "get_email_settings_companies_email_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/CompanyEmailSettingsResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Email Settings Companies Email Settings Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Email Settings",
+        "tags": [
+          "email-settings"
+        ]
+      },
+      "put": {
+        "description": "Save a mail server. Saving does not prove it works \u2014 that is the\ntest route below, and `verified_at` is cleared here so the screen\ncannot go on claiming a previous success for a changed host.",
+        "operationId": "put_email_settings_companies_email_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyEmailSettingsPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyEmailSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Email Settings",
+        "tags": [
+          "email-settings"
+        ]
+      }
+    },
+    "/companies/email-settings/test": {
+      "post": {
+        "description": "Send one message to the admin doing the asking.\n\nTo THEMSELVES, not to an address they type: an endpoint that mails\narbitrary text to arbitrary recipients through our platform is an open\nrelay with extra steps, and \"did it arrive\" is only answerable by\nsomebody who can read the mailbox anyway.\n\nAnswers 200 with `ok: false` rather than an error status, because a\nrefused login is a normal outcome of testing a configuration \u2014 the\nrelay's own words are more useful to the person fixing it than an HTTP\ncode.",
+        "operationId": "test_email_settings_companies_email_settings_test_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailSettingsTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Email Settings",
+        "tags": [
+          "email-settings"
         ]
       }
     },

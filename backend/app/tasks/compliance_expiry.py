@@ -249,6 +249,7 @@ async def _check_compliance_expiry(
                         "expires_on": document.expires_on.isoformat(),
                         "threshold": threshold,
                         "from_name": from_name,
+                        "company_id": str(document.company_id),
                     }
                 )
 
