@@ -69,7 +69,7 @@ dependencies = [
     # genuinely optional, whereas /metrics is a route on the app object and
     # a missing import would be a boot failure, not a degraded feature.
     # Pure Python, no native dependencies, no transitive deps of its own.
-    "prometheus-client>=0.21,<1.0",
+    "prometheus-client>=0.26.0,<1.0",
 ]
 
 [project.optional-dependencies]
