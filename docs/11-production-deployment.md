@@ -272,6 +272,35 @@ the backend unreachable from the host network and the internet
 undoes it, and would additionally make the backend's
 `--forwarded-allow-ips=*` unsafe (see backend/Dockerfile's comment).
 
+## 6b-i. The frontend serves no static pages
+
+Worth knowing before sizing the box or reading a latency graph: **every
+page render reaches the Node process.** There is no prebuilt HTML to serve.
+
+That is a consequence of the Content-Security-Policy, not an oversight.
+The policy carries a per-request nonce so that `script-src` does not have
+to allow `'unsafe-inline'` — which is the directive that otherwise lets an
+injected `<script>` run whatever the rest of the policy says. Prerendered
+HTML cannot carry a per-request value: it would ship whatever nonce
+existed at build time, the browser would compare it against the header's
+fresh one, and the page would fail to hydrate — silently, because nothing
+in the application itself errors.
+
+Practical consequences:
+
+- The `frontend` container does real work per request rather than serving
+  files. It is the component to watch first if page latency rises, and the
+  one to give headroom when sizing.
+- A CDN or reverse-proxy cache in front of page routes would break the
+  policy by serving one visitor's nonce to another. Caddy does not cache
+  by default; keep it that way for document requests. Static assets under
+  `/_next/static` are unaffected — they carry no nonce and are excluded
+  from the middleware that mints one.
+- If pages ever start failing to hydrate after a proxy or caching change,
+  check the `Content-Security-Policy` response header against the `nonce`
+  attribute on the page's `<script>` tags. They must match, per response.
+  `frontend/e2e/security-headers.spec.ts` asserts exactly that.
+
 ## 6c. The platform console (cross-tenant support access)
 
 `/platform/*` is how you change a customer's plan, status or module
