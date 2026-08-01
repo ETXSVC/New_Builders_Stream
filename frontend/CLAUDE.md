@@ -40,21 +40,47 @@ after a backend route/schema change, regenerate the snapshot
 gate fails if the snapshot drifts from the code). `marketing-site/` (static HTML/CSS/JS) and `marketing/` (copy docs)
 are a separate, pre-existing marketing site, unrelated to the Next.js app.
 
-Security headers live in `next.config.ts` and apply in dev too, with one
-deliberate exception: **`script-src` gains `'unsafe-eval'` when
-`NODE_ENV === "development"` and must never carry it in production.**
+Security headers live in two places, and the split is the point. The
+constant ones (`X-Frame-Options`, `Referrer-Policy`, …) are in
+`next.config.ts`. **The CSP is built per request in `middleware.ts`**,
+because it carries a nonce — a fresh 16-byte value per response that Next
+stamps into the inline bootstrap scripts it emits, which is what lets
+`script-src` stop relying on `'unsafe-inline'`. Two consequences worth
+knowing before touching either file:
+
+- **Every page renders per request** (`export const dynamic` in
+  `app/layout.tsx`). Prerendered HTML cannot carry a per-request nonce; it
+  would ship a build-time value, the browser would compare it against the
+  header's fresh one, and every page would fail to hydrate under its own
+  policy — silently, because nothing in the app itself errors. Static
+  prerendering is the accepted cost of the nonce.
+- **`middleware.ts`'s matcher is no longer the auth boundary.** It now
+  covers every non-asset path so the CSP reaches every document, and the
+  auth scope lives in `PROTECTED_TREES` with one segment-safe `isUnder()`
+  helper. A route not in that list is public — check it when adding one.
+
+`'unsafe-inline'` remains in the `script-src` LIST deliberately: CSP3
+browsers ignore it once a nonce and `'strict-dynamic'` are present, and
+CSP2-only browsers fall back to it rather than breaking. `style-src` keeps
+it for real — Next and Tailwind both inject style tags and there is no
+style nonce pipeline. One exception is unchanged: **`script-src` gains
+`'unsafe-eval'` when `NODE_ENV === "development"` and must never carry it
+in production.**
 React's development build and Turbopack's HMR runtime both call `eval()`
 — without the exception, `next dev` throws "eval() is not supported in
 this environment" on every page, which is exactly what an unconditional
 CSP produced. React never uses `eval()` in production, so the relaxation
 buys nothing there and costs the policy its point.
-`e2e/security-headers.spec.ts` asserts every header and, under CI
-specifically, that `'unsafe-eval'` is **absent** — `e2e-ci` builds and
+`e2e/security-headers.spec.ts` asserts every header, that the nonce is
+per-request and that every script tag carries the response's own nonce
+(a policy naming a nonce the HTML lacks is worse than the old one — it
+looks stricter and blocks the app's own bootstrap), that a real page load
+logs no CSP violation, and, under CI specifically, that `'unsafe-eval'` is
+**absent** — `e2e-ci` builds and
 serves a production frontend, so that assertion runs against the real
 artifact. HSTS is deliberately NOT here: it belongs at Caddy
 (`deploy/Caddyfile`), being meaningless without TLS and harmful over dev
-HTTP. A nonce-based strict CSP that would remove `'unsafe-inline'`
-entirely is a tracked follow-up, not a blocker.
+HTTP.
 
 `lib/use-cursor-list.ts` is the shared loader for cursor-paginated lists,
 and the one to reach for in new code. It carries the stale-response guard
