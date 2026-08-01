@@ -5,7 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface Vendor {
   id: string;
@@ -16,46 +16,22 @@ interface Vendor {
 
 export function VendorsTab() {
   const { accessToken, role } = useAuth();
-  const [vendors, setVendors] = React.useState<Vendor[]>([]);
+  // Every page, not the first one: this list is chosen FROM (a vendor
+  // picker on a material line), so "the first 25 and a button" would be
+  // the wrong shape. `useCursorAll` is the shared walk — see its docstring
+  // for why the two loaders are separate hooks rather than one with a flag.
+  const {
+    items: vendors,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<Vendor>({ path: "/api/vendors", label: "vendors" });
   const [name, setName] = React.useState("");
   const [contactEmail, setContactEmail] = React.useState("");
   const [contactPhone, setContactPhone] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager";
-
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      const all: Vendor[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/vendors?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load vendors");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setVendors(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -80,7 +56,7 @@ export function VendorsTab() {
       setName("");
       setContactEmail("");
       setContactPhone("");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {

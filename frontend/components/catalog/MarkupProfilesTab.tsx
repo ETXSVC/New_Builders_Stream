@@ -2,10 +2,10 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCursorAll } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface MarkupProfile {
   id: string;
@@ -16,46 +16,19 @@ interface MarkupProfile {
 
 export function MarkupProfilesTab() {
   const { accessToken, role } = useAuth();
-  const [profiles, setProfiles] = React.useState<MarkupProfile[]>([]);
+  const {
+    items: profiles,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<MarkupProfile>({ path: "/api/markup-profiles", label: "markup profiles" });
   const [name, setName] = React.useState("");
   const [overheadPct, setOverheadPct] = React.useState("0");
   const [profitPct, setProfitPct] = React.useState("0");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager";
 
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      const all: MarkupProfile[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/markup-profiles?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load markup profiles");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setProfiles(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -76,7 +49,7 @@ export function MarkupProfilesTab() {
       setName("");
       setOverheadPct("0");
       setProfitPct("0");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
@@ -91,7 +64,7 @@ export function MarkupProfilesTab() {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (response.status === 204) {
-      await loadAll();
+      reload();
     } else {
       const data = await response.json();
       setError(data.detail ?? "Failed to delete markup profile");
