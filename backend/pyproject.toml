@@ -94,7 +94,7 @@ dev = [
     "pytest>=9.1.1,<10.0",
     "pytest-asyncio>=1.0,<2.0",
     "httpx>=0.27,<0.28",
-    "ruff>=0.8,<1.0",
+    "ruff>=0.16.0,<1.0",
     # tests/test_monitoring_config.py parses the Prometheus/Alertmanager/
     # Grafana config and docker-compose.prod.yml. Already present
     # transitively (uvicorn[standard]), declared here because a test
