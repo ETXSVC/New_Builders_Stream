@@ -91,7 +91,7 @@ is loud, not silent.
 | `SCANNER_DATABASE_URL` | `postgresql+asyncpg://scanner:<SCANNER_DB_PASSWORD>@postgres:5432/builders_stream` (the prod compose sets this per-service from the two values above) |
 | `PLATFORM_DB_PASSWORD` | `openssl rand -hex 24` — same again, for the `platform_admin` role created by migration `0023`. **Set it before the first migration run**: `migrate` reads it when creating the role, and `backend` builds its connection URL from the same value, so the two only agree if it is present from the start |
 | `PLATFORM_DATABASE_URL` | leave unset — the prod compose sets it per-service from `PLATFORM_DB_PASSWORD`. Unlike `SCANNER_DATABASE_URL` this setting has **no fallback**: if it is somehow empty the platform console 503s rather than running on a wider connection |
-| `SMTP_*` | set to enable invitation emails; unset = recording fake (no email leaves the box) |
+| `SMTP_*` | set to enable invitation emails; unset = recording fake (no email leaves the box). `SMTP_HOST` is the switch; `SMTP_FROM_ADDRESS` must be a real address on a domain you control — the backend **refuses to boot** on the `no-reply@localhost` default once `SMTP_HOST` is set, because mail from an unroutable sender is rejected or bounces into nothing and the invitation is lost silently. Verify with `docker compose -f docker-compose.prod.yml exec backend python scripts/send_test_email.py you@yourdomain.com`, which sends one message through exactly the client the app uses and prints what the relay said |
 
 **Database role passwords.** Migration `0001` creates `app_user` with the
 password hardcoded as `'app_password'` — a value published in this

@@ -116,12 +116,41 @@ def test_unauthenticated_smtp_relay_without_starttls_is_allowed():
     only when SMTP_USERNAME is actually set. Without this, the check would
     refuse to boot a perfectly valid configuration.
     """
-    settings = _settings(smtp_host="smtp.internal", smtp_starttls=False)
+    # A real sender, because these tests are about STARTTLS and the
+    # placeholder-sender rule below would otherwise be what fails.
+    settings = _settings(
+        smtp_host="smtp.internal",
+        smtp_starttls=False,
+        smtp_from_address="no-reply@builders.example",
+    )
     assert settings.smtp_host == "smtp.internal"
 
 
 def test_starttls_enabled_with_credentials_is_allowed():
     settings = _settings(
-        smtp_host="smtp.example.com", smtp_username="mailer", smtp_starttls=True
+        smtp_host="smtp.example.com",
+        smtp_username="mailer",
+        smtp_starttls=True,
+        smtp_from_address="no-reply@builders.example",
     )
     assert settings.smtp_username == "mailer"
+
+
+def test_real_delivery_from_the_placeholder_sender_is_refused():
+    """`no-reply@localhost` is fine while mail goes to the recording fake.
+    Once SMTP_HOST turns delivery on it is worse than no mail at all: the
+    send succeeds, the relay rejects or the bounce vanishes, and the
+    invitation is lost with nothing in the logs to show for it."""
+    with pytest.raises(ValidationError) as excinfo:
+        _settings(smtp_host="smtp.example.com")
+
+    assert "SMTP_FROM_ADDRESS" in str(excinfo.value)
+
+
+def test_the_placeholder_sender_is_fine_while_nothing_is_being_sent():
+    """No SMTP_HOST means the fake, which delivers nowhere — there is no
+    sender for anyone to reject."""
+    settings = _settings()
+
+    assert settings.smtp_host is None
+    assert settings.smtp_from_address == "no-reply@localhost"
