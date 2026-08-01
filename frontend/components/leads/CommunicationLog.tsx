@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -19,52 +19,17 @@ interface Entry {
 
 export function CommunicationLog({ leadId }: { leadId: string }) {
   const { accessToken } = useAuth();
-  const [entries, setEntries] = React.useState<Entry[]>([]);
+  const {
+    items: entries,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<Entry>({ path: `/api/leads/${leadId}/communications`, label: "communications" });
   const [channel, setChannel] = React.useState<string>("call");
   const [body, setBody] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
-  const beginLoad = useLatestOnly();
 
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoad();
-    try {
-      // The backend pages at 25/entry ascending by created_at, so a
-      // just-created entry lands on the LAST page — follow next_cursor to
-      // exhaustion so it (and everything else) is always visible. Log sizes
-      // are small enough that a few sequential requests are fine.
-      const all: Entry[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/leads/${leadId}/communications?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) return;
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      // Drop the result if another load started while this cursor walk was
-      // running — otherwise this pre-insert snapshot overwrites the list that
-      // handleAdd's own reload just populated, and the entry the user added
-      // vanishes from the screen despite having been created.
-      if (!isCurrent()) return;
-      setEntries(all);
-    } catch {
-      // Non-blocking: the log section shows empty; the add-form's own error
-      // handling covers the interactive path.
-    }
-  }, [accessToken, beginLoad, leadId]);
-
-  React.useEffect(() => {
-    // Deferred to a promise callback so no setState in loadAll's call path
-    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -83,7 +48,7 @@ export function CommunicationLog({ leadId }: { leadId: string }) {
         return;
       }
       setBody("");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {

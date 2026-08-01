@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLatestOnly } from "@/lib/use-latest-only";
 
 /**
  * One cursor-paginated list loader, instead of seven copies of it.
@@ -254,4 +255,107 @@ export function useCursorList<T>(options: CursorListOptions): CursorListResult<T
   // `ready` reproduces the old `if (!accessToken) return` exactly: a list
   // whose token has not arrived keeps its spinner rather than rendering empty.
   return useCursorListCore<T>({ ...options, ready: !!accessToken, headers });
+}
+
+/**
+ * The OTHER pagination pattern in this app, and the one that was never
+ * shared: walk every page and hand back the complete list.
+ *
+ * `useCursorList` above loads one page and offers "Load more". Fifteen
+ * surfaces need something different — a dropdown of vendors, a picker of
+ * catalog items, a project's daily logs — where showing the first 25 and a
+ * button is the wrong answer, because the user is choosing from the set
+ * rather than reading through it. Each of those fifteen had written the
+ * same `do { fetch } while (cursor)` loop, with the same stale-response
+ * guard, the same two error strings and the same deferred effect.
+ *
+ * That duplication is not hypothetical harm: the single-page pattern lost
+ * its guard in one of eight copies, which is what prompted the shared
+ * loader above. This is the same argument applied to the other half.
+ *
+ * KNOWN LIMIT, INHERITED RATHER THAN INTRODUCED: the walk is unbounded. A
+ * company with ten thousand catalog items fetches four hundred pages to
+ * fill one dropdown. Every hand-written copy had that property; collecting
+ * them here does not fix it, but it does mean a cap can later be added in
+ * ONE place, with one decision about what to tell the user when the list
+ * is truncated. Deliberately not done in the same change as the
+ * deduplication, so that "behaviour is identical" stays true and reviewable.
+ */
+export interface CursorAllResult<T> {
+  items: T[];
+  loading: boolean;
+  error: string | null;
+  /** Re-walk from the first page. */
+  reload: () => void;
+  setItems: React.Dispatch<React.SetStateAction<T[]>>;
+  setError: React.Dispatch<React.SetStateAction<string | null>>;
+}
+
+export function useCursorAll<T>({
+  path,
+  params,
+  label,
+  enabled = true,
+}: CursorListOptions): CursorAllResult<T> {
+  const { accessToken } = useAuth();
+  const [items, setItems] = React.useState<T[]>([]);
+  const [loading, setLoading] = React.useState(enabled);
+  const [error, setError] = React.useState<string | null>(null);
+  const beginLoad = useLatestOnly();
+
+  // Serialised so the effect depends on the params' VALUE, letting callers
+  // pass an inline object — same contract as `useCursorListCore`.
+  const query = React.useMemo(() => {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value) search.set(key, value);
+    }
+    return search.toString();
+  }, [params]);
+
+  const load = React.useCallback(async () => {
+    if (!accessToken || !enabled) return;
+    const isCurrent = beginLoad();
+    setLoading(true);
+    try {
+      const all: T[] = [];
+      let cursor: string | null = null;
+      do {
+        const search = new URLSearchParams(query);
+        if (cursor) search.set("cursor", cursor);
+        const response = await fetch(`${path}?${search}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await response.json();
+        // Checked before the error branch as well as the success one: a
+        // superseded walk must write neither, or a stale failure replaces
+        // a fresh list with a red banner.
+        if (!isCurrent()) return;
+        if (!response.ok) {
+          setError(data.detail ?? `Failed to load ${label}`);
+          return;
+        }
+        all.push(...data.items);
+        cursor = data.next_cursor ?? null;
+      } while (cursor);
+
+      if (!isCurrent()) return;
+      setItems(all);
+      setError(null);
+    } catch {
+      if (isCurrent()) {
+        setError("Unable to reach the server. Check your connection and try again.");
+      }
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
+  }, [accessToken, beginLoad, enabled, label, path, query]);
+
+  React.useEffect(() => {
+    // Deferred for the same reason as the sibling above: no setState
+    // reached synchronously from an effect body.
+    void Promise.resolve().then(() => load());
+  }, [load]);
+
+  return { items, loading, error, reload: load, setItems, setError };
 }

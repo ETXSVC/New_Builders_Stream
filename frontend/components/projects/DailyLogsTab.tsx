@@ -2,12 +2,12 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCursorAll } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDate } from "@/lib/format";
-import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface DailyLog {
   id: string;
@@ -18,7 +18,14 @@ interface DailyLog {
 
 export function DailyLogsTab({ projectId }: { projectId: string }) {
   const { accessToken, role } = useAuth();
-  const [logs, setLogs] = React.useState<DailyLog[]>([]);
+  // The backend pages ascending by created_at, so a just-created log
+  // lands on the LAST page — the walk is what keeps it visible.
+  const {
+    items: logs,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<DailyLog>({ path: `/api/projects/${projectId}/daily-logs`, label: "daily logs" });
   const [logDate, setLogDate] = React.useState(() => {
     // Built from local date parts — toISOString() is UTC and shifts the
     // default to yesterday/tomorrow for users near midnight in other zones.
@@ -30,47 +37,8 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
   const [weather, setWeather] = React.useState("");
   const [notes, setNotes] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager" || role === "field_crew";
-
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      // The backend pages at 25/entry ascending by created_at, so a
-      // just-created log lands on the LAST page — follow next_cursor to
-      // exhaustion so it (and everything else) is always visible. List
-      // sizes here are small enough that a few sequential requests are fine.
-      const all: DailyLog[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects/${projectId}/daily-logs?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load daily logs");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setLogs(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll, projectId]);
-
-  React.useEffect(() => {
-    // Deferred to a promise callback so no setState in loadAll's call path
-    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -90,7 +58,7 @@ export function DailyLogsTab({ projectId }: { projectId: string }) {
       }
       setWeather("");
       setNotes("");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {

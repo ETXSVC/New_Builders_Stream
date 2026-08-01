@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCursorAll } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
-import { useLatestOnly } from "@/lib/use-latest-only";
 
 interface Doc {
   id: string;
@@ -14,51 +14,19 @@ interface Doc {
 
 export function DocumentsTab({ projectId }: { projectId: string }) {
   const { accessToken, role } = useAuth();
-  const [docs, setDocs] = React.useState<Doc[]>([]);
+  const {
+    items: docs,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<Doc>({ path: `/api/projects/${projectId}/documents`, label: "documents" });
   const [file, setFile] = React.useState<File | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const canUpload = role === "admin" || role === "project_manager";
 
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      // The backend pages at 25/entry ascending by created_at, so a
-      // just-uploaded document lands on the LAST page — follow next_cursor
-      // to exhaustion so it (and everything else) is always visible. List
-      // sizes here are small enough that a few sequential requests are fine.
-      const all: Doc[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects/${projectId}/documents?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load documents");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setDocs(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll, projectId]);
 
-  React.useEffect(() => {
-    // Deferred to a promise callback so no setState in loadAll's call path
-    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
 
   async function handleUpload(e: React.FormEvent) {
     e.preventDefault();
@@ -81,7 +49,7 @@ export function DocumentsTab({ projectId }: { projectId: string }) {
       }
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
