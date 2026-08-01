@@ -814,6 +814,7 @@ async def send_estimate_for_signature(
             document_type="estimate",
             document_url=document_url,
             from_name=from_name,
+            company_id=str(estimate.company_id),
         )
 
     return EstimateResponse.model_validate(estimate)

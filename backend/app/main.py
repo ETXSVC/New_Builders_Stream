@@ -16,6 +16,7 @@ from app.routers import (
     bills,
     bom_lines,
     branding,
+    company_email_settings,
     catalogs,
     change_orders,
     companies,
@@ -94,6 +95,11 @@ app.include_router(auth.router)
 # generic parameter" precedent companies.py itself already uses internally
 # for its own `/companies/members` vs `/companies/{company_id}` ordering.
 app.include_router(branding.router)
+# Registered beside branding and BEFORE companies.router, for exactly the
+# reason spelled out above: `/companies/{company_id}` would otherwise
+# swallow the literal `/companies/email-settings` and answer 422 on a
+# hostname that is not a UUID.
+app.include_router(company_email_settings.router)
 app.include_router(companies.router)
 app.include_router(invitations.router)
 app.include_router(leads.router)

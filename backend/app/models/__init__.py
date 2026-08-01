@@ -34,6 +34,7 @@ from app.models.vendor import Vendor
 from app.models.bom_line import BomLine
 from app.models.bom_line_receipt import BomLineReceipt
 from app.models.company_branding import CompanyBranding
+from app.models.company_email_settings import CompanyEmailSettings
 from app.models.project_client import ProjectClient
 from app.models.lead_client import LeadClient
 from app.models.platform_admin import PlatformAdmin
@@ -77,6 +78,7 @@ __all__ = [
     "BomLine",
     "BomLineReceipt",
     "CompanyBranding",
+    "CompanyEmailSettings",
     "ProjectClient",
     "LeadClient",
     "PlatformAdmin",

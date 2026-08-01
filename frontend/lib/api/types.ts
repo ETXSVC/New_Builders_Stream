@@ -781,6 +781,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/companies/email-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Email Settings
+         * @description The company's mail server, or null if they use the platform's.
+         *
+         *     Null rather than a 404: "not configured" is the ordinary state for
+         *     almost every tenant, and a screen asking about it is not making a
+         *     mistake.
+         */
+        get: operations["get_email_settings_companies_email_settings_get"];
+        /**
+         * Put Email Settings
+         * @description Save a mail server. Saving does not prove it works — that is the
+         *     test route below, and `verified_at` is cleared here so the screen
+         *     cannot go on claiming a previous success for a changed host.
+         */
+        put: operations["put_email_settings_companies_email_settings_put"];
+        post?: never;
+        /**
+         * Delete Email Settings
+         * @description Go back to the platform's relay, and forget the credentials.
+         *
+         *     Distinct from `enabled=false`, which keeps them for an outage that is
+         *     expected to end.
+         */
+        delete: operations["delete_email_settings_companies_email_settings_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/companies/email-settings/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Email Settings
+         * @description Send one message to the admin doing the asking.
+         *
+         *     To THEMSELVES, not to an address they type: an endpoint that mails
+         *     arbitrary text to arbitrary recipients through our platform is an open
+         *     relay with extra steps, and "did it arrive" is only answerable by
+         *     somebody who can read the mailbox anyway.
+         *
+         *     Answers 200 with `ok: false` rather than an error status, because a
+         *     refused login is a normal outcome of testing a configuration — the
+         *     relay's own words are more useful to the person fixing it than an HTTP
+         *     code.
+         */
+        post: operations["test_email_settings_companies_email_settings_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/companies/members": {
         parameters: {
             query?: never;
@@ -3948,6 +4015,63 @@ export interface components {
             /** Logo Storage Path */
             logo_storage_path: string | null;
         };
+        /** CompanyEmailSettingsPutRequest */
+        CompanyEmailSettingsPutRequest: {
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * From Address
+             * Format: email
+             */
+            from_address: string;
+            /** Host */
+            host: string;
+            /** Password */
+            password?: string | null;
+            /**
+             * Port
+             * @default 587
+             */
+            port: number;
+            /**
+             * Starttls
+             * @default true
+             */
+            starttls: boolean;
+            /** Username */
+            username?: string | null;
+        };
+        /**
+         * CompanyEmailSettingsResponse
+         * @description What the screen may see.
+         *
+         *     Everything except the password, which is write-only: `has_password`
+         *     says whether one is stored so the form can show "unchanged" rather than
+         *     an empty box that looks like a missing setting. Handing the password
+         *     back would put another company's mail credential into a JSON response,
+         *     a browser cache and any error report that captured it.
+         */
+        CompanyEmailSettingsResponse: {
+            /** Enabled */
+            enabled: boolean;
+            /** From Address */
+            from_address: string;
+            /** Has Password */
+            has_password: boolean;
+            /** Host */
+            host: string;
+            /** Port */
+            port: number;
+            /** Starttls */
+            starttls: boolean;
+            /** Username */
+            username: string | null;
+            /** Verified At */
+            verified_at?: string | null;
+        };
         /**
          * CompanyMemberListResponse
          * @description Not paginated: a company's member count is seat-bounded (billing's
@@ -4431,6 +4555,20 @@ export interface components {
             uploaded_by: string;
             /** Version */
             version: number;
+        };
+        /**
+         * EmailSettingsTestResponse
+         * @description The result of trying it for real.
+         *
+         *     `detail` carries the mail server's own words on failure, because "the
+         *     relay said 535 authentication failed" is the difference between fixing
+         *     a password and guessing.
+         */
+        EmailSettingsTestResponse: {
+            /** Detail */
+            detail: string;
+            /** Ok */
+            ok: boolean;
         };
         /**
          * EsignatureResponse
@@ -7536,6 +7674,97 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_email_settings_companies_email_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyEmailSettingsResponse"] | null;
+                };
+            };
+        };
+    };
+    put_email_settings_companies_email_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompanyEmailSettingsPutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompanyEmailSettingsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_email_settings_companies_email_settings_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_email_settings_companies_email_settings_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmailSettingsTestResponse"];
                 };
             };
         };

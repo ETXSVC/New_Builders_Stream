@@ -393,6 +393,7 @@ async def send_change_order_for_signature(
             document_type="change_order",
             document_url=document_url,
             from_name=from_name,
+            company_id=str(change_order.company_id),
         )
 
     return ChangeOrderResponse.model_validate(change_order)
