@@ -48,6 +48,7 @@ from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLin
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
 from app.services.client_access import client_emails_for_estimate, company_display_name
+from app.services.email_sender import sender_name_for
 from app.services.client_scope import (
     client_estimate_scope,
     require_client_access_to_estimate,
@@ -802,12 +803,17 @@ async def send_estimate_for_signature(
     # One message per recipient, not one addressed to several: these go to a
     # company's customers, who should not see each other's addresses.
     document_url = f"{settings.frontend_base_url}/estimates/{estimate.id}"
+    # Both resolved once, outside the loop: they are the same for every
+    # recipient, and the name lookup was previously repeated per address.
+    company_name = await company_display_name(current, estimate.company_id)
+    from_name = await sender_name_for(current.session, estimate.company_id, company_name)
     for recipient in await client_emails_for_estimate(current, estimate):
         send_signature_request_email.send(
             to_email=recipient,
-            company_name=await company_display_name(current, estimate.company_id),
+            company_name=company_name,
             document_type="estimate",
             document_url=document_url,
+            from_name=from_name,
         )
 
     return EstimateResponse.model_validate(estimate)

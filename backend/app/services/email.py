@@ -20,27 +20,47 @@ import asyncio
 import smtplib
 from dataclasses import dataclass, field
 from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Protocol
 
 from app.config import settings
 
 
 class EmailClient(Protocol):
-    async def send(self, *, to: str, subject: str, body: str) -> None: ...
+    async def send(
+        self, *, to: str, subject: str, body: str, from_name: str | None = None
+    ) -> None: ...
 
 
 @dataclass
 class FakeEmailClient:
     sent: list[dict] = field(default_factory=list)
 
-    async def send(self, *, to: str, subject: str, body: str) -> None:
-        self.sent.append({"to": to, "subject": subject, "body": body})
+    async def send(
+        self, *, to: str, subject: str, body: str, from_name: str | None = None
+    ) -> None:
+        self.sent.append({"to": to, "subject": subject, "body": body, "from_name": from_name})
 
 
 class SmtpEmailClient:
-    async def send(self, *, to: str, subject: str, body: str) -> None:
+    async def send(
+        self, *, to: str, subject: str, body: str, from_name: str | None = None
+    ) -> None:
         message = EmailMessage()
-        message["From"] = settings.smtp_from_address
+        # `formataddr`, not an f-string: it quotes a name containing a comma
+        # or a quote (which would otherwise split the header into two
+        # addresses) and RFC 2047-encodes anything non-ASCII, so a company
+        # called "Bergström & Co, Ltd" arrives intact instead of as a
+        # malformed From that some relays reject outright.
+        #
+        # `from_name=None` keeps the bare address, which is what every
+        # caller sent before this parameter existed — including any Dramatiq
+        # message enqueued by the previous release and still in Redis.
+        message["From"] = (
+            formataddr((from_name, settings.smtp_from_address))
+            if from_name
+            else settings.smtp_from_address
+        )
         message["To"] = to
         message["Subject"] = subject
         message.set_content(body)

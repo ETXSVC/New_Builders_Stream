@@ -17,6 +17,7 @@ from app.schemas.invitation import (
     InvitationResponse,
 )
 from app.services.audit import write_audit_log
+from app.services.email_sender import sender_name_for
 from app.tasks.send_invitation_email import send_invitation_email
 
 router = APIRouter(prefix="/invitations", tags=["invitations"])
@@ -64,6 +65,12 @@ async def create_invitation(
         company_name=company_name or "your team",
         role=payload.role,
         accept_url=f"{settings.frontend_base_url}/accept-invitation?id={invitation.id}",
+        # The name the invitation appears FROM (migration 0027). Resolved
+        # here rather than in the actor, which has no database access on
+        # purpose.
+        from_name=await sender_name_for(
+            current.session, current.company_id, company_name or "your team"
+        ),
     )
 
     # No explicit commit here — get_current_user (design decision #8) commits

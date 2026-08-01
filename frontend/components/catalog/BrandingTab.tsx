@@ -12,6 +12,9 @@ interface Branding {
   logo_storage_path: string | null;
   accent_color: string;
   footer_text: string;
+  // Empty means "send as the company's own name" — the backend resolves
+  // that at send time, so this is the stored value, not the effective one.
+  email_sender_name: string;
 }
 
 export function BrandingTab() {
@@ -19,6 +22,7 @@ export function BrandingTab() {
   const [branding, setBranding] = React.useState<Branding | null>(null);
   const [accentColor, setAccentColor] = React.useState("#1e293b");
   const [footerText, setFooterText] = React.useState("");
+  const [senderName, setSenderName] = React.useState("");
   const [logoFile, setLogoFile] = React.useState<File | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
@@ -41,6 +45,7 @@ export function BrandingTab() {
       setBranding(data);
       setAccentColor(data.accent_color);
       setFooterText(data.footer_text);
+      setSenderName(data.email_sender_name);
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     }
@@ -60,7 +65,11 @@ export function BrandingTab() {
       const response = await fetch("/api/companies/branding", {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ accent_color: accentColor, footer_text: footerText }),
+        body: JSON.stringify({
+          accent_color: accentColor,
+          footer_text: footerText,
+          email_sender_name: senderName,
+        }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -99,6 +108,25 @@ export function BrandingTab() {
   return (
     <form onSubmit={handleSave} className="flex flex-col gap-4 max-w-md">
       <p className="text-sm text-slate-500">Applies to future PDF exports — already-generated PDFs don&apos;t change.</p>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="branding-sender">Email sender name</Label>
+        <Input
+          id="branding-sender"
+          type="text"
+          maxLength={120}
+          value={senderName}
+          onChange={(e) => setSenderName(e.target.value)}
+          disabled={submitting}
+          // Not the company's actual name: this tab does not know it, and
+          // fetching it for a placeholder would be a request per visit for
+          // a hint the sentence below already gives.
+          placeholder="Your company name"
+        />
+        <p className="text-xs text-slate-500">
+          The name on invitations, signature requests and expiry notices you send. Leave it
+          blank to send as your company name. The address itself stays the same.
+        </p>
+      </div>
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="branding-logo">Logo (PNG or JPEG, up to 2 MB)</Label>
         {branding.logo_storage_path && <p className="text-xs text-slate-500">Current logo is set.</p>}

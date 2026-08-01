@@ -35,10 +35,14 @@ async def _send_compliance_expiry_email(
     doc_type: str,
     expires_on: str,
     threshold: str,
+    # See send_invitation_email.py: defaulted for in-flight messages,
+    # resolved by the daily sweep that enqueues this.
+    from_name: str | None = None,
 ) -> None:
     readable_type = doc_type.replace("_", " ")
     client = email_service.get_email_client()
     await client.send(
+        from_name=from_name,
         to=to_email,
         subject=f"Your {readable_type} expires in {_humanize(threshold)}",
         body=(

@@ -20,6 +20,7 @@ from app.schemas.change_order import (
 )
 from app.services.audit import write_audit_log
 from app.services.client_access import client_emails_for_project, company_display_name
+from app.services.email_sender import sender_name_for
 from app.services.client_scope import (
     client_project_scope,
     require_client_access_to_project,
@@ -384,12 +385,14 @@ async def send_change_order_for_signature(
     # about it promptly matters more here, not less.
     document_url = f"{settings.frontend_base_url}/projects/{change_order.project_id}"
     company_name = await company_display_name(current, change_order.company_id)
+    from_name = await sender_name_for(current.session, change_order.company_id, company_name)
     for recipient in await client_emails_for_project(current, change_order.project_id):
         send_signature_request_email.send(
             to_email=recipient,
             company_name=company_name,
             document_type="change_order",
             document_url=document_url,
+            from_name=from_name,
         )
 
     return ChangeOrderResponse.model_validate(change_order)

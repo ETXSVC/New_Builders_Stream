@@ -135,6 +135,10 @@ test("an admin enrols in MFA, reads their tasks, and reaches integrations and br
     await page.getByRole("tab", { name: "PDF template" }).click();
     await expect(page.getByLabel("Footer / terms text")).toBeVisible({ timeout: 15_000 });
     await page.getByLabel("Footer / terms text").fill(`Terms ${suffix}`);
+    // The name outbound email goes out under (migration 0027) — same form,
+    // because it is the same decision: what this company looks like from
+    // outside. Blank would mean "send as the company name".
+    await page.getByLabel("Email sender name").fill(`Sender ${suffix}`);
     await page.getByRole("button", { name: /Save/ }).click();
     // Round-trip through a reload rather than trusting the in-page
     // success state: the point is that the value persisted, not that the
@@ -144,6 +148,7 @@ test("an admin enrols in MFA, reads their tasks, and reaches integrations and br
     await expect(page.getByLabel("Footer / terms text")).toHaveValue(`Terms ${suffix}`, {
       timeout: 15_000,
     });
+    await expect(page.getByLabel("Email sender name")).toHaveValue(`Sender ${suffix}`);
   });
 
   // Hoisted out of the step below so the login step can recompute a FRESH

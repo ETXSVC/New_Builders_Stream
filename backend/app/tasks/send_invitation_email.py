@@ -29,10 +29,20 @@ from app.tasks import broker  # noqa: F401 - import-time side effect
 
 
 async def _send_invitation_email(
-    *, to_email: str, company_name: str, role: str, accept_url: str
+    *,
+    to_email: str,
+    company_name: str,
+    role: str,
+    accept_url: str,
+    # Defaulted, so a message enqueued by the previous release and still
+    # sitting in Redis at deploy time still runs. Resolved at enqueue time
+    # (app/services/email_sender.py) because this actor deliberately has no
+    # database access.
+    from_name: str | None = None,
 ) -> None:
     client = email_service.get_email_client()
     await client.send(
+        from_name=from_name,
         to=to_email,
         subject=f"You're invited to join {company_name} on Builders Stream",
         body=(
