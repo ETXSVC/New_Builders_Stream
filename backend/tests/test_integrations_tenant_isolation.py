@@ -132,6 +132,76 @@ async def test_rls_policy_itself_blocks_cross_tenant_connection_visibility(clien
             await owner_conn.close()
 
 
+async def test_rls_blocks_cross_tenant_visibility_of_entity_mappings(client):
+    """integration_entity_mappings (migration 0030) holds the provider-side
+    ids a tenant's records were posted against — which customers exist in
+    their books, and under what names. Same shape of secret as the
+    connection row itself, so it gets the same proof: the POLICY blocks it,
+    and the row is really there once RLS is off (otherwise this passes for
+    the wrong reason).
+
+    RLS is restored in a finally, so a failing assertion can never leave the
+    table insecure for whatever test runs next."""
+    a = await _register_and_login(client, "Iso Map Co A", "iso-map-a@example.test")
+    b = await _register_and_login(client, "Iso Map Co B", "iso-map-b@example.test")
+    connection_b = await _connect(client, b["headers"], b["company_id"])
+
+    mapping_id = uuid.uuid4()
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute(
+            "INSERT INTO integration_entity_mappings "
+            "(id, company_id, connection_id, entity_kind, local_key, provider_entity_id) "
+            "VALUES ($1, $2, $3, 'customer', 'Acme Holdings', '58')",
+            mapping_id,
+            uuid.UUID(b["company_id"]),
+            uuid.UUID(connection_b["id"]),
+        )
+    finally:
+        await owner_conn.close()
+
+    app_conn = await asyncpg.connect(APP_CONN_DSN)
+    try:
+        await app_conn.execute(
+            "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+        )
+        visible_as_a = await app_conn.fetchrow(
+            "SELECT id FROM integration_entity_mappings WHERE id = $1", mapping_id
+        )
+        assert visible_as_a is None, (
+            "RLS should block Company A from seeing Company B's provider entity mappings"
+        )
+    finally:
+        await app_conn.close()
+
+    owner_conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        await owner_conn.execute(
+            "ALTER TABLE integration_entity_mappings DISABLE ROW LEVEL SECURITY"
+        )
+        app_conn2 = await asyncpg.connect(APP_CONN_DSN)
+        try:
+            await app_conn2.execute(
+                "SELECT set_config('app.current_tenant', $1, false)", a["company_id"]
+            )
+            visible_with_rls_off = await app_conn2.fetchrow(
+                "SELECT id FROM integration_entity_mappings WHERE id = $1", mapping_id
+            )
+            assert visible_with_rls_off is not None, (
+                "Sanity check failed: the mapping row should be visible once RLS is off — "
+                "if this fails the row is missing and the test above proved nothing."
+            )
+        finally:
+            await app_conn2.close()
+    finally:
+        try:
+            await owner_conn.execute(
+                "ALTER TABLE integration_entity_mappings ENABLE ROW LEVEL SECURITY"
+            )
+        finally:
+            await owner_conn.close()
+
+
 async def test_parent_admin_can_see_child_branch_connection(client):
     parent = await _register_and_login(client, "Iso Integ Parent", "iso-integ-parent@example.test")
     child_id = await _create_child_with_membership(client, parent, "Integ Branch")

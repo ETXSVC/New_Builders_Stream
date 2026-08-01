@@ -386,6 +386,55 @@ and a trialing Subscription appear in the Stripe dashboard, then that a
 `customer.subscription.updated` event delivers 200 (Stripe's dashboard shows
 delivery attempts per endpoint).
 
+## 6b. Turning on real QuickBooks / FreshBooks
+
+Until you do this, `FakeAccountingProviderClient` accepts every push and
+**nothing reaches either provider**. The two are independent — QuickBooks
+can be live while FreshBooks is still the fake — because they are separate
+OAuth applications with separate approval processes.
+
+1. **Register an OAuth app** with each provider you want. The redirect URI
+   must be exactly `https://<SITE_ADDRESS>/integrations/{provider}/callback`;
+   Builders Stream derives it from `FRONTEND_BASE_URL` so the two cannot
+   drift, and a mismatch makes the provider reject the code exchange.
+2. **Set the credentials** in `.env`: `QUICKBOOKS_CLIENT_ID` /
+   `QUICKBOOKS_CLIENT_SECRET` (plus `QUICKBOOKS_ENVIRONMENT`, which
+   defaults to `production` — sandbox and production hold entirely separate
+   data) and/or `FRESHBOOKS_CLIENT_ID` / `FRESHBOOKS_CLIENT_SECRET`.
+3. **Restart** `backend` and `worker`. A client id set without its secret
+   refuses to build rather than quietly falling back to the fake, which
+   would look exactly like a working integration that syncs nothing.
+4. **Reconnect every existing connection.** Connections made before
+   migration 0030 have no `provider_account_id`, and neither provider's
+   token addresses anything without one — QuickBooks needs its `realmId`,
+   FreshBooks its `accountId`. Those syncs fail with "reconnect the
+   provider to sync again" rather than guessing.
+
+**What gets created in the tenant's books.** Syncing resolves a local name
+to a provider id and **creates the record if it is absent** — a customer for
+an invoice, a vendor for a bill. Accounts and expense categories are only
+ever looked up, never created, because inventing entries in somebody's chart
+of accounts is a bookkeeping decision. Answers are cached in
+`integration_entity_mappings`, keyed per connection, so reconnecting to a
+different company file does not reuse the previous file's ids.
+
+**Two things that will fail visibly in `GET /integrations/{provider}/sync-status`,
+by design**, rather than posting something wrong:
+
+- An invoice whose project has **no client assigned** — there is nobody to
+  bill, and `invoices` has no client column, so the payee comes from
+  `project_clients`.
+- A QuickBooks invoice whose number collides with an existing `DocNumber` in
+  that company file.
+
+**Duplicate protection differs by provider, and the difference is real.**
+QuickBooks takes a `requestid` that replays the original response, so a
+retried push cannot double-post. FreshBooks has no equivalent, so the client
+searches for a record already tagged with the sync key before creating one —
+which a concurrent pair of pushes could defeat. Nothing issues concurrent
+pushes for one record today (one Dramatiq message per record, retried in
+sequence), but that is the property holding it up.
+
 ## 7. Incident basics
 
 - **Logs**: `docker compose -f docker-compose.prod.yml logs -f backend`
@@ -576,7 +625,7 @@ the OpenAPI snapshot workflow guarantees backward-compatible reads).
 | PostHog | Product analytics, needs an account decision. |
 | Nonce-based strict CSP | Current CSP allows `'unsafe-inline'` scripts (Next.js bootstrap); a nonce pipeline removes it. |
 | WAL archiving / pgBackRest | Only if RPO must shrink below 24h; adds archive monitoring burden. |
-| Real QuickBooks/FreshBooks clients | Needs credentials. `app/services/accounting_client.py` still has only the Protocol and the fake, so accounting sync moves no data. (Stripe is done — see §6a.) |
+| Splitting invoices into real line items | The accounting sync posts one amount per invoice against a single "Construction Services" item. Estimates carry real line items; mapping those through is a feature, not a default. |
 | Worker healthcheck | No HTTP surface today; would need a heartbeat file or queue-depth probe. |
 
 ## 10. Monitoring & alerting (Prometheus + Grafana)
