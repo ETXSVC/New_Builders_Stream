@@ -11,6 +11,7 @@ from app.core.metrics import metrics_content_type, metrics_middleware, render_me
 from app.core.middleware import TenantMiddleware
 from app.core.pagination import InvalidCursorError
 from app.core.readiness import probe_database, probe_redis
+from app.services.stripe_client import StripeUnavailableError
 from app.routers import (
     auth,
     bills,
@@ -145,6 +146,26 @@ async def invalid_cursor_handler(request: Request, exc: InvalidCursorError) -> J
     # endpoints in later Phase 1 tasks) gets a clean 400 for free, instead of
     # each router needing its own try/except around paginate().
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(StripeUnavailableError)
+async def stripe_unavailable_handler(
+    request: Request, exc: StripeUnavailableError
+) -> JSONResponse:
+    # 502, not 500: the request failed because an upstream dependency did,
+    # which is a different thing to tell an operator reading logs at 2am
+    # than "our own code raised". The billing design spec asks for exactly
+    # this on a failed registration — a trial-less root company is a state
+    # that feature does not tolerate, so the whole registration fails rather
+    # than half-completing.
+    #
+    # The message is logged, never returned: Stripe's error strings can name
+    # Price ids and account details, and this response reaches an anonymous
+    # caller on /auth/register.
+    logger.exception("stripe call failed on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=502, content={"detail": "Billing provider unavailable, please retry"}
+    )
 
 
 @app.exception_handler(Exception)

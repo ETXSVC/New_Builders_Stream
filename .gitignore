@@ -57,3 +57,8 @@ dump.rdb
 # present in this dev container when it does not match the version
 # @playwright/test expects. Machine-specific, never a CI input.
 frontend/playwright.local.config.ts
+
+# Rendered from the tracked Markdown source, so the PDF is an output, not an
+# input. Root-anchored deliberately — see the note above about getting
+# anchoring wrong.
+/README.pdf

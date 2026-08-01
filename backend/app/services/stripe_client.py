@@ -44,6 +44,8 @@ import hashlib
 import hmac
 import json
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -211,3 +213,262 @@ class FakeStripeClient:
             signature_header=signature_header,
             secret=self.webhook_secret,
         )
+
+
+class StripeConfigurationError(Exception):
+    """Raised at construction when RealStripeClient cannot possibly work.
+
+    Deliberately raised from `__post_init__` rather than from the first API
+    call: app/services/billing.py builds the client at import time, so this
+    surfaces as a failed boot, which is loud, rather than as a failed
+    registration for one unlucky customer, which is quiet.
+    """
+
+
+class StripeUnavailableError(Exception):
+    """Any failure reaching Stripe or any error Stripe returned.
+
+    Exists so nothing outside this module has to import `stripe` to catch a
+    Stripe failure — which is what keeps the SDK an optional extra. The
+    handler in app/main.py turns it into a 502: the request failed because a
+    dependency of ours did, which is not the caller's fault and not a bug in
+    our own code, and the two 5xx codes say different things to whoever
+    reads the logs.
+    """
+
+
+@dataclass
+class RealStripeClient:
+    """The SDK-backed StripeClient — the implementation that moves money.
+
+    Selected only when STRIPE_API_KEY is set (app/services/billing.py);
+    FakeStripeClient remains the default everywhere else, so tests, CI and a
+    local `docker compose up` still need no Stripe account and make no
+    network calls.
+
+    Three things here are specific to the modern Stripe API and are the
+    reason this could not be written from memory against the docs as they
+    stood when the billing spec was drafted:
+
+    * **`client.v1.*`, not `client.*`.** The un-namespaced accessors still
+      work in stripe-python 15.x but emit a DeprecationWarning on every
+      call; `v1` is where the SDK has moved.
+    * **`current_period_end` is no longer on the Subscription object.** As of
+      API version 2025-03-31.basil it lives on each *subscription item*,
+      because different items on one subscription can bill on different
+      cycles. `_period_end_of` below reads it from the item, preferring
+      `trial_end` while the subscription is still trialing — which is the
+      same instant, and is what the billing spec means by "current_period_end
+      = trial end".
+    * **The async methods need `httpx`.** The SDK's sync path uses
+      `requests`; `*_async` refuses to run without an async HTTP client and
+      raises a bare ImportError from inside the first API call. Checked in
+      `__post_init__` instead, because the natural place to discover it
+      otherwise is a customer's first registration against a production
+      image (the dev extra carries httpx, so every test and CI job has it —
+      exactly the shape of gap backend-ci's docker-build job exists to catch).
+    """
+
+    api_key: str
+    webhook_secret: str
+    # Stripe Price id per tier — the base line item on a new subscription.
+    tier_price_ids: dict[str, str]
+    # Where the hosted Customer Portal returns the user to.
+    portal_return_url: str
+    # Per-unit Price for seats beyond `included_seats`. Optional: unset means
+    # overage reporting is a no-op (see report_seat_usage).
+    seat_overage_price_id: str | None = None
+
+    def __post_init__(self) -> None:
+        # Every tier the caller passed must carry a Price. The set of tiers
+        # is the caller's to know (app/services/billing.py owns
+        # TIER_INCLUDED_SEATS, and importing it here would be a cycle), so
+        # this checks the dict it was handed rather than a second list of
+        # tier names that could drift out of step with the first.
+        missing = sorted(tier for tier, price in self.tier_price_ids.items() if not price)
+        if missing:
+            raise StripeConfigurationError(
+                "STRIPE_API_KEY is set, so RealStripeClient is in use, but no Stripe Price "
+                f"is configured for tier(s): {', '.join(missing)}. Set "
+                + ", ".join(f"STRIPE_PRICE_ID_{t.upper()}" for t in missing)
+            )
+        if not self.portal_return_url:
+            raise StripeConfigurationError(
+                "STRIPE_PORTAL_RETURN_URL (or FRONTEND_BASE_URL) must be set — Stripe's "
+                "hosted portal rejects a session created without a return_url"
+            )
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            raise StripeConfigurationError(
+                "The Stripe SDK's async API requires httpx, which is not installed. "
+                "Install the backend's `stripe` extra (pip install '.[stripe]') rather "
+                "than the bare `stripe` package"
+            )
+
+        import stripe
+
+        # One client for the process. The SDK holds no per-request state and
+        # its HTTP client pools connections, so sharing it is both correct
+        # and what keeps a per-request TLS handshake off the hot path.
+        self._stripe = stripe
+        self._client = stripe.StripeClient(self.api_key)
+
+    async def create_customer(self, *, email: str, name: str) -> str:
+        # Idempotency key derived from the email, which is what makes this
+        # safe to retry: app/routers/auth.py deliberately calls Stripe BEFORE
+        # opening its transaction, and accepts that a registration failing
+        # after this point leaves a customer behind. Without a key, a user
+        # who submits twice (or retries after a 409) accretes a new Stripe
+        # customer each time. Stripe expires keys after 24h, so a genuine
+        # re-registration much later still gets a fresh customer.
+        with self._wrap():
+            customer = await self._client.v1.customers.create_async(
+                params={"email": email, "name": name},
+                options={"idempotency_key": f"create_customer:{email}"},
+            )
+        return customer.id
+
+    async def create_trialing_subscription(
+        self, *, customer_id: str, tier: str, trial_days: int
+    ) -> StripeSubscription:
+        items: list[dict[str, Any]] = [{"price": self.tier_price_ids[tier], "quantity": 1}]
+        if self.seat_overage_price_id:
+            # Added at creation with quantity 0 so the daily seat-usage job
+            # only ever has to UPDATE an existing item. Adding the item
+            # lazily on first overage instead would make that job's write
+            # path depend on whether it had ever run before.
+            items.append({"price": self.seat_overage_price_id, "quantity": 0})
+
+        # Typed as Any because the SDK's own TypedDict for this call
+        # (`SubscriptionCreateParams`) can only be imported from `stripe`,
+        # which is an optional extra — importing it at module scope to
+        # satisfy mypy would make the whole module unimportable without it,
+        # which is the property this client is built around.
+        params: Any = {
+            "customer": customer_id,
+            "items": items,
+            "trial_period_days": trial_days,
+            # A trial that reaches its end with no card on file cancels,
+            # rather than Stripe's default of raising an invoice nobody can
+            # pay. Cancellation is a state this product already models end
+            # to end: the customer.subscription.deleted webhook writes
+            # status="canceled", and block_if_read_only turns that into
+            # read-only access rather than a broken account.
+            "trial_settings": {"end_behavior": {"missing_payment_method": "cancel"}},
+        }
+
+        with self._wrap():
+            subscription = await self._client.v1.subscriptions.create_async(
+                params=params,
+                options={"idempotency_key": f"create_trial:{customer_id}"},
+            )
+
+        return StripeSubscription(
+            stripe_subscription_id=subscription.id,
+            status=subscription.status,
+            current_period_end=self._period_end_of(subscription),
+        )
+
+    async def create_portal_session(self, *, customer_id: str) -> str:
+        with self._wrap():
+            session = await self._client.v1.billing_portal.sessions.create_async(
+                params={"customer": customer_id, "return_url": self.portal_return_url}
+            )
+        return session.url
+
+    async def report_seat_usage(self, *, stripe_subscription_id: str, quantity: int) -> None:
+        """Set the seat-overage line item's quantity to `quantity`.
+
+        **Set semantics, not increment** — and that is the whole design
+        decision here, left open by app/tasks/seat_usage.py's own docstring.
+        That job is a daily *snapshot*: it recomputes the full overage from
+        scratch every run and reports it. Stripe's meter-event API
+        (`billing.meter_events`) accumulates within a billing period, so
+        pointing a daily snapshot at it would bill roughly thirty times the
+        real overage by the end of a month. Updating a licensed per-unit
+        item's `quantity` is idempotent by construction: reporting 2 on
+        thirty consecutive days bills 2 seats, and a re-run after a failure
+        cannot double-charge.
+
+        `proration_behavior="none"` for the same reason — each day's write
+        would otherwise raise a prorated adjustment, so a company that added
+        and removed a seat would be billed for both movements instead of for
+        where it ended up. The last snapshot before the period closes is
+        what invoices.
+        """
+        if not self.seat_overage_price_id:
+            # No overage Price configured: nothing to report against. A
+            # no-op rather than an error, so an account that has not set up
+            # overage pricing runs the daily job harmlessly instead of
+            # logging a failure every night.
+            return
+
+        with self._wrap():
+            subscription = await self._client.v1.subscriptions.retrieve_async(
+                stripe_subscription_id
+            )
+            item_id = next(
+                (
+                    item.id
+                    for item in subscription["items"].data
+                    if item.price and item.price.id == self.seat_overage_price_id
+                ),
+                None,
+            )
+            if item_id is None:
+                # The subscription predates the overage Price being
+                # configured. Skipping is right: silently adding a billable
+                # line item to an existing subscription from a nightly job
+                # is not a decision this job should make on its own.
+                return
+
+            await self._client.v1.subscription_items.update_async(
+                item_id,
+                params={"quantity": quantity, "proration_behavior": "none"},
+            )
+
+    def verify_webhook_signature(self, *, payload: bytes, signature_header: str) -> dict[str, Any]:
+        # The shared verifier, NOT stripe.Webhook.construct_event — the same
+        # code path the fake uses and the whole test suite exercises. The
+        # header format and the replay window are Stripe's, not an
+        # implementation's (see this module's docstring), so there is one
+        # implementation of the security check rather than one that ships and
+        # one that is tested.
+        return verify_stripe_signature_header(
+            payload=payload,
+            signature_header=signature_header,
+            secret=self.webhook_secret,
+        )
+
+    @contextmanager
+    def _wrap(self) -> Iterator[None]:
+        """Translate every `stripe` exception into StripeUnavailableError.
+
+        So no caller — router, event handler or task — needs to import the
+        SDK to handle a Stripe failure, which is what lets `stripe` stay an
+        optional extra rather than a hard dependency.
+        """
+        try:
+            yield
+        except self._stripe.StripeError as exc:
+            raise StripeUnavailableError(str(exc)) from exc
+
+    def _period_end_of(self, subscription: Any) -> datetime:
+        """The end of the period this subscription is currently in.
+
+        `trial_end` first: while trialing, that IS the current period end,
+        and it is present on the subscription itself. Otherwise fall back to
+        the first item's `current_period_end` — see the class docstring for
+        why it is no longer on the subscription object.
+        """
+        epoch = subscription.get("trial_end")
+        if epoch is None:
+            items = subscription["items"].data
+            epoch = items[0].current_period_end if items else None
+        if epoch is None:
+            raise StripeUnavailableError(
+                f"Stripe subscription {subscription.id} has neither a trial_end nor an "
+                "item with a current_period_end; cannot determine the period end"
+            )
+        return datetime.fromtimestamp(epoch, tz=timezone.utc)

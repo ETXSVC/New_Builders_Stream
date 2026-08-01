@@ -19,7 +19,16 @@ COPY app ./app
 # incident made you want error reporting in the first place. The package
 # is inert without a DSN (app/core/observability.py returns before
 # importing it), so the only cost is image size.
-RUN pip install --no-cache-dir --prefix=/opt/python ".[observability]"
+#
+# `[stripe]` is here for exactly the same reason and with the same
+# inertness: app/services/billing.py builds FakeStripeClient unless
+# STRIPE_API_KEY is set, and RealStripeClient imports the SDK inside
+# __post_init__ rather than at module scope, so an image carrying the
+# package but no key never touches it. Leaving it out would mean the switch
+# to real billing needed a rebuild AND a redeploy, and — worse — that the
+# `httpx` the SDK's async path requires (a `dev`-only dependency otherwise)
+# is absent from the one artifact that actually ships.
+RUN pip install --no-cache-dir --prefix=/opt/python ".[observability,stripe]"
 
 FROM base AS dev
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*

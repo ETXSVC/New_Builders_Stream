@@ -5,13 +5,31 @@
 # Two deliberate properties, documented so they aren't "fixed" casually:
 #
 # 1. Only the frontend is routed. The Next.js BFF proxies every product
-#    request server-side, and while Stripe runs against the fake client
+#    request server-side, so while Stripe runs against the fake client
 #    there is no legitimate external caller of the backend at all — not
-#    routing it removes the forged-webhook surface entirely. When real
-#    Stripe arrives, add:
-#        handle /webhooks/stripe* {
-#            reverse_proxy backend:8000
-#        }
+#    routing it removes the forged-webhook surface entirely.
+#
+#    This stays closed by default even now that RealStripeClient exists,
+#    because the two are not the same decision: the SDK ships in the image
+#    and the client is selected by STRIPE_API_KEY, but a deployment still
+#    on the fake gains nothing from a publicly reachable webhook receiver
+#    and would be handing out an unauthenticated POST surface for free.
+#
+#    Uncomment this block at the same time you set STRIPE_API_KEY — the two
+#    go together, and neither is useful alone (Stripe cannot deliver events
+#    to an unrouted endpoint, and an unconfigured deployment does not want
+#    the route). See docs/11-production-deployment.md §"Turning on real
+#    Stripe billing".
+#
+#	handle /webhooks/stripe* {
+#		reverse_proxy backend:8000
+#	}
+#
+#    The receiver is not left unprotected by this: POST /webhooks/stripe
+#    verifies Stripe's own `t=...,v1=...` HMAC over the raw body and
+#    enforces a 5-minute replay window before touching the database
+#    (app/services/stripe_client.py). Routing decides who can reach it;
+#    the signature decides who is believed.
 #
 # 2. No trusted_proxies directive. Caddy's default DISCARDS any
 #    client-supplied X-Forwarded-For and sets its own — that spoof-safety

@@ -11,10 +11,10 @@ split stacks under `deploy/split/`.
 Topology: **browser → Caddy (80/443, the only published ports) → Next.js
 frontend (BFF) → FastAPI backend → Postgres/Redis**. The backend, worker,
 scheduler, Postgres, and Redis have no published ports. The backend is not
-routed by Caddy at all — the BFF proxies every product request, and until
-real Stripe credentials exist there is no legitimate external caller of
-`/webhooks/stripe` (see `deploy/Caddyfile` for the two-line addition when
-that changes).
+routed by Caddy at all — the BFF proxies every product request, and a
+deployment still on the fake Stripe client has no legitimate external caller
+of `/webhooks/stripe`. Turning on real billing is what opens that one route;
+both halves are §6a.
 
 ---
 
@@ -79,7 +79,8 @@ is loud, not silent.
 | `MIGRATIONS_DATABASE_URL` | `postgresql+asyncpg://postgres:<POSTGRES_PASSWORD>@postgres:5432/builders_stream` (the prod compose also overrides this per-service with the same value) |
 | `JWT_SECRET` | `openssl rand -hex 32` |
 | `INTEGRATION_TOKEN_ENCRYPTION_KEY` | `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
-| `STRIPE_WEBHOOK_SECRET` | `openssl rand -hex 32` |
+| `STRIPE_WEBHOOK_SECRET` | Stripe's own signing secret (`whsec_...`) from the webhook endpoint you create, once real billing is on; otherwise `openssl rand -hex 32` |
+| `STRIPE_API_KEY` | leave unset unless you are turning on real billing — see §6a. Unset means the in-memory fake and no money movement |
 | `FRONTEND_BASE_URL` | `https://<SITE_ADDRESS>` |
 | `TEST_DATABASE_URL` | any valid URL — a required Settings field, unused in production; reuse the `MIGRATIONS_DATABASE_URL` value |
 | `REDIS_URL` | `redis://redis:6379/0` |
@@ -340,6 +341,51 @@ applying Stripe's `status` to that subscription — otherwise the next routine
 event would revert you. That means the row can then disagree with Stripe
 indefinitely. Clear the override when the manual intervention is over.
 
+## 6a. Turning on real Stripe billing
+
+Until you do this, the platform runs on `FakeStripeClient`: registrations
+get a trial subscription, the portal returns a fake URL, and **no money
+moves**. The switch is one variable, and nothing infers it — not `APP_ENV`,
+not whether the other Stripe settings happen to be filled in.
+
+The image already carries the SDK (`backend/Dockerfile` installs the
+`stripe` extra), so this is configuration and a restart, not a rebuild.
+
+1. **In Stripe**, create one recurring Price per tier, and — if you bill for
+   seats beyond a tier's allowance — one **licensed per-unit** Price for
+   overage. It must not be a metered Price: the nightly job
+   (`app/tasks/seat_usage.py`) reports a fresh full snapshot of the overage
+   every run and `report_seat_usage` *sets* that item's quantity, so a
+   metered Price (which accumulates within a period) would bill roughly 30×
+   by month end.
+2. **Create the webhook endpoint** pointing at
+   `https://<SITE_ADDRESS>/webhooks/stripe`, subscribed to
+   `customer.subscription.updated`, `customer.subscription.deleted` and
+   `invoice.payment_failed`. Copy its signing secret into
+   `STRIPE_WEBHOOK_SECRET`.
+3. **Open the route.** `deploy/Caddyfile` does not route the backend at all
+   by default; uncomment its `handle /webhooks/stripe*` block. Stripe cannot
+   deliver to an unrouted endpoint, and this is the only path from the
+   internet to the backend — the BFF proxies everything else.
+4. **Set the variables** in `.env`:
+   `STRIPE_API_KEY`, `STRIPE_PRICE_ID_STARTER`, `STRIPE_PRICE_ID_PRO`,
+   `STRIPE_PRICE_ID_ENTERPRISE`, and optionally
+   `STRIPE_SEAT_OVERAGE_PRICE_ID` / `STRIPE_PORTAL_RETURN_URL` (the latter
+   defaults to `FRONTEND_BASE_URL`).
+5. **Restart** `backend`, `worker` and `scheduler`.
+
+**It fails at boot, on purpose.** With `STRIPE_API_KEY` set, a missing tier
+Price or a missing `httpx` refuses to start the process rather than serving
+traffic that 500s at the first registration. A `sk_test_...` key under
+`APP_ENV=production` is also refused — a test key makes every call succeed
+and charges nothing, which is the failure you would otherwise find a
+billing cycle later.
+
+**Verify** by registering a throwaway company and confirming a real Customer
+and a trialing Subscription appear in the Stripe dashboard, then that a
+`customer.subscription.updated` event delivers 200 (Stripe's dashboard shows
+delivery attempts per endpoint).
+
 ## 7. Incident basics
 
 - **Logs**: `docker compose -f docker-compose.prod.yml logs -f backend`
@@ -530,7 +576,7 @@ the OpenAPI snapshot workflow guarantees backward-compatible reads).
 | PostHog | Product analytics, needs an account decision. |
 | Nonce-based strict CSP | Current CSP allows `'unsafe-inline'` scripts (Next.js bootstrap); a nonce pipeline removes it. |
 | WAL archiving / pgBackRest | Only if RPO must shrink below 24h; adds archive monitoring burden. |
-| Real Stripe/QuickBooks/FreshBooks clients | Needs credentials; on Stripe arrival, route `/webhooks/stripe` in the Caddyfile and use Stripe's own `t=...,v1=...` signature scheme (timestamp/replay protection) in a `RealStripeClient`. |
+| Real QuickBooks/FreshBooks clients | Needs credentials. `app/services/accounting_client.py` still has only the Protocol and the fake, so accounting sync moves no data. (Stripe is done — see §6a.) |
 | Worker healthcheck | No HTTP surface today; would need a heartbeat file or queue-depth probe. |
 
 ## 10. Monitoring & alerting (Prometheus + Grafana)

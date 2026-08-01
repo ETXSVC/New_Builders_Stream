@@ -19,6 +19,55 @@ def _sign(payload: bytes) -> str:
     return get_stripe_client().sign(payload)
 
 
+# --- Where current_period_end lives in the event payload ------------------
+#
+# Stripe moved it off the subscription object and onto each subscription
+# item in API version 2025-03-31.basil. Which shape arrives depends on the
+# API version pinned to the webhook endpoint in the Stripe dashboard — not
+# something this codebase controls, and changeable without a deploy, so the
+# handler accepts both. Reading only the old location would leave
+# current_period_end frozen at whatever registration wrote, silently.
+
+
+def test_period_end_reads_the_legacy_top_level_field():
+    from app.routers.webhooks import _period_end_of_event_object
+
+    assert _period_end_of_event_object({"current_period_end": 1900000000}) == 1900000000
+
+
+def test_period_end_reads_the_subscription_item_when_the_top_level_field_is_gone():
+    from app.routers.webhooks import _period_end_of_event_object
+
+    obj = {"items": {"data": [{"current_period_end": 1900000000}]}}
+    assert _period_end_of_event_object(obj) == 1900000000
+
+
+def test_period_end_takes_the_latest_item_when_items_bill_on_different_cycles():
+    """Which is why the field moved in the first place. The subscription is
+    paid up until the last item lapses, and this column gates
+    block_if_read_only."""
+    from app.routers.webhooks import _period_end_of_event_object
+
+    obj = {
+        "items": {
+            "data": [
+                {"current_period_end": 1800000000},
+                {"current_period_end": 1900000000},
+            ]
+        }
+    }
+    assert _period_end_of_event_object(obj) == 1900000000
+
+
+def test_period_end_is_none_when_the_payload_carries_neither():
+    from app.routers.webhooks import _period_end_of_event_object
+
+    # None means "leave the column alone", which _sync_subscription already
+    # does — not "write NULL over a real period end".
+    assert _period_end_of_event_object({}) is None
+    assert _period_end_of_event_object({"items": {"data": []}}) is None
+
+
 async def _register_and_get_subscription_id(client, email="webhook-admin@wh.test"):
     response = await client.post(
         "/auth/register",
