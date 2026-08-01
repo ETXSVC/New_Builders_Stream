@@ -42,6 +42,32 @@ test("register, land on dashboard, see MFA nudge on account, log out, log back i
     await expect(page).toHaveURL(/\/login/);
   });
 
+  await test.step("the login form offers a way out of a forgotten password", async () => {
+    // The whole plumbing in one click-through: page -> BFF -> backend ->
+    // 202. What it cannot cover is redeeming the link, because the token
+    // exists only in an email and CI has no mailbox to read — the backend
+    // suite owns that half (tests/test_password_reset.py).
+    // Explicit goto first: the log-out step above ends in a client-side
+    // push to /login, and clicking into a second navigation while that one
+    // is still settling lets the push land last — putting the browser back
+    // on /login with the click apparently ignored.
+    await page.goto("/login");
+    await page.getByRole("link", { name: "Forgot your password?" }).click();
+    await expect(page).toHaveURL(/\/forgot-password/, { timeout: 15_000 });
+
+    // A DELIBERATELY UNREGISTERED address. The confirmation must be the
+    // same either way, because a page that says "no account with that
+    // email" is an enumeration oracle however careful the API was.
+    await page.getByLabel("Email").fill(`nobody-${uniqueSuffix}@nowhere.example`);
+    await page.getByRole("button", { name: "Send reset link" }).click();
+    await expect(page.getByText(/If that address has an account/)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole("link", { name: /Back to log in/ }).click();
+    await expect(page).toHaveURL(/\/login/);
+  });
+
   await test.step("log back in", async () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill(password);

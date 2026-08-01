@@ -17,6 +17,8 @@ from app.schemas.auth import (
     MfaActivateRequest,
     MfaDisableRequest,
     MfaEnrollResponse,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
@@ -24,7 +26,14 @@ from app.schemas.auth import (
 )
 from app.services.audit import write_audit_log
 from app.services.billing import TIER_INCLUDED_SEATS, get_stripe_client
+from app.services.email_sender import sender_name_for
 from app.services.mfa import generate_enrollment, verify_totp_code
+from app.services.password_reset import (
+    RESET_TOKEN_TTL,
+    PasswordResetError,
+    issue_for_email,
+    redeem,
+)
 from app.services.rate_limit import check_rate_limit
 from app.services.refresh_tokens import (
     RefreshTokenError,
@@ -35,6 +44,7 @@ from app.services.refresh_tokens import (
     revoke_family,
     rotate_refresh_token,
 )
+from app.tasks.send_password_reset_email import send_password_reset_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -453,6 +463,142 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
             ),
             role=membership.role,
         )
+
+
+@router.post("/password-reset/request", status_code=status.HTTP_202_ACCEPTED)
+async def request_password_reset(payload: PasswordResetRequest, request: Request) -> dict:
+    """Send a reset link, if that address belongs to somebody.
+
+    **Answers 202 either way**, with the same body and no timing tell worth
+    speaking of: whether an address has an account here is exactly the kind
+    of thing a B2B competitor would enumerate, and it is the same reason
+    `login` verifies a dummy hash for unknown emails.
+
+    Rate limited on the login limiter's counters rather than new ones. The
+    two endpoints protect the same asset from the same attacker, and a
+    separate budget for this one would simply be the cheaper door: mailbombing
+    a known address costs nothing, and the reset mail is sent by us, from our
+    reputation.
+
+    Nothing is enqueued inside the transaction — `session_scope()` commits
+    first, and only then does the message go to Redis. A rollback after the
+    enqueue would mean a live-looking link whose token row does not exist,
+    which is the enqueued-before-commit hazard `app/core/after_commit.py`
+    exists to avoid elsewhere.
+    """
+    await _enforce_login_rate_limits(request, payload.email)
+
+    message: dict | None = None
+    async with session_scope() as session:
+        issued = await issue_for_email(session, payload.email)
+        if issued is not None:
+            user, secret = issued
+            # The company on the invitation is cosmetic — the reset is for
+            # the ACCOUNT, which may belong to several companies. The first
+            # membership names one of them so the mail reads like it came
+            # from somewhere the recipient recognises.
+            # Reading which company this account belongs to takes the same
+            # two-step dance the invitation-accept flow does, and for the
+            # same reason: nothing is scoped yet. `company_users` is
+            # readable via its `self_membership` policy once
+            # `app.current_user_id` is set, and only THEN does the company
+            # row (and its branding) come into view under a tenant. Without
+            # this, both queries return nothing and the mail goes out
+            # nameless — which is how this was first written.
+            await set_current_user(session, str(user.id))
+            company_id = await session.scalar(
+                select(CompanyUser.company_id)
+                .where(CompanyUser.user_id == user.id)
+                .order_by(CompanyUser.created_at)
+                .limit(1)
+            )
+            company_name = "your team"
+            from_name = None
+            if company_id is not None:
+                await set_current_tenant(session, str(company_id))
+                company_name = (
+                    await session.scalar(select(Company.name).where(Company.id == company_id))
+                    or "your team"
+                )
+                # The same per-tenant sender name the rest of this
+                # company's mail goes out under (migration 0027).
+                from_name = await sender_name_for(session, company_id, company_name)
+            message = {
+                "to_email": user.email,
+                "company_name": company_name,
+                "reset_url": f"{settings.frontend_base_url}/reset-password?token={secret}",
+                "expires_in_minutes": int(RESET_TOKEN_TTL.total_seconds() // 60),
+                "from_name": from_name,
+            }
+        await session.commit()
+
+    if message is not None:
+        send_password_reset_email.send(**message)
+
+    return {"status": "accepted"}
+
+
+@router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
+async def confirm_password_reset(payload: PasswordResetConfirmRequest) -> None:
+    """Spend a reset link and set the new password.
+
+    Three things happen together or not at all: the token is marked used,
+    the password is rewritten, and **every refresh token the user holds is
+    revoked**. That last one is the point of a reset rather than a
+    convenience — somebody resetting their password is often doing it
+    because they think a session is not theirs any more, and leaving those
+    sessions alive would answer the wrong question.
+
+    MFA still applies. An account with a second factor active must present
+    a code here too, or a reset by email would quietly turn two factors
+    into one — the inbox — which is the failure the second factor exists to
+    survive. Same ordering as `login` and `change-password`: only past the
+    token check, so nothing here discloses MFA status to somebody holding a
+    guessed token.
+
+    One 400 for unknown, expired and already-spent tokens alike, matching
+    `refresh`'s single 401: an attacker must not learn which of the three
+    they hit.
+    """
+    async with session_scope() as session:
+        try:
+            user = await redeem(session, payload.token)
+        except PasswordResetError:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "This reset link is no longer valid. Request a new one.",
+            )
+
+        if user.mfa_activated_at is not None:
+            if payload.totp_code is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "TOTP code required")
+            if not verify_totp_code(user, payload.totp_code):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid TOTP code")
+
+        user.password_hash = hash_password(payload.new_password)
+        await revoke_all_for_user(session, user.id)
+
+        # Audited into the first company this account belongs to. An audit
+        # row needs a tenant and a reset has no active one; the alternative
+        # — writing none — would leave a password change as the only
+        # security-relevant act in the product with no trace at all.
+        company_id = await session.scalar(
+            select(CompanyUser.company_id)
+            .where(CompanyUser.user_id == user.id)
+            .order_by(CompanyUser.created_at)
+            .limit(1)
+        )
+        if company_id is not None:
+            await write_audit_log(
+                session,
+                company_id=company_id,
+                actor_id=user.id,
+                action="auth.password_reset",
+                entity_type="user",
+                entity_id=user.id,
+            )
+
+        await session.commit()
 
 
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)

@@ -155,6 +155,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/password-reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Password Reset
+         * @description Spend a reset link and set the new password.
+         *
+         *     Three things happen together or not at all: the token is marked used,
+         *     the password is rewritten, and **every refresh token the user holds is
+         *     revoked**. That last one is the point of a reset rather than a
+         *     convenience — somebody resetting their password is often doing it
+         *     because they think a session is not theirs any more, and leaving those
+         *     sessions alive would answer the wrong question.
+         *
+         *     MFA still applies. An account with a second factor active must present
+         *     a code here too, or a reset by email would quietly turn two factors
+         *     into one — the inbox — which is the failure the second factor exists to
+         *     survive. Same ordering as `login` and `change-password`: only past the
+         *     token check, so nothing here discloses MFA status to somebody holding a
+         *     guessed token.
+         *
+         *     One 400 for unknown, expired and already-spent tokens alike, matching
+         *     `refresh`'s single 401: an attacker must not learn which of the three
+         *     they hit.
+         */
+        post: operations["confirm_password_reset_auth_password_reset_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-reset/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Password Reset
+         * @description Send a reset link, if that address belongs to somebody.
+         *
+         *     **Answers 202 either way**, with the same body and no timing tell worth
+         *     speaking of: whether an address has an account here is exactly the kind
+         *     of thing a B2B competitor would enumerate, and it is the same reason
+         *     `login` verifies a dummy hash for unknown emails.
+         *
+         *     Rate limited on the login limiter's counters rather than new ones. The
+         *     two endpoints protect the same asset from the same attacker, and a
+         *     separate budget for this one would simply be the cheaper door: mailbombing
+         *     a known address costs nothing, and the reset mail is sent by us, from our
+         *     reputation.
+         *
+         *     Nothing is enqueued inside the transaction — `session_scope()` commits
+         *     first, and only then does the message go to Redis. A rollback after the
+         *     enqueue would mean a live-looking link whose token row does not exist,
+         *     which is the enqueued-before-commit hazard `app/core/after_commit.py`
+         *     exists to avoid elsewhere.
+         */
+        post: operations["request_password_reset_auth_password_reset_request_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -5390,6 +5465,37 @@ export interface components {
             status: string;
         };
         /**
+         * PasswordResetConfirmRequest
+         * @description Spending the link.
+         *
+         *     `totp_code` is required when the account has MFA active, and checked in
+         *     the route rather than here, matching `ChangePasswordRequest`. Without
+         *     it, a reset by email would quietly downgrade a two-factor account to
+         *     one factor — the inbox — which is precisely the thing the second factor
+         *     exists to survive.
+         */
+        PasswordResetConfirmRequest: {
+            /** New Password */
+            new_password: string;
+            /** Token */
+            token: string;
+            /** Totp Code */
+            totp_code?: string | null;
+        };
+        /**
+         * PasswordResetRequest
+         * @description Asking for a reset link. Just the address — deliberately nothing
+         *     else, so there is nothing here whose validation could differ between a
+         *     registered address and an unregistered one.
+         */
+        PasswordResetRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
+        };
+        /**
          * PhaseCreateRequest
          * @description Body for `POST /projects/{id}/phases` (Task 1.14).
          */
@@ -6685,6 +6791,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MfaEnrollResponse"];
+                };
+            };
+        };
+    };
+    confirm_password_reset_auth_password_reset_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_password_reset_auth_password_reset_request_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

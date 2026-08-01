@@ -32,6 +32,29 @@ class ChangePasswordRequest(BaseModel):
     totp_code: str | None = None
 
 
+class PasswordResetRequest(BaseModel):
+    """Asking for a reset link. Just the address — deliberately nothing
+    else, so there is nothing here whose validation could differ between a
+    registered address and an unregistered one."""
+
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    """Spending the link.
+
+    `totp_code` is required when the account has MFA active, and checked in
+    the route rather than here, matching `ChangePasswordRequest`. Without
+    it, a reset by email would quietly downgrade a two-factor account to
+    one factor — the inbox — which is precisely the thing the second factor
+    exists to survive.
+    """
+
+    token: str
+    new_password: str = Field(..., min_length=8)
+    totp_code: str | None = None
+
+
 class MfaEnrollResponse(BaseModel):
     secret: str
     otpauth_uri: str

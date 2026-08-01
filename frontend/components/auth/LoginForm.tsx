@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -125,6 +126,17 @@ export function LoginForm() {
       <Button type="submit" disabled={submitting}>
         {needsTotp ? "Verify" : "Log in"}
       </Button>
+      {/* Hidden during the TOTP step: at that point the password was
+          already accepted, so offering to reset it is the wrong next
+          action. */}
+      {!needsTotp && (
+        <Link
+          href="/forgot-password"
+          className="self-start text-sm text-slate-600 hover:text-slate-900"
+        >
+          Forgot your password?
+        </Link>
+      )}
     </form>
   );
 }
