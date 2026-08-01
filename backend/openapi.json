@@ -4488,6 +4488,52 @@
         "title": "MyTaskResponse",
         "type": "object"
       },
+      "PasswordResetConfirmRequest": {
+        "description": "Spending the link.\n\n`totp_code` is required when the account has MFA active, and checked in\nthe route rather than here, matching `ChangePasswordRequest`. Without\nit, a reset by email would quietly downgrade a two-factor account to\none factor \u2014 the inbox \u2014 which is precisely the thing the second factor\nexists to survive.",
+        "properties": {
+          "new_password": {
+            "minLength": 8,
+            "title": "New Password",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "totp_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totp Code"
+          }
+        },
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "title": "PasswordResetConfirmRequest",
+        "type": "object"
+      },
+      "PasswordResetRequest": {
+        "description": "Asking for a reset link. Just the address \u2014 deliberately nothing\nelse, so there is nothing here whose validation could differ between a\nregistered address and an unregistered one.",
+        "properties": {
+          "email": {
+            "format": "email",
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "PasswordResetRequest",
+        "type": "object"
+      },
       "PhaseCreateRequest": {
         "description": "Body for `POST /projects/{id}/phases` (Task 1.14).",
         "properties": {
@@ -7006,6 +7052,85 @@
           }
         },
         "summary": "Mfa Enroll",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/password-reset/confirm": {
+      "post": {
+        "description": "Spend a reset link and set the new password.\n\nThree things happen together or not at all: the token is marked used,\nthe password is rewritten, and **every refresh token the user holds is\nrevoked**. That last one is the point of a reset rather than a\nconvenience \u2014 somebody resetting their password is often doing it\nbecause they think a session is not theirs any more, and leaving those\nsessions alive would answer the wrong question.\n\nMFA still applies. An account with a second factor active must present\na code here too, or a reset by email would quietly turn two factors\ninto one \u2014 the inbox \u2014 which is the failure the second factor exists to\nsurvive. Same ordering as `login` and `change-password`: only past the\ntoken check, so nothing here discloses MFA status to somebody holding a\nguessed token.\n\nOne 400 for unknown, expired and already-spent tokens alike, matching\n`refresh`'s single 401: an attacker must not learn which of the three\nthey hit.",
+        "operationId": "confirm_password_reset_auth_password_reset_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Password Reset",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/password-reset/request": {
+      "post": {
+        "description": "Send a reset link, if that address belongs to somebody.\n\n**Answers 202 either way**, with the same body and no timing tell worth\nspeaking of: whether an address has an account here is exactly the kind\nof thing a B2B competitor would enumerate, and it is the same reason\n`login` verifies a dummy hash for unknown emails.\n\nRate limited on the login limiter's counters rather than new ones. The\ntwo endpoints protect the same asset from the same attacker, and a\nseparate budget for this one would simply be the cheaper door: mailbombing\na known address costs nothing, and the reset mail is sent by us, from our\nreputation.\n\nNothing is enqueued inside the transaction \u2014 `session_scope()` commits\nfirst, and only then does the message go to Redis. A rollback after the\nenqueue would mean a live-looking link whose token row does not exist,\nwhich is the enqueued-before-commit hazard `app/core/after_commit.py`\nexists to avoid elsewhere.",
+        "operationId": "request_password_reset_auth_password_reset_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Request Password Reset Auth Password Reset Request Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Password Reset",
         "tags": [
           "auth"
         ]

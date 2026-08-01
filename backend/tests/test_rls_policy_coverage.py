@@ -56,7 +56,14 @@ TENANT_SCOPING_FUNCTIONS = ("get_all_descendant_ids", "get_root_company_id")
 #       themselves (always by email or by the authenticated user's own id),
 #       not by RLS.
 #   alembic_version — Alembic's own bookkeeping, one row, no tenant data.
-NON_TENANT_TABLES = frozenset({"users", "refresh_tokens", "alembic_version"})
+# `password_reset_tokens` joins users/refresh_tokens here for the same
+# reason (migration 0028): a reset is requested with no session, no
+# X-Tenant-ID and no membership resolved, so there is no tenant to scope
+# the row to. The credential is protected by being a hash of a secret that
+# lives in one email, not by a policy.
+NON_TENANT_TABLES = frozenset(
+    {"users", "refresh_tokens", "password_reset_tokens", "alembic_version"}
+)
 
 # Permissive policies that intentionally grant access on a basis *other*
 # than the tenant tree. Each widens what the `tenant_isolation` policy on

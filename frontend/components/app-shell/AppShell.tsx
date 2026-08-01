@@ -7,7 +7,20 @@ import { Nav } from "@/components/app-shell/Nav";
 
 // Pre-auth screens that live inside the (app) route group (they need its
 // Tailwind globals and AuthProvider) but must not show the app chrome.
-const PRE_AUTH_PATHS = ["/login", "/register", "/accept-invitation"];
+// `/forgot-password` and `/reset-password` are here for the reason the
+// whole list exists, and they are the two that prove it matters: a person
+// following a reset link from their inbox has, by definition, no session —
+// so without this entry the shell would replace the page with /login the
+// moment hydration confirmed that, and the feature would be unreachable
+// for exactly the people it is for. Caught by e2e/foundation.spec.ts, not
+// by review.
+const PRE_AUTH_PATHS = [
+  "/login",
+  "/register",
+  "/accept-invitation",
+  "/forgot-password",
+  "/reset-password",
+];
 
 // Mounts the shared Nav above every authenticated app screen. Rendered by
 // the (app) layout so role-landing pages (field_crew → /my-tasks, client →
