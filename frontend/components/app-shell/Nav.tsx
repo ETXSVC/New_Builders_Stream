@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { CompanySwitcher } from "@/components/app-shell/CompanySwitcher";
 
 export function Nav({ companyId }: { companyId: string }) {
   const router = useRouter();
@@ -47,9 +48,14 @@ export function Nav({ companyId }: { companyId: string }) {
     // sideways. Wrapping absorbs the next link too; truncating stops a
     // long tenant name doing the same thing on its own.
     <header className="border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
-      <span className="font-semibold truncate max-w-[16rem]">
-        {companyName ?? "Builders Stream"}
-      </span>
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="font-semibold truncate max-w-[16rem]">
+          {companyName ?? "Builders Stream"}
+        </span>
+        {/* Renders nothing unless the user belongs to more than one
+            company, which is most of them. */}
+        <CompanySwitcher />
+      </div>
       <div className="flex flex-wrap items-center gap-4">
         {(role === "admin" || role === "project_manager") && (
           <Link href="/leads" className="text-sm text-slate-600 hover:text-slate-900">

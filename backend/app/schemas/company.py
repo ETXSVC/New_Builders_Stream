@@ -43,6 +43,29 @@ class CompanyMemberResponse(BaseModel):
     profession: str | None = None
 
 
+class MembershipResponse(BaseModel):
+    """One company the caller belongs to, for the company switcher."""
+
+    company_id: uuid.UUID
+    company_name: str
+    role: str
+    # Present so a switcher can show a branch under its parent rather than
+    # as a flat list — the hierarchy is the whole reason a user has more
+    # than one of these.
+    parent_id: uuid.UUID | None
+    # Which one the caller is currently acting as. Server-side rather than
+    # left to the client to work out, because the client's idea of the
+    # active tenant comes from decoding a JWT it should not have to parse.
+    is_active: bool
+
+
+class MembershipListResponse(BaseModel):
+    """Not paginated: this is bounded by how many companies one person
+    works for, which is a small number by construction."""
+
+    memberships: list[MembershipResponse]
+
+
 class CompanyMemberListResponse(BaseModel):
     """Not paginated: a company's member count is seat-bounded (billing's
     included_seats model), far below any size needing cursors."""

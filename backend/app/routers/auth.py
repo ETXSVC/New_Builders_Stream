@@ -22,6 +22,7 @@ from app.schemas.auth import (
     RefreshRequest,
     RegisterRequest,
     RegisterResponse,
+    SwitchCompanyRequest,
     TokenResponse,
 )
 from app.services.audit import write_audit_log
@@ -227,6 +228,48 @@ async def _default_membership(session, user_id) -> CompanyUser | None:
     return result.scalars().first()
 
 
+async def _membership_in(session, user_id, company_id) -> CompanyUser | None:
+    """One specific membership, or None. Same `is_company_live` filter as
+    `_default_membership`, so a company the platform console has taken out
+    of service is not switchable to — consistent with not being signable-in
+    to."""
+    await set_current_user(session, str(user_id))
+    result = await session.execute(
+        select(CompanyUser).where(
+            CompanyUser.user_id == user_id,
+            CompanyUser.company_id == company_id,
+            func.is_company_live(CompanyUser.company_id),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _active_membership(session, user_id, active_company_id) -> CompanyUser | None:
+    """The membership a freshly-minted token should name.
+
+    Extends spec Decision 9 rather than breaking it. The rule was "login and
+    refresh must resolve the same company for the same user", whose point is
+    that a session must not change company underneath the person using it.
+    Once a user can belong to more than one company (migration 0031), the
+    default membership stops being the only correct answer — the company
+    they SWITCHED to is — and re-deriving the default on every rotation is
+    what would now violate the rule, by silently moving them back roughly
+    every fourteen minutes.
+
+    So the source moves to `refresh_tokens.active_company_id` and the
+    guarantee is unchanged: one query, both callers, same answer.
+
+    Falls back to the default rather than failing when the recorded company
+    is no longer a live membership — being removed from a company you are
+    currently acting as should return you to your own default, not sign you
+    out of the product."""
+    if active_company_id is not None:
+        membership = await _membership_in(session, user_id, active_company_id)
+        if membership is not None:
+            return membership
+    return await _default_membership(session, user_id)
+
+
 async def _no_membership_detail(session, user_id) -> str:
     """Why this user has no usable membership — "none" or "all retired".
 
@@ -429,7 +472,12 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
         except RefreshTokenError:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
 
-        membership = await _default_membership(session, old_row.user_id)
+        # The company this session switched to, if any — carried forward by
+        # rotate_refresh_token onto the successor row, so it survives every
+        # rotation rather than reverting to the default one refresh later.
+        membership = await _active_membership(
+            session, old_row.user_id, old_row.active_company_id
+        )
         if membership is None:
             # Same outcome login gives a membership-less user. The
             # rotation rolls back with the session (never committed),
@@ -451,6 +499,103 @@ async def refresh(payload: RefreshRequest, response: Response) -> TokenResponse:
 
         await session.commit()
         # RFC 6749 §5.1: responses carrying tokens must not be cached.
+        response.headers["Cache-Control"] = "no-store"
+        return TokenResponse(
+            access_token=create_access_token(
+                user_id=str(old_row.user_id), default_company_id=str(membership.company_id)
+            ),
+            refresh_token=new_secret,
+            default_company_id=membership.company_id,
+            mfa_enrollment_required=(
+                membership.role == "admin" and user.mfa_activated_at is None
+            ),
+            role=membership.role,
+        )
+
+
+@router.post("/switch-company", response_model=TokenResponse)
+async def switch_company(payload: SwitchCompanyRequest, response: Response) -> TokenResponse:
+    """Act as a different company you are a member of (migration 0031).
+
+    Re-mints the session rather than asking the browser to start sending an
+    `X-Tenant-ID` header. `get_current_user` accepts either, but the header
+    would have to be threaded through all 88 Next route handlers, exactly
+    one of which forwards it today — and a handler that forgot would read
+    the wrong company's data silently. Putting the active company in the
+    token instead leaves ONE source of truth that cannot disagree with
+    itself, and no route handler has to know this feature exists.
+
+    Membership is verified before the token is rotated, so switching to a
+    company you do not belong to costs a 403 and nothing else. Rotating
+    first would spend the caller's refresh token on a typo and sign them
+    out. The check is skipped for a token that is not currently valid, so a
+    spent or unknown token still falls through to `rotate_refresh_token` and
+    its reuse detection rather than being answered from here.
+    """
+    async with session_scope() as session:
+        row = await find_by_secret(session, payload.refresh_token)
+        token_is_live = (
+            row is not None
+            and row.revoked_at is None
+            and row.replaced_by_id is None
+            and row.expires_at > utcnow()
+        )
+        if token_is_live:
+            assert row is not None  # narrowed by token_is_live
+            if await _membership_in(session, row.user_id, payload.company_id) is None:
+                # 403, not 404: the caller is authenticated and the answer
+                # does not depend on whether the company exists, so this
+                # cannot be used to probe for company ids.
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN, "You are not a member of that company"
+                )
+
+        try:
+            old_row, new_secret = await rotate_refresh_token(
+                session, payload.refresh_token, active_company_id=payload.company_id
+            )
+        except RefreshTokenReuseError as exc:
+            membership = await _default_membership(session, exc.user_id)
+            if membership is not None:
+                await set_current_tenant(session, str(membership.company_id))
+                await write_audit_log(
+                    session,
+                    company_id=membership.company_id,
+                    actor_id=exc.user_id,
+                    action="auth.refresh_reuse_detected",
+                    entity_type="refresh_token",
+                    entity_id=exc.family_id,
+                    metadata={"family_id": str(exc.family_id)},
+                )
+            await session.commit()
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+        except RefreshTokenError:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
+
+        membership = await _membership_in(session, old_row.user_id, payload.company_id)
+        if membership is None:
+            # Only reachable when the token was NOT live above (so the check
+            # was skipped) and rotation still succeeded — a narrow race, not
+            # an expected path. Fail closed rather than mint a token for a
+            # company with no membership behind it.
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "You are not a member of that company"
+            )
+
+        user_result = await session.execute(select(User).where(User.id == old_row.user_id))
+        user = user_result.scalar_one()
+
+        await set_current_tenant(session, str(membership.company_id))
+        await write_audit_log(
+            session,
+            company_id=membership.company_id,
+            actor_id=old_row.user_id,
+            action="auth.company_switched",
+            entity_type="company",
+            entity_id=membership.company_id,
+        )
+
+        await session.commit()
         response.headers["Cache-Control"] = "no-store"
         return TokenResponse(
             access_token=create_access_token(

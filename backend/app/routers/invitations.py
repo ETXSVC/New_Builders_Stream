@@ -6,7 +6,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.core.deps import CurrentUser, block_if_read_only, require_role
+from app.core.deps import (
+    CurrentUser,
+    block_if_read_only,
+    optional_authenticated_user_id,
+    require_role,
+)
 from app.core.security import hash_password
 from app.db import session_scope, set_current_tenant, set_invitation_probe
 from app.models import Company, CompanyUser, Invitation, User
@@ -82,7 +87,16 @@ async def create_invitation(
 
 
 @router.post("/{invitation_id}/accept", response_model=InvitationResponse)
-async def accept_invitation(invitation_id: uuid.UUID, payload: InvitationAcceptRequest) -> InvitationResponse:
+async def accept_invitation(
+    invitation_id: uuid.UUID, payload: InvitationAcceptRequest
+) -> InvitationResponse:
+    """Still unauthenticated for the case it was built for — a brand-new
+    user has no session — but it now reads a bearer token when one IS
+    present, because an invited address that already has an account can
+    only be attached to a second company by someone who proves they own
+    it. Read directly rather than via a dependency so the route keeps
+    working with no Authorization header at all."""
+    authenticated_user_id = optional_authenticated_user_id()
     async with session_scope() as session:
         async with session.begin():
             # Invitation acceptance happens before the invitee has any tenant
@@ -117,16 +131,71 @@ async def accept_invitation(invitation_id: uuid.UUID, payload: InvitationAcceptR
             if invitation.expires_at < datetime.now(timezone.utc):
                 raise HTTPException(status.HTTP_410_GONE, "Invitation has expired")
 
-            user = User(
-                email=invitation.email,
-                password_hash=hash_password(payload.password),
-                full_name=payload.full_name,
+            # `users` has no RLS, so this global lookup by email is
+            # legitimate and is the same one registration does.
+            existing = await session.scalar(
+                select(User).where(User.email == invitation.email)
             )
-            session.add(user)
-            try:
-                await session.flush()
-            except IntegrityError:
-                raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+
+            if existing is None:
+                if not payload.password or not payload.full_name:
+                    # Optional in the schema because the existing-account
+                    # branch below ignores them; required HERE, because a
+                    # new account cannot be created without them.
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        "full_name and password are required to create a new account",
+                    )
+                user = User(
+                    email=invitation.email,
+                    password_hash=hash_password(payload.password),
+                    full_name=payload.full_name,
+                )
+                session.add(user)
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    # Lost a race with a concurrent registration for the same
+                    # address between the lookup above and this flush.
+                    raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
+            else:
+                # An existing account joining a second company (migration
+                # 0031). Until now this returned 409 and multi-company
+                # membership was unreachable.
+                #
+                # THIS BRANCH MUST NEVER TOUCH THE PASSWORD. Anyone holding
+                # the invitation link controls `payload`, and the address is
+                # chosen by whoever sent the invitation — so honouring a
+                # supplied password here would let someone invite
+                # victim@example.com, click their own link, and set the
+                # password on an account that already exists, taking over
+                # that user and every company they already belong to. The
+                # invitation grants access TO the inviter's company; it is
+                # not evidence about the invitee's account.
+                #
+                # So the invitee proves they own the account the only way
+                # that means anything: by presenting a valid session for it.
+                # `full_name` is ignored for the same reason — it is their
+                # profile, not the inviter's to rewrite.
+                if authenticated_user_id != existing.id:
+                    raise HTTPException(
+                        status.HTTP_401_UNAUTHORIZED,
+                        "An account already exists for this address — sign in as "
+                        "that account, then open this invitation link again",
+                    )
+                user = existing
+
+                already_member = await session.scalar(
+                    select(CompanyUser.user_id).where(
+                        CompanyUser.company_id == invitation.company_id,
+                        CompanyUser.user_id == user.id,
+                    )
+                )
+                if already_member is not None:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "You are already a member of this company",
+                    )
 
             session.add(CompanyUser(company_id=invitation.company_id, user_id=user.id, role=invitation.role))
             invitation.accepted_at = datetime.now(timezone.utc)

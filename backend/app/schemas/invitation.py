@@ -30,8 +30,21 @@ class InvitationResponse(BaseModel):
 
 
 class InvitationAcceptRequest(BaseModel):
-    full_name: str = Field(..., min_length=2, max_length=255)
-    password: str = Field(..., min_length=8)
+    """Both fields are optional because the route has two callers.
+
+    A brand-new user must supply them — the route enforces that, and still
+    applies the same length rules to what they send. An EXISTING account
+    joining a second company (migration 0031) has a name and a password
+    already, and the route ignores both fields for that path on purpose:
+    honouring a password there would be an account-takeover primitive.
+
+    Making them required in the schema would mean that caller had to invent
+    a throwaway ≥8-character password to have it discarded — validation
+    demanding something the handler refuses to use.
+    """
+
+    full_name: str | None = Field(None, min_length=2, max_length=255)
+    password: str | None = Field(None, min_length=8)
 
 
 class InvitationListResponse(BaseModel):
