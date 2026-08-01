@@ -1253,6 +1253,12 @@
             "title": "Accent Color",
             "type": "string"
           },
+          "email_sender_name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Email Sender Name",
+            "type": "string"
+          },
           "footer_text": {
             "default": "",
             "title": "Footer Text",
@@ -1269,6 +1275,10 @@
         "properties": {
           "accent_color": {
             "title": "Accent Color",
+            "type": "string"
+          },
+          "email_sender_name": {
+            "title": "Email Sender Name",
             "type": "string"
           },
           "footer_text": {
@@ -1290,7 +1300,8 @@
         "required": [
           "logo_storage_path",
           "accent_color",
-          "footer_text"
+          "footer_text",
+          "email_sender_name"
         ],
         "title": "CompanyBrandingResponse",
         "type": "object"

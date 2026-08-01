@@ -81,6 +81,7 @@ from app.core.tier_gating import tier_allows
 from app.models import Company, Subcontractor
 from app.models.compliance_document import ComplianceDocument
 from app.models.compliance_notification import VALID_THRESHOLDS, ComplianceNotification
+from app.services.email_sender import sender_name_for
 from app.tasks import broker  # noqa: F401 - import-time side effect (see estimate_pdf.py's docstring)
 from app.tasks.scanner_db import ScannerSessionLocal
 from app.tasks.send_compliance_expiry_email import send_compliance_expiry_email
@@ -172,6 +173,7 @@ async def _check_compliance_expiry(
         pending_emails: list[dict] = []
         subcontractors: dict = {}
         company_names: dict = {}
+        sender_names: dict = {}
 
         for document in documents:
             allowed = compliance_allowed.get(document.company_id)
@@ -227,6 +229,17 @@ async def _check_compliance_expiry(
                     ).scalar_one_or_none() or "Builders Stream"
                     company_names[document.company_id] = company_name
 
+                # The display name this tenant's mail goes out under
+                # (migration 0027), cached per company like the name above:
+                # this sweep is cross-tenant and a batch can carry hundreds
+                # of documents belonging to a handful of companies.
+                from_name = sender_names.get(document.company_id)
+                if from_name is None:
+                    from_name = await sender_name_for(
+                        session, document.company_id, company_name
+                    )
+                    sender_names[document.company_id] = from_name
+
                 pending_emails.append(
                     {
                         "to_email": subcontractor.contact_email,
@@ -235,6 +248,7 @@ async def _check_compliance_expiry(
                         "doc_type": document.doc_type,
                         "expires_on": document.expires_on.isoformat(),
                         "threshold": threshold,
+                        "from_name": from_name,
                     }
                 )
 

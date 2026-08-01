@@ -3852,6 +3852,11 @@ export interface components {
             /** Accent Color */
             accent_color: string;
             /**
+             * Email Sender Name
+             * @default
+             */
+            email_sender_name: string;
+            /**
              * Footer Text
              * @default
              */
@@ -3861,6 +3866,8 @@ export interface components {
         CompanyBrandingResponse: {
             /** Accent Color */
             accent_color: string;
+            /** Email Sender Name */
+            email_sender_name: string;
             /** Footer Text */
             footer_text: string;
             /** Logo Storage Path */

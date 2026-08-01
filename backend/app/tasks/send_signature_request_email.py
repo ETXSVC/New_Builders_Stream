@@ -34,10 +34,14 @@ async def _send_signature_request_email(
     company_name: str,
     document_type: str,
     document_url: str,
+    # See send_invitation_email.py: defaulted for in-flight messages,
+    # resolved by the enqueuing route.
+    from_name: str | None = None,
 ) -> None:
     label = _DOCUMENT_LABELS.get(document_type, "document")
     client = email_service.get_email_client()
     await client.send(
+        from_name=from_name,
         to=to_email,
         subject=f"{company_name} sent you {'an' if label[0] in 'aeiou' else 'a'} {label} to sign",
         body=(

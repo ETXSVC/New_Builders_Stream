@@ -51,6 +51,10 @@ async def put_branding(
     branding = await _get_or_create_branding(current)
     branding.accent_color = payload.accent_color
     branding.footer_text = payload.footer_text
+    # Stored trimmed: a name that is entirely spaces would otherwise put a
+    # quoted run of whitespace in front of every address this tenant sends
+    # from, which reads as a broken client rather than as "unset".
+    branding.email_sender_name = payload.email_sender_name.strip()
     await current.session.flush()
     return CompanyBrandingResponse.model_validate(branding)
 
