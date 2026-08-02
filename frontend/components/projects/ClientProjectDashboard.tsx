@@ -16,6 +16,14 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
   // Neither `error` is destructured: this card renders nothing at all when
   // both lists are empty, so a failed load must degrade to "nothing awaiting
   // signature" rather than push a banner onto a client's project page.
+  //
+  // A failed walk therefore shows an EMPTY card, not a partial one. The
+  // hand-written loader this replaced returned whatever it had accumulated
+  // before the failure, and that was the worse answer: a client seeing two
+  // of five documents, with nothing saying the list is incomplete, signs
+  // the two and reasonably believes they are done. Empty is legible;
+  // partial-and-silent is not. Deliberate, not an artifact of the
+  // conversion — see PR #125.
   const { items: allEstimates, reload: reloadEstimates } = useCursorAll<{
     id: string;
     total: string | null;
