@@ -18,6 +18,7 @@ from app.routers import (
     bom_lines,
     branding,
     company_email_settings,
+    company_financial_settings,
     catalogs,
     change_orders,
     companies,
@@ -101,6 +102,9 @@ app.include_router(branding.router)
 # swallow the literal `/companies/email-settings` and answer 422 on a
 # hostname that is not a UUID.
 app.include_router(company_email_settings.router)
+# Same reason again: `/companies/{company_id}` would swallow the literal
+# `/companies/financial-settings`.
+app.include_router(company_financial_settings.router)
 app.include_router(companies.router)
 app.include_router(invitations.router)
 app.include_router(leads.router)

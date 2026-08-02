@@ -4,19 +4,23 @@ own module-level-constants pattern.
 """
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
-
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Invoice
 
-# Explicit placeholders, not a validated business decision — same status as
-# app/services/billing.py's TIER_INCLUDED_SEATS. 10% deposit, 0% tax
-# (a company with no configured tax obligation shows $0 estimated liability
-# rather than an invented nonzero default).
-DEFAULT_DEPOSIT_PERCENTAGE = Decimal("0.10")
-DEFAULT_TAX_RATE = Decimal("0.00")
+# Moved to app/services/financial_settings.py (migration 0033): both are
+# now per-tenant configuration rather than constants, because neither was
+# ever really one number — a deposit percentage is a commercial policy per
+# builder, and a tax rate differs by jurisdiction.
+#
+# Re-exported here only so this module's own name keeps working for
+# importers; `resolve_financial_settings` is what call sites should use, and
+# these are the fallback for a tenant that has stated nothing.
+from app.services.financial_settings import (  # noqa: F401  (re-export)
+    DEFAULT_DEPOSIT_PERCENTAGE,
+    DEFAULT_TAX_RATE,
+)
 
 
 async def next_invoice_number(session: AsyncSession, company_id: uuid.UUID) -> str:

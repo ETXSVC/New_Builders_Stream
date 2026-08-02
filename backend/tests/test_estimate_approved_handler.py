@@ -30,7 +30,7 @@ not a real assertion about the handler's own correctness. $50.60's clean
 """
 import json
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 import asyncpg
 
@@ -215,6 +215,47 @@ async def test_approving_an_estimate_with_a_project_drafts_a_deposit_invoice(cli
     # PROJECT_COMPLETED's handler (M4).
     assert audit_row["actor_id"] == uuid.UUID(client_role["user_id"])
     assert _decode_metadata(audit_row["log_metadata"]) == {"estimate_id": estimate_id}
+
+
+async def test_the_deposit_invoice_uses_the_tenants_own_percentage(client):
+    """The point of making it configurable (migration 0033): this is what a
+    customer is actually billed when they approve an estimate, and 10% was
+    a placeholder rather than any builder's real deposit policy.
+
+    The test above covers the default. This one proves the tenant's own
+    value is what reaches the invoice — without it, a settings screen could
+    save 25% and every deposit would still be raised at 10%.
+    """
+    register_event_handlers()
+
+    admin = await _register_and_login(client, "Deposit Co 4", "deposit-4@example.test")
+    configured = await client.put(
+        "/companies/financial-settings",
+        json={"deposit_percentage": "0.25", "tax_rate": None},
+        headers=admin["headers"],
+    )
+    assert configured.status_code == 200, configured.text
+
+    client_role = await _invite_and_login_as(client, admin, "client", "deposit-client-4@example.test")
+    project = await _create_project(client, admin["headers"])
+    markup_profile_id = await _create_markup_profile(client, admin["headers"])
+    catalog_item_id = await _create_catalog_item(client, admin["headers"])
+
+    estimate_id, total = await _create_and_approve_estimate(
+        client,
+        admin,
+        client_role,
+        project["id"],
+        markup_profile_id,
+        catalog_item_id,
+        quantity="8.00",
+    )
+
+    invoices = await _fetch_invoices_for_estimate(estimate_id)
+    assert len(invoices) == 1
+    assert Decimal(invoices[0]["amount"]) == (
+        Decimal(str(total)) * Decimal("0.25")
+    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 async def test_approving_an_estimate_enqueues_a_sync_for_the_deposit_invoice(client, monkeypatch):

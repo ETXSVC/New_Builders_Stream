@@ -302,21 +302,26 @@ async def test_company_overhead_bill_does_not_leak_into_per_project_cost(client)
     assert entry["profitability"] == "1000.00"
 
 
-async def test_tax_liability_estimate_is_quantized_and_reflects_billed_revenue(client, monkeypatch):
+async def test_tax_liability_estimate_is_quantized_and_reflects_billed_revenue(client):
     """Covers reports.py's tax_liability_estimate computation and its
     CENTS/ROUND_HALF_UP quantization (Task 3.46's own code-quality review
-    fix). None of the 7 tests above assert on this field at all, and every
-    one of them runs under the real DEFAULT_TAX_RATE (0.00), which would
-    mask even a broken multiplication. Monkeypatches the rate the router
-    module actually uses (imported by value at module scope, per Python's
-    `from ... import NAME` semantics) rather than the source constant in
-    app.services.invoicing, which this router doesn't re-read at call time."""
-    import app.routers.reports as reports_module
-    from decimal import Decimal
+    fix). None of the tests above assert on this field, and every one runs
+    at the default rate of 0.00, which would mask even a broken
+    multiplication.
 
-    monkeypatch.setattr(reports_module, "DEFAULT_TAX_RATE", Decimal("0.10"))
-
+    Sets the rate through the real route rather than monkeypatching a
+    module constant, which is what this test used to do — the rate is the
+    tenant's own now (migration 0033), so there is no constant to patch and
+    the honest setup is the one an operator would perform.
+    """
     admin = await _register_and_login(client, "Report Co 10", "report-10@example.test")
+    configured = await client.put(
+        "/companies/financial-settings",
+        json={"deposit_percentage": None, "tax_rate": "0.10"},
+        headers=admin["headers"],
+    )
+    assert configured.status_code == 200, configured.text
+
     project = await _create_project(client, admin["headers"])
 
     create_invoice = await client.post(

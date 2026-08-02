@@ -1429,6 +1429,94 @@
         "title": "CompanyEmailSettingsResponse",
         "type": "object"
       },
+      "CompanyFinancialSettingsPutRequest": {
+        "description": "Both values are FRACTIONS: 0.08875 for 8.875%, 0.10 for a 10%\ndeposit. Every consumer multiplies directly, so accepting percentages\nwould mean dividing by 100 at each call site with one eventually\nforgotten.\n\nBounded to [0, 1] here as well as by CHECK constraints in migration\n0033 \u2014 the database is the backstop, but a 422 naming the field beats a\n500 from a constraint violation. `10` meaning \"10 percent\" is the\nmistake this catches, and it would otherwise bill ten times the\ncontract value.\n\nExplicitly nullable rather than optional-and-absent: null means \"clear\nthis back to inherited\", which a patch-style partial update could not\nexpress at all.",
+        "properties": {
+          "deposit_percentage": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,5}0*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deposit Percentage"
+          },
+          "tax_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,5}0*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Rate"
+          }
+        },
+        "title": "CompanyFinancialSettingsPutRequest",
+        "type": "object"
+      },
+      "CompanyFinancialSettingsResponse": {
+        "description": "What this company set, and what is actually in force.\n\nThe two differ whenever a value is inherited: a branch with no row of\nits own uses its root's, and a branch that set only a deposit\npercentage still inherits the root's tax rate. Returning only the\nstored values would show an operator \"tax rate: not set\" while their\nreports were being taxed at the head office's rate.",
+        "properties": {
+          "deposit_percentage": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deposit Percentage"
+          },
+          "effective_deposit_percentage": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Effective Deposit Percentage",
+            "type": "string"
+          },
+          "effective_tax_rate": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Effective Tax Rate",
+            "type": "string"
+          },
+          "tax_rate": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tax Rate"
+          }
+        },
+        "required": [
+          "deposit_percentage",
+          "tax_rate",
+          "effective_deposit_percentage",
+          "effective_tax_rate"
+        ],
+        "title": "CompanyFinancialSettingsResponse",
+        "type": "object"
+      },
       "CompanyMemberListResponse": {
         "description": "Not paginated: a company's member count is seat-bounded (billing's\nincluded_seats model), far below any size needing cursors.",
         "properties": {
@@ -8558,6 +8646,67 @@
         "summary": "Test Email Settings",
         "tags": [
           "email-settings"
+        ]
+      }
+    },
+    "/companies/financial-settings": {
+      "get": {
+        "operationId": "get_financial_settings_companies_financial_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyFinancialSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Financial Settings",
+        "tags": [
+          "financial-settings"
+        ]
+      },
+      "put": {
+        "description": "Set either value, or clear one back to inherited by sending null.\n\nBoth fields are explicit in the request rather than patch-style, so\n\"clear this back to the default\" is expressible at all \u2014 a partial\nupdate where absent means unchanged has no way to say it.",
+        "operationId": "put_financial_settings_companies_financial_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyFinancialSettingsPutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyFinancialSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Financial Settings",
+        "tags": [
+          "financial-settings"
         ]
       }
     },

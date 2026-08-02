@@ -26,6 +26,7 @@ from app.models.invoice_payment import InvoicePayment
 from app.models.bill import Bill
 from app.models.bill_payment import BillPayment
 from app.models.expense import Expense
+from app.models.company_financial_settings import CompanyFinancialSettings
 from app.models.integration_connection import IntegrationConnection
 from app.models.integration_entity_mapping import IntegrationEntityMapping
 from app.models.integration_sync_record import IntegrationSyncRecord
@@ -71,6 +72,7 @@ __all__ = [
     "Bill",
     "BillPayment",
     "Expense",
+    "CompanyFinancialSettings",
     "IntegrationConnection",
     "IntegrationEntityMapping",
     "IntegrationSyncRecord",
