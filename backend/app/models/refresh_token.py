@@ -38,6 +38,17 @@ class RefreshToken(Base, UUIDPKMixin):
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # Which company this session is currently acting as (migration 0031).
+    # NULL means "the default membership", which is what every session that
+    # has never switched means — and what every row predating 0031 means.
+    #
+    # It lives on the refresh-token chain rather than in the access token
+    # alone because the access token is re-minted every ~14 minutes from
+    # `_default_membership`; without somewhere durable, a switch would
+    # silently revert at the next refresh, mid-task, with no error.
+    active_company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True
+    )
     issued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

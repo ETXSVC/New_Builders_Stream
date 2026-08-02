@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.core.deps import CurrentUser, block_if_read_only, get_current_user, require_role
 from app.core.tier_gating import require_module
@@ -13,6 +13,8 @@ from app.schemas.company import (
     CompanyResponse,
     CreateChildCompanyRequest,
     MemberRoleUpdateRequest,
+    MembershipListResponse,
+    MembershipResponse,
 )
 from app.services.audit import write_audit_log
 from app.services.team_directory import DirectoryLabel, labels_for_members
@@ -69,6 +71,54 @@ async def _require_another_admin_remains(current: CurrentUser, excluding_user_id
         )
 
 
+
+
+# Declared ABOVE GET /{company_id} for the same reason as /members below:
+# FastAPI matches in declaration order and the UUID path-param route would
+# swallow the literal segment.
+@router.get("/memberships", response_model=MembershipListResponse)
+async def list_my_memberships(
+    current: CurrentUser = Depends(get_current_user, scope="function"),
+) -> MembershipListResponse:
+    """Every company the CALLER belongs to — what a company switcher offers.
+
+    Deliberately not role-gated: this is a fact about the caller's own
+    account, and a field crew member with two employers needs it as much as
+    an admin does.
+
+    Two RLS policies make this readable, and neither is the ordinary tenant
+    one. `company_users.self_membership` (migration 0001) exposes the
+    caller's own membership rows before any tenant is chosen, and
+    `companies.self_membership` (migration 0031) exposes the matching
+    company rows — the tenant policy scopes `companies` to the current
+    tenant's descendants, which by construction cannot include a company in
+    an unrelated tree, i.e. exactly the ones worth switching to.
+
+    `is_company_live` filters companies the platform console has retired,
+    matching `_default_membership`'s own rule: a company you cannot sign in
+    to is not one to offer switching to.
+    """
+    result = await current.session.execute(
+        select(CompanyUser.company_id, CompanyUser.role, Company.name, Company.parent_id)
+        .join(Company, Company.id == CompanyUser.company_id)
+        .where(
+            CompanyUser.user_id == current.user.id,
+            func.is_company_live(CompanyUser.company_id),
+        )
+        .order_by(Company.name)
+    )
+    return MembershipListResponse(
+        memberships=[
+            MembershipResponse(
+                company_id=row.company_id,
+                company_name=row.name,
+                role=row.role,
+                parent_id=row.parent_id,
+                is_active=row.company_id == current.company_id,
+            )
+            for row in result.all()
+        ]
+    )
 
 
 # Declared ABOVE GET /{company_id}: FastAPI matches routes in declaration

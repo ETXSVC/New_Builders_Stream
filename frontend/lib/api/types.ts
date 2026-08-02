@@ -275,6 +275,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/switch-company": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch Company
+         * @description Act as a different company you are a member of (migration 0031).
+         *
+         *     Re-mints the session rather than asking the browser to start sending an
+         *     `X-Tenant-ID` header. `get_current_user` accepts either, but the header
+         *     would have to be threaded through all 88 Next route handlers, exactly
+         *     one of which forwards it today — and a handler that forgot would read
+         *     the wrong company's data silently. Putting the active company in the
+         *     token instead leaves ONE source of truth that cannot disagree with
+         *     itself, and no route handler has to know this feature exists.
+         *
+         *     Membership is verified before the token is rotated, so switching to a
+         *     company you do not belong to costs a 403 and nothing else. Rotating
+         *     first would spend the caller's refresh token on a typo and sign them
+         *     out. The check is skipped for a token that is not currently valid, so a
+         *     spent or unknown token still falls through to `rotate_refresh_token` and
+         *     its reuse detection rather than being answered from here.
+         */
+        post: operations["switch_company_auth_switch_company_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bills": {
         parameters: {
             query?: never;
@@ -902,6 +937,42 @@ export interface paths {
         head?: never;
         /** Update Member Role */
         patch: operations["update_member_role_companies_members__user_id__patch"];
+        trace?: never;
+    };
+    "/companies/memberships": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List My Memberships
+         * @description Every company the CALLER belongs to — what a company switcher offers.
+         *
+         *     Deliberately not role-gated: this is a fact about the caller's own
+         *     account, and a field crew member with two employers needs it as much as
+         *     an admin does.
+         *
+         *     Two RLS policies make this readable, and neither is the ordinary tenant
+         *     one. `company_users.self_membership` (migration 0001) exposes the
+         *     caller's own membership rows before any tenant is chosen, and
+         *     `companies.self_membership` (migration 0031) exposes the matching
+         *     company rows — the tenant policy scopes `companies` to the current
+         *     tenant's descendants, which by construction cannot include a company in
+         *     an unrelated tree, i.e. exactly the ones worth switching to.
+         *
+         *     `is_company_live` filters companies the platform console has retired,
+         *     matching `_default_membership`'s own rule: a company you cannot sign in
+         *     to is not one to offer switching to.
+         */
+        get: operations["list_my_memberships_companies_memberships_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/companies/{company_id}": {
@@ -1810,7 +1881,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Accept Invitation */
+        /**
+         * Accept Invitation
+         * @description Still unauthenticated for the case it was built for — a brand-new
+         *     user has no session — but it now reads a bearer token when one IS
+         *     present, because an invited address that already has an account can
+         *     only be attached to a second company by someone who proves they own
+         *     it. Read directly rather than via a dependency so the route keeps
+         *     working with no Authorization header at all.
+         */
         post: operations["accept_invitation_invitations__invitation_id__accept_post"];
         delete?: never;
         options?: never;
@@ -5037,12 +5116,25 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** InvitationAcceptRequest */
+        /**
+         * InvitationAcceptRequest
+         * @description Both fields are optional because the route has two callers.
+         *
+         *     A brand-new user must supply them — the route enforces that, and still
+         *     applies the same length rules to what they send. An EXISTING account
+         *     joining a second company (migration 0031) has a name and a password
+         *     already, and the route ignores both fields for that path on purpose:
+         *     honouring a password there would be an account-takeover primitive.
+         *
+         *     Making them required in the schema would mean that caller had to invent
+         *     a throwaway ≥8-character password to have it discarded — validation
+         *     demanding something the handler refuses to use.
+         */
         InvitationAcceptRequest: {
             /** Full Name */
-            full_name: string;
+            full_name?: string | null;
             /** Password */
-            password: string;
+            password?: string | null;
         };
         /** InvitationCreateRequest */
         InvitationCreateRequest: {
@@ -5507,6 +5599,34 @@ export interface components {
             postal_code?: string | null;
             /** State */
             state?: string | null;
+        };
+        /**
+         * MembershipListResponse
+         * @description Not paginated: this is bounded by how many companies one person
+         *     works for, which is a small number by construction.
+         */
+        MembershipListResponse: {
+            /** Memberships */
+            memberships: components["schemas"]["MembershipResponse"][];
+        };
+        /**
+         * MembershipResponse
+         * @description One company the caller belongs to, for the company switcher.
+         */
+        MembershipResponse: {
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Company Name */
+            company_name: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Parent Id */
+            parent_id: string | null;
+            /** Role */
+            role: string;
         };
         /** MfaActivateRequest */
         MfaActivateRequest: {
@@ -6297,6 +6417,21 @@ export interface components {
             /** Tier */
             tier?: ("starter" | "pro" | "enterprise") | null;
         };
+        /**
+         * SwitchCompanyRequest
+         * @description Carries the refresh token, not just the target company: switching
+         *     re-mints the whole session (see POST /auth/switch-company), so it
+         *     rotates the refresh chain exactly as /auth/refresh does.
+         */
+        SwitchCompanyRequest: {
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Refresh Token */
+            refresh_token: string;
+        };
         /** SyncRecordResponse */
         SyncRecordResponse: {
             /** Attempt Count */
@@ -7054,6 +7189,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    switch_company_auth_switch_company_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchCompanyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenResponse"];
                 };
             };
             /** @description Validation Error */
@@ -7851,6 +8019,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_my_memberships_companies_memberships_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MembershipListResponse"];
                 };
             };
         };

@@ -340,3 +340,160 @@ async def test_change_password_enforces_min_length(client):
         headers=ctx["headers"],
     )
     assert r.status_code == 422
+
+
+# =============================================================================
+# Switching company (migration 0031). The access token names the active
+# company, so switching re-mints the session rather than asking the browser
+# to start sending X-Tenant-ID — see POST /auth/switch-company.
+# =============================================================================
+
+
+async def _register_login_and_join(client):
+    """Two companies, one user belonging to both. Returns the joiner's
+    tokens plus both company ids.
+
+    Building this through the real routes rather than seeding SQL is the
+    point: until migration 0031 the second membership could not be created
+    at all, so a fixture that inserted one would be testing a state the
+    product could never reach.
+    """
+    from tests.conftest import register_and_login
+
+    uid = uuid.uuid4().hex[:8]
+    host = await register_and_login(client, f"Host {uid}", f"host-{uid}@switch.test")
+    joiner = await register_and_login(client, f"Joiner {uid}", f"joiner-{uid}@switch.test")
+
+    invite = await client.post(
+        "/invitations",
+        json={"email": joiner["email"], "role": "accountant"},
+        headers=host["headers"],
+    )
+    accepted = await client.post(
+        f"/invitations/{invite.json()['id']}/accept",
+        json={"full_name": None, "password": None},
+        headers=joiner["headers"],
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    login = await client.post(
+        "/auth/login", json={"email": joiner["email"], "password": "supersecret123"}
+    )
+    assert login.status_code == 200, login.text
+    return {
+        "tokens": login.json(),
+        "own_company_id": joiner["company_id"],
+        "host_company_id": host["company_id"],
+        "email": joiner["email"],
+    }
+
+
+def _company_in(access_token: str) -> str:
+    return pyjwt.decode(access_token, options={"verify_signature": False})["default_company_id"]
+
+
+async def test_switching_mints_a_token_naming_the_new_company(client):
+    ctx = await _register_login_and_join(client)
+
+    switched = await client.post(
+        "/auth/switch-company",
+        json={
+            "refresh_token": ctx["tokens"]["refresh_token"],
+            "company_id": ctx["host_company_id"],
+        },
+    )
+    assert switched.status_code == 200, switched.text
+    body = switched.json()
+    assert _company_in(body["access_token"]) == ctx["host_company_id"]
+    assert str(body["default_company_id"]) == ctx["host_company_id"]
+    # The role travels with the company, not the user.
+    assert body["role"] == "accountant"
+
+
+async def test_a_switch_survives_a_refresh(client):
+    """THE reason `active_company_id` is on the refresh-token chain rather
+    than only in the access token. Access tokens are re-minted about every
+    fourteen minutes from `_default_membership`; without somewhere durable,
+    a switch would silently revert mid-task, with no error and nothing in
+    the logs."""
+    ctx = await _register_login_and_join(client)
+
+    switched = await client.post(
+        "/auth/switch-company",
+        json={
+            "refresh_token": ctx["tokens"]["refresh_token"],
+            "company_id": ctx["host_company_id"],
+        },
+    )
+    assert switched.status_code == 200
+
+    refreshed = await client.post(
+        "/auth/refresh", json={"refresh_token": switched.json()["refresh_token"]}
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert _company_in(refreshed.json()["access_token"]) == ctx["host_company_id"], (
+        "the refresh reverted to the default company — a switch must survive rotation"
+    )
+
+    # And again, so this is a carried property of the chain rather than a
+    # one-hop accident.
+    twice = await client.post(
+        "/auth/refresh", json={"refresh_token": refreshed.json()["refresh_token"]}
+    )
+    assert _company_in(twice.json()["access_token"]) == ctx["host_company_id"]
+
+
+async def test_switching_to_a_company_you_do_not_belong_to_is_refused(client):
+    ctx = await _register_login_and_join(client)
+    stranger_company = uuid.uuid4()
+
+    refused = await client.post(
+        "/auth/switch-company",
+        json={
+            "refresh_token": ctx["tokens"]["refresh_token"],
+            "company_id": str(stranger_company),
+        },
+    )
+    assert refused.status_code == 403, refused.text
+
+
+async def test_a_refused_switch_does_not_spend_the_refresh_token(client):
+    """Rotating before checking membership would sign a user out over a
+    typo, because the successor token is only ever returned on success."""
+    ctx = await _register_login_and_join(client)
+
+    await client.post(
+        "/auth/switch-company",
+        json={
+            "refresh_token": ctx["tokens"]["refresh_token"],
+            "company_id": str(uuid.uuid4()),
+        },
+    )
+
+    still_usable = await client.post(
+        "/auth/refresh", json={"refresh_token": ctx["tokens"]["refresh_token"]}
+    )
+    assert still_usable.status_code == 200, (
+        "the refused switch spent the refresh token — the caller is now logged out"
+    )
+
+
+async def test_switching_still_rotates_the_refresh_token(client):
+    """A successful switch is a full re-mint, so the presented token must be
+    spent like any other rotation — otherwise switching would hand out a
+    replayable credential."""
+    ctx = await _register_login_and_join(client)
+
+    switched = await client.post(
+        "/auth/switch-company",
+        json={
+            "refresh_token": ctx["tokens"]["refresh_token"],
+            "company_id": ctx["host_company_id"],
+        },
+    )
+    assert switched.status_code == 200
+
+    replayed = await client.post(
+        "/auth/refresh", json={"refresh_token": ctx["tokens"]["refresh_token"]}
+    )
+    assert replayed.status_code == 401

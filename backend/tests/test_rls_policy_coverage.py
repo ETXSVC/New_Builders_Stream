@@ -80,9 +80,17 @@ NON_TENANT_TABLES = frozenset(
 #       unauthenticated flow: the recipient has no session and no tenant.
 #       The policy is scoped to a single id the caller must already know
 #       (`app.probing_invitation_id`), set from the opaque token.
+#   companies.self_membership — the mirror of company_users' policy above,
+#       and needed for the same reason one step later. Listing a user's
+#       memberships needs the companies' NAMES, and `companies` is scoped
+#       to the current tenant's descendants — which by construction cannot
+#       contain a company in an unrelated tree, i.e. exactly the ones a
+#       company switcher exists to offer. SELECT only, and it can only ever
+#       add companies the caller already holds a membership row for.
 NON_TENANT_SCOPED_POLICIES = frozenset(
     {
         ("company_users", "self_membership"),
+        ("companies", "self_membership"),
         ("invitations", "invitation_probe"),
     }
 )
@@ -275,10 +283,18 @@ async def test_companies_policies_are_tenant_scoped_and_rls_is_not_forced(polici
     company_policies = [p for p in policies if p["tablename"] == "companies"]
     assert company_policies, "companies lost its RLS policies entirely"
 
+    # Allowlisted policies are excluded here rather than given their own
+    # exemption list: `companies.self_membership` (migration 0031) is
+    # deliberately scoped to `app.current_user_id` instead of the tenant
+    # tree, for the same chicken-and-egg reason `company_users` has had such
+    # a policy since 0001 — you cannot list the companies you could switch
+    # to from inside the one you are already in. Two lists would be two
+    # places to forget.
     unscoped = [
         p["policyname"]
         for p in company_policies
-        if not _every_defined_expression_is_tenant_scoped(p)
+        if ("companies", p["policyname"]) not in NON_TENANT_SCOPED_POLICIES
+        and not _every_defined_expression_is_tenant_scoped(p)
     ]
     assert unscoped == [], (
         "these policies on `companies` have an expression that does not call a "

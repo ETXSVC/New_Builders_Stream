@@ -208,3 +208,41 @@ async def block_if_read_only(
             status.HTTP_403_FORBIDDEN,
             "Your subscription requires attention before you can make changes",
         )
+
+
+def optional_authenticated_user_id() -> uuid.UUID | None:
+    """Who the bearer token belongs to, or None if there isn't a usable one.
+
+    Deliberately NOT a variant of `get_current_user`: it opens no session,
+    resolves no tenant, and checks no membership. It answers exactly one
+    question — "has this caller proved they hold this account?" — for a
+    route where the answer is a *branch* rather than a gate.
+
+    That route is `POST /invitations/{id}/accept`, which is unauthenticated
+    by design (the invitee has no session, and after migration 0031 may not
+    be a member of the inviting company yet, so `get_current_user` cannot
+    run there at all). When the invited address already has an account, the
+    accept path needs proof of ownership before attaching a second
+    membership — see that route for why honouring a supplied password
+    instead would be an account-takeover primitive.
+
+    Returns None rather than raising for every failure, including a
+    malformed or expired token: the caller's job is to decide what a
+    missing identity means, and for an invitation being accepted by a
+    brand-new user it means nothing at all.
+    """
+    token = bearer_token_ctx.get()
+    if token is None:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except InvalidTokenError:
+        return None
+    # Same allow-list as get_current_user: a platform-console token is not
+    # an ordinary account and must not stand in for one here either.
+    if payload.get("scope", TENANT_SCOPE) != TENANT_SCOPE:
+        return None
+    try:
+        return uuid.UUID(payload["sub"])
+    except (KeyError, ValueError, TypeError):
+        return None

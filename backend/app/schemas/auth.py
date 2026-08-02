@@ -26,6 +26,15 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class SwitchCompanyRequest(BaseModel):
+    """Carries the refresh token, not just the target company: switching
+    re-mints the whole session (see POST /auth/switch-company), so it
+    rotates the refresh chain exactly as /auth/refresh does."""
+
+    refresh_token: str
+    company_id: uuid.UUID
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)

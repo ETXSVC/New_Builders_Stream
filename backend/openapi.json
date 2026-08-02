@@ -3206,23 +3206,34 @@
         "type": "object"
       },
       "InvitationAcceptRequest": {
+        "description": "Both fields are optional because the route has two callers.\n\nA brand-new user must supply them \u2014 the route enforces that, and still\napplies the same length rules to what they send. An EXISTING account\njoining a second company (migration 0031) has a name and a password\nalready, and the route ignores both fields for that path on purpose:\nhonouring a password there would be an account-takeover primitive.\n\nMaking them required in the schema would mean that caller had to invent\na throwaway \u22658-character password to have it discarded \u2014 validation\ndemanding something the handler refuses to use.",
         "properties": {
           "full_name": {
-            "maxLength": 255,
-            "minLength": 2,
-            "title": "Full Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
           },
           "password": {
-            "minLength": 8,
-            "title": "Password",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
           }
         },
-        "required": [
-          "full_name",
-          "password"
-        ],
         "title": "InvitationAcceptRequest",
         "type": "object"
       },
@@ -4404,6 +4415,66 @@
           }
         },
         "title": "MemberSelfUpdateRequest",
+        "type": "object"
+      },
+      "MembershipListResponse": {
+        "description": "Not paginated: this is bounded by how many companies one person\nworks for, which is a small number by construction.",
+        "properties": {
+          "memberships": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipResponse"
+            },
+            "title": "Memberships",
+            "type": "array"
+          }
+        },
+        "required": [
+          "memberships"
+        ],
+        "title": "MembershipListResponse",
+        "type": "object"
+      },
+      "MembershipResponse": {
+        "description": "One company the caller belongs to, for the company switcher.",
+        "properties": {
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "company_name": {
+            "title": "Company Name",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "company_id",
+          "company_name",
+          "role",
+          "parent_id",
+          "is_active"
+        ],
+        "title": "MembershipResponse",
         "type": "object"
       },
       "MfaActivateRequest": {
@@ -5873,6 +5944,26 @@
           }
         },
         "title": "SubscriptionUpdateRequest",
+        "type": "object"
+      },
+      "SwitchCompanyRequest": {
+        "description": "Carries the refresh token, not just the target company: switching\nre-mints the whole session (see POST /auth/switch-company), so it\nrotates the refresh chain exactly as /auth/refresh does.",
+        "properties": {
+          "company_id": {
+            "format": "uuid",
+            "title": "Company Id",
+            "type": "string"
+          },
+          "refresh_token": {
+            "title": "Refresh Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "refresh_token",
+          "company_id"
+        ],
+        "title": "SwitchCompanyRequest",
         "type": "object"
       },
       "SyncRecordResponse": {
@@ -7373,6 +7464,48 @@
         ]
       }
     },
+    "/auth/switch-company": {
+      "post": {
+        "description": "Act as a different company you are a member of (migration 0031).\n\nRe-mints the session rather than asking the browser to start sending an\n`X-Tenant-ID` header. `get_current_user` accepts either, but the header\nwould have to be threaded through all 88 Next route handlers, exactly\none of which forwards it today \u2014 and a handler that forgot would read\nthe wrong company's data silently. Putting the active company in the\ntoken instead leaves ONE source of truth that cannot disagree with\nitself, and no route handler has to know this feature exists.\n\nMembership is verified before the token is rotated, so switching to a\ncompany you do not belong to costs a 403 and nothing else. Rotating\nfirst would spend the caller's refresh token on a typo and sign them\nout. The check is skipped for a token that is not currently valid, so a\nspent or unknown token still falls through to `rotate_refresh_token` and\nits reuse detection rather than being answered from here.",
+        "operationId": "switch_company_auth_switch_company_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwitchCompanyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Switch Company",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/bills": {
       "get": {
         "operationId": "list_bills_bills_get",
@@ -8533,6 +8666,28 @@
           }
         },
         "summary": "Update Member Role",
+        "tags": [
+          "companies"
+        ]
+      }
+    },
+    "/companies/memberships": {
+      "get": {
+        "description": "Every company the CALLER belongs to \u2014 what a company switcher offers.\n\nDeliberately not role-gated: this is a fact about the caller's own\naccount, and a field crew member with two employers needs it as much as\nan admin does.\n\nTwo RLS policies make this readable, and neither is the ordinary tenant\none. `company_users.self_membership` (migration 0001) exposes the\ncaller's own membership rows before any tenant is chosen, and\n`companies.self_membership` (migration 0031) exposes the matching\ncompany rows \u2014 the tenant policy scopes `companies` to the current\ntenant's descendants, which by construction cannot include a company in\nan unrelated tree, i.e. exactly the ones worth switching to.\n\n`is_company_live` filters companies the platform console has retired,\nmatching `_default_membership`'s own rule: a company you cannot sign in\nto is not one to offer switching to.",
+        "operationId": "list_my_memberships_companies_memberships_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List My Memberships",
         "tags": [
           "companies"
         ]
@@ -9871,6 +10026,7 @@
     },
     "/invitations/{invitation_id}/accept": {
       "post": {
+        "description": "Still unauthenticated for the case it was built for \u2014 a brand-new\nuser has no session \u2014 but it now reads a bearer token when one IS\npresent, because an invited address that already has an account can\nonly be attached to a second company by someone who proves they own\nit. Read directly rather than via a dependency so the route keeps\nworking with no Authorization header at all.",
         "operationId": "accept_invitation_invitations__invitation_id__accept_post",
         "parameters": [
           {

@@ -39,10 +39,16 @@ def _hash(secret: str) -> str:
 
 
 async def mint_refresh_token(
-    session: AsyncSession, user_id: uuid.UUID, family_id: uuid.UUID | None = None
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    family_id: uuid.UUID | None = None,
+    active_company_id: uuid.UUID | None = None,
 ) -> tuple[RefreshToken, str]:
     """Returns (row, presentable_secret). family_id=None mints a new family
-    (login); passing one keeps the rotation chain (rotate)."""
+    (login); passing one keeps the rotation chain (rotate).
+
+    active_company_id=None means "the default membership" — the state of a
+    fresh login, and of every session that has never switched company."""
     secret = secrets.token_urlsafe(32)
     # token_hash has a unique index; a SHA-256 collision between two 256-bit
     # random secrets is ~2^-128 territory, so the IntegrityError/500 that a
@@ -52,6 +58,7 @@ async def mint_refresh_token(
         user_id=user_id,
         token_hash=_hash(secret),
         family_id=family_id or uuid.uuid4(),
+        active_company_id=active_company_id,
         expires_at=utcnow() + timedelta(days=settings.refresh_token_expire_days),
     )
     session.add(row)
@@ -86,14 +93,27 @@ async def revoke_all_for_user(session: AsyncSession, user_id: uuid.UUID) -> None
     )
 
 
+_UNSET = object()
+
+
 async def rotate_refresh_token(
-    session: AsyncSession, presented_secret: str
+    session: AsyncSession,
+    presented_secret: str,
+    active_company_id: uuid.UUID | None | object = _UNSET,
 ) -> tuple[RefreshToken, str]:
     """Single-use rotation. Returns (old_row, new_presentable_secret); the
     successor row is flushed in old_row.family_id's chain and old_row is
     marked revoked + replaced_by. Raises RefreshTokenReuseError (after
     revoking the family) if the token was already rotated/revoked, plain
-    RefreshTokenError if unknown or expired."""
+    RefreshTokenError if unknown or expired.
+
+    `active_company_id` defaults to a sentinel rather than None because
+    None is a MEANINGFUL value here ("act as the default membership"), so
+    it cannot double as "caller said nothing". Left unset, the successor
+    inherits the presented token's own value — which is what makes a
+    switched company survive the ~14-minute refresh cycle instead of
+    silently reverting. `/auth/switch-company` passes an explicit value;
+    `/auth/refresh` does not."""
     # FOR UPDATE is load-bearing, not belt-and-suspenders: without it, two
     # concurrent rotations of the SAME token both read an un-revoked
     # snapshot under READ COMMITTED, and the ORM's PK-only UPDATE lets the
@@ -122,7 +142,12 @@ async def rotate_refresh_token(
     # that CHECK guards the OLD row only, and its revoked_at/replaced_by_id
     # are set together below and land in a single UPDATE at the next flush.
     new_row, new_secret = await mint_refresh_token(
-        session, user_id=row.user_id, family_id=row.family_id
+        session,
+        user_id=row.user_id,
+        family_id=row.family_id,
+        active_company_id=(
+            row.active_company_id if active_company_id is _UNSET else active_company_id  # type: ignore[arg-type]
+        ),
     )
     row.revoked_at = utcnow()
     row.replaced_by_id = new_row.id
