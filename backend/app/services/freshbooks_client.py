@@ -66,6 +66,9 @@ _REQUIRED_REFS: dict[str, tuple[RefSpec, ...]] = {
     "expense": (
         RefSpec(payload_key="category_id", kind="category", literal="Other Expenses"),
     ),
+    # A FreshBooks payment references the invoice by id and needs nothing
+    # else resolved — no customer ref, unlike QuickBooks.
+    "payment": (),
 }
 
 
@@ -304,6 +307,50 @@ class RealFreshBooksClient:
             path="expenses/expenses",
             body=body,
             collection="expense",
+        )
+        return str(created["id"])
+
+    async def push_payment(
+        self, *, access_token: str, account_id: str, payment: dict, idempotency_key: str
+    ) -> str:
+        """A payment against the invoice it settles.
+
+        `invoiceid` is the invoice's FreshBooks id, supplied by the sync
+        actor from that invoice's own sync record — a payment cannot sync
+        before its invoice has.
+
+        Note the dedup search is over `payments`, so the same
+        search-before-create weakness as every other FreshBooks push applies
+        (see the module docstring); the key is carried in `notes` for the
+        same reason.
+        """
+        existing = await self._find_existing(
+            access_token=access_token,
+            account_id=account_id,
+            path="payments/payments",
+            collection="payments",
+            id_field="id",
+            key=idempotency_key,
+        )
+        if existing is not None:
+            return existing
+
+        body = {
+            "payment": {
+                "invoiceid": payment["external_invoice_id"],
+                "amount": {"amount": str(payment["amount"]), "code": "USD"},
+                "notes": _tag(idempotency_key),
+            }
+        }
+        if payment.get("paid_date"):
+            body["payment"]["date"] = payment["paid_date"]
+
+        created = await self._create(
+            access_token=access_token,
+            account_id=account_id,
+            path="payments/payments",
+            body=body,
+            collection="payment",
         )
         return str(created["id"])
 

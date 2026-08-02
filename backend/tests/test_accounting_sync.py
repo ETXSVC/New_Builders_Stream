@@ -520,3 +520,132 @@ async def test_retried_invocation_after_successful_push_does_not_double_post(mon
         assert row.external_record_id is not None
     finally:
         await owner_engine.dispose()
+
+
+# =============================================================================
+# Payments (INVOICE_PAYMENT_RECORDED). Before this, a tenant's accounting
+# software saw the invoice and never learned it was paid.
+# =============================================================================
+
+
+async def _seed_paid_invoice(session_factory, *, provider="quickbooks"):
+    """A connection, an invoice, and a payment against it."""
+    seeded = await _seed_connection_and_invoice(session_factory, provider=provider)
+    payment_id = uuid.uuid4()
+    # invoice_payments.recorded_by is NOT NULL — a payment is always
+    # attributable to whoever entered it.
+    recorder_id = uuid.uuid4()
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO users (id, email, password_hash, full_name) "
+                "VALUES (:id, :email, 'x', 'Payment Recorder')"
+            ),
+            {"id": recorder_id, "email": f"recorder-{recorder_id.hex[:8]}@sync.test"},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO invoice_payments "
+                "(id, invoice_id, company_id, amount, paid_date, recorded_by) "
+                "VALUES (:id, :inv, :cid, 250.00, DATE '2026-08-01', :by)"
+            ),
+            {
+                "id": payment_id,
+                "inv": seeded["invoice_id"],
+                "cid": seeded["company_id"],
+                "by": recorder_id,
+            },
+        )
+        await session.commit()
+    seeded["payment_id"] = payment_id
+    return seeded
+
+
+async def _mark_invoice_synced(session_factory, seeded, external_id="qb-inv-1"):
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO integration_sync_records "
+                "(id, company_id, connection_id, entity_type, entity_id, status, "
+                " attempt_count, external_record_id) "
+                "VALUES (:id, :cid, :conn, 'invoice', :eid, 'success', 1, :ext)"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "cid": seeded["company_id"],
+                "conn": seeded["connection_id"],
+                "eid": seeded["invoice_id"],
+                "ext": external_id,
+            },
+        )
+        await session.commit()
+
+
+async def test_a_payment_syncs_linked_to_its_invoices_external_id(monkeypatch):
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_paid_invoice(session_factory)
+        await _mark_invoice_synced(session_factory, seeded, external_id="qb-inv-42")
+
+        from app.services import accounting_client
+
+        client = accounting_client.FakeAccountingProviderClient(provider="quickbooks")
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        await _sync_financial_record(
+            connection_id=str(seeded["connection_id"]),
+            entity_type="payment",
+            entity_id=str(seeded["payment_id"]),
+            session_factory=session_factory,
+        )
+
+        assert len(client.pushed_payments) == 1
+        pushed = client.pushed_payments[0]
+        assert pushed["amount"] == "250.00"
+        assert pushed["paid_date"] == "2026-08-01"
+        # The link, which is the entire point: without it the money lands as
+        # an unapplied credit and the invoice still reads as outstanding.
+        assert pushed["external_invoice_id"] == "qb-inv-42"
+    finally:
+        await owner_engine.dispose()
+
+
+async def test_a_payment_whose_invoice_has_not_synced_fails_visibly(monkeypatch):
+    """Rather than posting an unlinked payment. The failure names which
+    thing to fix first, and lands in GET /integrations/{provider}/sync-status
+    beside the invoice."""
+    owner_engine = create_async_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(owner_engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        seeded = await _seed_paid_invoice(session_factory)
+        # Deliberately NOT marking the invoice as synced.
+
+        from app.services import accounting_client
+
+        client = accounting_client.FakeAccountingProviderClient(provider="quickbooks")
+        monkeypatch.setattr(accounting_client, "get_accounting_client", lambda provider: client)
+
+        with pytest.raises(AccountingProviderError):
+            await _sync_financial_record(
+                connection_id=str(seeded["connection_id"]),
+                entity_type="payment",
+                entity_id=str(seeded["payment_id"]),
+                session_factory=session_factory,
+            )
+
+        assert client.pushed_payments == []
+        async with session_factory() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status, last_error FROM integration_sync_records "
+                        "WHERE connection_id = :cid AND entity_id = :eid"
+                    ),
+                    {"cid": seeded["connection_id"], "eid": seeded["payment_id"]},
+                )
+            ).fetchone()
+        assert row.status == "failed"
+        assert "invoice" in row.last_error.lower()
+    finally:
+        await owner_engine.dispose()

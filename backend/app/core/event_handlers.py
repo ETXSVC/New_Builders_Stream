@@ -80,3 +80,10 @@ def register_event_handlers() -> None:
 
     if not is_registered("BILL_CREATED", handle_financial_record_created):
         register("BILL_CREATED", handle_financial_record_created)
+
+    # The same handler: it only ever reads entity_type/entity_id and
+    # enqueues, so a new record type needs no new handler. See
+    # app/routers/invoices.py for why this is per-payment rather than the
+    # "INVOICE_PAID" the integrations spec named.
+    if not is_registered("INVOICE_PAYMENT_RECORDED", handle_financial_record_created):
+        register("INVOICE_PAYMENT_RECORDED", handle_financial_record_created)

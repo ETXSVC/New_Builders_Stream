@@ -178,6 +178,10 @@ class AccountingProviderClient(Protocol):
         self, *, access_token: str, account_id: str, bill: dict, idempotency_key: str
     ) -> str: ...
 
+    async def push_payment(
+        self, *, access_token: str, account_id: str, payment: dict, idempotency_key: str
+    ) -> str: ...
+
 
 @dataclass
 class FakeAccountingProviderClient:
@@ -216,6 +220,7 @@ class FakeAccountingProviderClient:
     pushed_invoices: list[dict] = field(default_factory=list)
     pushed_expenses: list[dict] = field(default_factory=list)
     pushed_bills: list[dict] = field(default_factory=list)
+    pushed_payments: list[dict] = field(default_factory=list)
     resolved_entities: list[tuple[str, str]] = field(default_factory=list)
     refresh_calls: int = 0
     _synced_keys: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -288,6 +293,11 @@ class FakeAccountingProviderClient:
         self, *, access_token: str, account_id: str, bill: dict, idempotency_key: str
     ) -> str:
         return self._push("bill", bill, self.pushed_bills, idempotency_key)
+
+    async def push_payment(
+        self, *, access_token: str, account_id: str, payment: dict, idempotency_key: str
+    ) -> str:
+        return self._push("payment", payment, self.pushed_payments, idempotency_key)
 
 
 def get_accounting_client(provider: str) -> AccountingProviderClient:

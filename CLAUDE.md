@@ -369,8 +369,11 @@ tests instead call `register_event_handlers()` themselves per-test, since
 the autouse `_clean_event_registry` fixture clears the registry before/after
 every test. Current/planned events: `LEAD_WON` → drafts a Project,
 `ESTIMATE_APPROVED` → drafts a deposit invoice, `INVOICE_CREATED` /
-`EXPENSE_CREATED` / `BILL_CREATED` → enqueue accounting-integration syncs,
-`PROJECT_COMPLETED` → drafts a final invoice for the uninvoiced remainder.
+`EXPENSE_CREATED` / `BILL_CREATED` / `INVOICE_PAYMENT_RECORDED` → enqueue
+accounting-integration syncs, `PROJECT_COMPLETED` → drafts a final invoice
+for the uninvoiced remainder. `INVOICE_PAYMENT_RECORDED` fires per PAYMENT,
+not when an invoice settles — the integrations spec called it `INVOICE_PAID`,
+which would never sync a partial payment.
 
 **Enqueue background work AFTER the commit, never inside the handler.**
 The bus runs inside the request transaction; Redis does not roll back with

@@ -280,6 +280,23 @@ async def record_invoice_payment(
         },
     )
 
+    # Published per PAYMENT, not once when the invoice settles.
+    #
+    # The integrations spec called this trigger "INVOICE_PAID", which only
+    # fires on the final payment — and a real accounting system needs each
+    # payment as its own record. An invoice settled in three instalments
+    # would otherwise show as entirely unpaid in the tenant's books until
+    # the last one landed, then jump straight to paid in full, with the
+    # first two payments never appearing at all. So the event names what
+    # actually happened, and the entity it carries is the payment.
+    await publish(
+        "INVOICE_PAYMENT_RECORDED",
+        session=current.session,
+        entity_type="payment",
+        entity_id=payment.id,
+        company_id=invoice.company_id,
+    )
+
     return InvoicePaymentResponse.model_validate(payment)
 
 

@@ -282,3 +282,92 @@ async def test_a_failing_callback_does_not_break_the_commit(db_session, monkeypa
 
     assert pending_count(db_session) == 0
     assert reported == ["after-commit callback failed; the enqueue was lost"]
+
+
+async def test_recording_a_payment_enqueues_a_sync(client, monkeypatch):
+    """The end of the gap: a tenant's accounting software saw every invoice
+    and never learned any of them had been paid.
+
+    Goes through the real payment route rather than publishing the event by
+    hand — the point being that recording a payment publishes at all, which
+    is what was missing, not that the handler works once it does.
+    """
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Pay Sync Co", "pay-sync@example.test")
+
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    connected = await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    assert connected.status_code == 303, connected.text
+
+    project = await client.post(
+        "/projects",
+        json={"name": "Payment Project", "site_address": "1 Main St", "status": "active"},
+        headers=admin["headers"],
+    )
+    invoice = await client.post(
+        f"/projects/{project.json()['id']}/invoices",
+        json={"amount": "500.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    invoice_id = invoice.json()["id"]
+    await client.post(f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"])
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append(kw))
+
+    paid = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "500.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert paid.status_code == 201, paid.text
+
+    payment_syncs = [c for c in calls if c.get("entity_type") == "payment"]
+    assert len(payment_syncs) == 1, f"expected one payment sync, got {calls}"
+    assert payment_syncs[0]["entity_id"] == paid.json()["id"]
+
+
+async def test_a_partial_payment_also_enqueues_a_sync(client, monkeypatch):
+    """Published per PAYMENT, not once when the invoice settles. An
+    "INVOICE_PAID" event firing only on the final instalment would leave the
+    first two payments absent from the tenant's books entirely, and the
+    invoice reading as unpaid until the last one landed."""
+    from app.services.integration_oauth_state import sign_oauth_state
+    from app.tasks.accounting_sync import sync_financial_record
+
+    register_event_handlers()
+    admin = await _register_and_login(client, "Partial Pay Co", "partial-pay@example.test")
+
+    state = sign_oauth_state(company_id=admin["company_id"], provider="quickbooks")
+    assert (
+        await client.get(f"/integrations/quickbooks/callback?code=fake&state={state}")
+    ).status_code == 303
+
+    project = await client.post(
+        "/projects",
+        json={"name": "Partial Project", "site_address": "1 Main St", "status": "active"},
+        headers=admin["headers"],
+    )
+    invoice = await client.post(
+        f"/projects/{project.json()['id']}/invoices",
+        json={"amount": "500.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    invoice_id = invoice.json()["id"]
+    await client.post(f"/invoices/{invoice_id}/send", json={}, headers=admin["headers"])
+
+    calls = []
+    monkeypatch.setattr(sync_financial_record, "send", lambda *a, **kw: calls.append(kw))
+
+    first = await client.post(
+        f"/invoices/{invoice_id}/payments",
+        json={"amount": "200.00", "paid_date": "2026-08-01"},
+        headers=admin["headers"],
+    )
+    assert first.status_code == 201, first.text
+    assert len([c for c in calls if c.get("entity_type") == "payment"]) == 1, (
+        "a partial payment must sync too, not wait for the invoice to settle"
+    )
