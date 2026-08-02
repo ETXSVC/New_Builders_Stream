@@ -59,12 +59,13 @@ Grouped together because both are needed before Enterprise-tier subscribers can 
 
 ## Phase 4 — External Integrations (Post-MVP)
 
-**Status: shipped against fake provider clients.** The OAuth flow, token encryption, sync records and tier gating are real; no live QuickBooks/FreshBooks credentials are wired, so nothing moves real money. See `backend/app/services/accounting_client.py`.
+**Status: shipped. The remaining gap is credentials, not code.** `RealQuickBooksClient` and `RealFreshBooksClient` are real SDK-free HTTP clients (migration 0030, PR #117), and `get_accounting_client` selects them **per provider**, gated on that provider's own client id being configured — a tenant can have real QuickBooks while FreshBooks is still the fake, because the two are separate OAuth applications with separate approval processes. With neither configured, the fake is returned and nothing moves real money. See `backend/app/services/accounting_client.py`.
 
 - QuickBooks OAuth connect + async sync of invoices/expenses.
 - FreshBooks OAuth connect + async sync (same pattern).
 - Sync status visibility and retry-on-failure handling.
-- **Exit criteria:** Enterprise-tier companies can connect and see a successful, monitored sync.
+- Payments sync per payment, not per settled invoice (`INVOICE_PAYMENT_RECORDED`, migration 0032) — an invoice paid in three instalments would otherwise read as unpaid until the last one landed.
+- **Exit criteria:** Enterprise-tier companies can connect and see a successful, monitored sync. **Not yet demonstrable** — it needs approved OAuth applications on both providers, which is a signup-and-configuration task rather than an engineering one.
 
 ## Phase 5 — Open Items (Scope TBD, Not Yet Scheduled)
 

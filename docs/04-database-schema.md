@@ -489,6 +489,66 @@ integrations module uses for OAuth tokens, and no route returns it — the API
 answers `has_password`. `enabled=false` keeps the settings while falling back
 to the platform relay, which is what a company does during a provider outage.
 
+## 9c. Real provider mappings, multi-company membership, tenant rates (migrations 0030–0033)
+
+Same convention as 9b: full column lists live in `docs/13-database-erd.md`;
+what follows is the reasoning.
+
+**`integration_entity_mappings`, `integration_connections.provider_account_id`
+(0030).** What a real provider needs and the fake never did. QuickBooks and
+FreshBooks each mint their own id for a customer or vendor, so a second sync
+of the same entity has to reuse it rather than create a duplicate — unique on
+`(connection_id, entity_kind, local_key)`. `local_key` is deliberately the
+display name that was matched on rather than a foreign key, because what is
+mapped is not always a row here: a bill's vendor is free text on
+`bills.vendor_name`, and an expense account is a provider-side concept with
+no local counterpart at all. One table with an `entity_kind` discriminator
+rather than three, since the rows are identical in shape and the lookup is
+identical in every case. `provider_account_id` is the realm the tokens were
+issued for — nullable, because the fake has no notion of one.
+
+**`refresh_tokens.active_company_id` (0031).** The schema half of belonging
+to more than one company. The access token carries `default_company_id` and
+`auth.refresh` re-derives it on every rotation — deliberately, so a token
+minted at login and one rotated at refresh cannot disagree. That rule is
+kept, but its *source* had to change: with nowhere durable to record a
+company the user switched to, the switch would revert at the next refresh
+about fourteen minutes later, mid-task and with no error. The refresh-token
+chain is the right home because it already survives an access token and is
+already rotated as one unit. Nullable, where null means "use the default
+membership" — which is what every pre-existing row means, so there is nothing
+to back-fill. `ON DELETE SET NULL` rather than `CASCADE`, because losing a
+company should log you out of *that* company, not sign you out everywhere.
+
+The same migration gives `companies` a `self_membership` SELECT policy,
+mirroring the one `company_users` has had since 0001. A switcher has to show
+company *names*, and `companies` is otherwise scoped to
+`get_all_descendant_ids(app.current_tenant)`, which by construction cannot
+contain a company in an unrelated tree. It widens nothing else — permissive
+policies are ORed, and this one can only ever add companies the caller
+already holds a membership for and can already name via `company_users`. It
+is on `tests/test_rls_policy_coverage.py`'s allowlist, so it is a reviewed
+exception rather than a quiet one.
+
+**`integration_sync_records.entity_type` (0032).** The `CHECK` has been
+`('invoice','expense','bill')` since 0013 — exactly what could be synced
+then. Payments sync now, so it widens by one value. Worth keeping rather than
+dropping: the constraint is what caught this change needing a migration at
+all, instead of letting a typo'd `entity_type` accumulate rows nothing reads.
+
+**`company_financial_settings` (0033).** The deposit percentage and tax rate,
+previously module constants in `app/services/invoicing.py` documented as
+placeholders. Neither was ever really one number — a deposit percentage is
+commercial policy that differs per builder, and a sales-tax rate differs by
+jurisdiction, so two branches of the same company in different states
+genuinely disagree. Resolved **independently per value**: the company's own
+setting, else its **root** company's, else the code default (10% deposit, 0%
+tax). Per value rather than per row, so stating a deposit policy does not
+silently adopt the tax default; root fallback rather than plain per-company,
+so a head office can set a policy once while a branch in another state still
+overrides — deliberately *not* the root-only resolution `subscriptions` uses,
+because a subscription genuinely belongs to the root and a tax rate does not.
+
 ## 10. Indexing & RLS Notes
 
 - Every `company_id` foreign key column should be indexed; most access patterns filter or join on it.
