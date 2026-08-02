@@ -727,3 +727,13 @@ Ten of the eleven are walk-every-page loops (`useCursorAll`); only
 (`useCursorList`). §10's row for that file — "uses the shared loader, which
 owns the guard" — is right in substance and wrong in detail: the loader it
 shares is `use-latest-only`, not `use-cursor-list`.
+
+**Closed 2026-08-02.** All eleven were converted; 26 files now import the
+module and `integrations/page.tsx` is the only hand-written loader left.
+The refactor did turn up one live defect after all, which is worth
+recording against the claim above that the safety argument was spent:
+`materials/page.tsx` checked `!response.ok` *before* its staleness guard,
+so a superseded failure could paint an error over a freshly loaded list.
+Importing the shared guard is not the same as applying it in the right
+place — which is the distinction the hook's own docstring is about, and it
+is invisible until two loaders are read side by side.
