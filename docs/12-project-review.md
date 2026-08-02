@@ -637,3 +637,93 @@ mentioned any of them. Fixed in this pass:
 The gap existed because the schema docs are not gated by CI the way the API
 snapshot is: `openapi.json` drifting fails the build, `docs/13` drifting
 fails nothing. Worth knowing when deciding how much to trust each.
+
+## 12. Follow-up — 2026-08-02: §10's three remaining "Open" items, re-checked
+
+§10 re-derived the Low list against the code and left three items marked
+open. All three were re-checked against the code on 2026-08-02, in the
+course of picking one up to work on. **None of them is open**, and one of
+them should never be done.
+
+| Item | §10 said | Actually |
+|---|---|---|
+| Five module-level owner engines in `app/tasks/` | Open, unchanged | **Closed** — and §8 of this document already said so |
+| Money schemas lack a `decimal_places=2` backstop | Open | **Rejected** — the behaviour it asks for was deliberately designed out |
+| List components duplicating fetch/guard boilerplate | ~17 still hand-roll, 6 use the hook | **15 files use the module**, 12 hand-roll, ~11 real candidates — and all of them already carry the guard |
+
+### 12.1 The owner engines were closed before §10 was written
+
+`grep create_async_engine app/` returns three: `app/db.py` (`app_user`),
+`app/tasks/scanner_db.py` (`scanner`), `app/core/platform_db.py`
+(`platform_admin`). None is an owner-role engine, and `app/tasks/` holds
+exactly one. §8's table already recorded this — *"Already closed before this
+pass by the worker-role work; only `scanner_db.py` creates an engine now"* —
+so §10 contradicts §8 within the same document. §10 is the newer section,
+which is what makes it the more misleading one.
+
+### 12.2 The money backstop is not a missing guard, it is a rejected design
+
+This is the one worth writing down properly, because the finding *sounds*
+obviously correct: money columns are `Numeric(12, 2)`, so why would the
+schema accept more precision?
+
+Because rejecting it is worse. Two bugs were fixed by quantizing on write,
+and both would come back as 422s:
+
+- **False payment rejection.** An invoice with 10.00 remaining, and a client
+  submitting 10.004. Compared raw, `10.004 > 10.00` and the payment is
+  refused — but the value that would actually be stored is 10.00, the exact
+  amount that settles the invoice. Quantizing *before* the overpayment guard
+  is what makes the comparison about the value being persisted
+  (`tests/test_invoices.py::test_payment_that_settles_the_invoice_after_rounding_is_accepted`).
+- **Response drift.** `POST /catalogs/items` with `unit_rate: "5.678"`
+  echoed `5.678` while storing `5.68`, because that route builds its
+  response from the in-memory ORM object and never re-reads the row — so
+  the next `GET` disagreed with the response that created the item
+  (`tests/test_cost_catalog.py::test_create_response_agrees_with_what_was_stored`).
+
+A `decimal_places=2` backstop was implemented and reverted on 2026-08-02 to
+confirm this rather than argue it: 17 input fields across 9 schemas, and the
+suite came back **8 failed, 1250 passed** — every failure a test asserting
+the quantize-then-compare behaviour on purpose, several with docstrings
+explaining which bug they pin. The finding predates those fixes. It should
+be read as closed by them, not as still outstanding.
+
+The residual concern the finding gestures at — that a client is never told
+their `10.005` became `10.01` — is real but is a *response* concern, not a
+validation one, and the echo-what-was-stored tests above are what address
+it.
+
+### 12.3 The list-component consolidation moved without being recorded
+
+**15 files import `lib/use-cursor-list.ts`** — 7 `useCursorList`, 5
+`useCursorAll`, the rest its types. **12 still hand-roll the fetch**, of which
+`integrations/page.tsx` is the documented permanent exception (§8: different
+envelope, and a 404 there means "not connected", not an error). So ~11
+genuine candidates remain, not ~17.
+
+Two things make this easy to measure wrongly, and the first version of this
+section got both:
+
+- **Counting files that mention `next_cursor` undercounts adoption**, because
+  a file *using* the hook does not mention it — encapsulating that string is
+  the point. That set is biased toward hand-rollers by construction.
+- **`useCursorAll` is a second hook in the same module**, for the
+  walk-every-page pattern. Grepping the name `useCursorList` scores its five
+  callers as unconverted.
+
+**The safety argument is already spent, and that changes what this work is
+for.** All 11 candidates already carry the stale-response guard — via
+`lib/use-latest-only.ts`, a third shared helper, rather than by hand.
+`integrations/page.tsx` is the only file in the app using neither. So the
+original rationale — one of eight copy-pasted loaders having silently lost
+its guard — no longer describes anything outstanding. What remains is
+duplicated fetch/append/error boilerplate: worth removing for concision,
+but it is a refactor rather than a latent bug, and should be scheduled as
+one.
+
+Ten of the eleven are walk-every-page loops (`useCursorAll`); only
+`app/(app)/projects/page.tsx` is single-page-plus-`loadMore`
+(`useCursorList`). §10's row for that file — "uses the shared loader, which
+owns the guard" — is right in substance and wrong in detail: the loader it
+shares is `use-latest-only`, not `use-cursor-list`.
