@@ -5300,10 +5300,22 @@
             "format": "uuid",
             "title": "Project Id",
             "type": "string"
+          },
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Name"
           }
         },
         "required": [
           "project_id",
+          "project_name",
           "billed_revenue",
           "actual_cost",
           "profitability"

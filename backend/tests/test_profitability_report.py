@@ -54,6 +54,59 @@ async def test_project_profitability_equals_billed_revenue_minus_expenses_and_bi
     assert entry["profitability"] == "550.00"
 
 
+async def test_each_project_row_carries_its_name(client):
+    """Resolved server-side because a client cannot do it correctly: the
+    /projects list is cursor-paginated, so joining by id would mean walking
+    every page to be sure of covering the ids in the report."""
+    admin = await _register_and_login(client, "Report Co Named", "report-named@example.test")
+    project = await _create_project(client, admin["headers"], name="Riverside Remodel")
+
+    create_invoice = await client.post(
+        f"/projects/{project['id']}/invoices",
+        json={"amount": "1000.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    await client.post(
+        f"/invoices/{create_invoice.json()['id']}/send", json={}, headers=admin["headers"]
+    )
+
+    response = await client.get(
+        "/reports/profitability?start_date=2026-01-01&end_date=2026-12-31",
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    entry = [p for p in response.json()["projects"] if p["project_id"] == project["id"]][0]
+    assert entry["project_name"] == "Riverside Remodel"
+
+
+async def test_projects_are_ordered_worst_profitability_first(client):
+    """The report exists to surface projects that are bleeding. Before this
+    the rows came out of an unordered set, so a loss could land anywhere."""
+    admin = await _register_and_login(client, "Report Co Order", "report-order@example.test")
+    profitable = await _create_project(client, admin["headers"], name="Profitable One")
+    losing = await _create_project(client, admin["headers"], name="Losing One")
+
+    invoice = await client.post(
+        f"/projects/{profitable['id']}/invoices",
+        json={"amount": "5000.00", "due_date": "2026-09-01"},
+        headers=admin["headers"],
+    )
+    await client.post(f"/invoices/{invoice.json()['id']}/send", json={}, headers=admin["headers"])
+    # No revenue, only cost — a loss.
+    await client.post(
+        f"/projects/{losing['id']}/expenses",
+        json={"description": "Overrun", "amount": "800.00", "incurred_on": "2026-08-05"},
+        headers=admin["headers"],
+    )
+
+    response = await client.get(
+        "/reports/profitability?start_date=2026-01-01&end_date=2026-12-31",
+        headers=admin["headers"],
+    )
+    ordered = [p["project_id"] for p in response.json()["projects"]]
+    assert ordered.index(losing["id"]) < ordered.index(profitable["id"])
+
+
 async def test_draft_invoice_is_excluded_from_billed_revenue(client):
     admin = await _register_and_login(client, "Report Co 2", "report-2@example.test")
     project = await _create_project(client, admin["headers"])

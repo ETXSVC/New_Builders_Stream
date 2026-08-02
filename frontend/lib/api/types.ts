@@ -5975,6 +5975,8 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
+            /** Project Name */
+            project_name: string | null;
         };
         /**
          * ProjectResponse
