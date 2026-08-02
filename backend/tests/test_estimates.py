@@ -1708,3 +1708,138 @@ async def test_replace_line_items_and_calculate_remain_legal_on_rejected_estimat
         f"/estimates/{sent_estimate['id']}/calculate", headers=admin["headers"]
     )
     assert calc_response.status_code == 200, calc_response.text
+
+
+# =============================================================================
+# PUT /estimates/{id}/lines — expected_unit_rate capture guard
+#
+# `unit_rate_snapshot` is copied from the catalog at replace-time, which
+# assumes the caller saw that rate an instant ago. They did not: an estimator
+# picks items, types quantities, and saves minutes later. These cover the
+# three states of the optional guard — matching, stale, and absent.
+# =============================================================================
+
+
+async def test_replace_line_items_accepts_a_matching_expected_rate(client):
+    """The guard must not fire when nothing moved, or it would block the
+    ordinary case it exists to protect."""
+    admin = await _register_and_login(client, "Acme Construction", "rate-match@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "cost_catalog_item_id": catalog_item["id"],
+                    "quantity": "10.00",
+                    "expected_unit_rate": "45.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["line_items"][0]["unit_rate_snapshot"] == "45.00"
+
+
+async def test_replace_line_items_rejects_a_rate_that_moved_underneath(client):
+    """The bug this closes: the estimator saw 45.00, someone edited the
+    catalog to 60.00, and the estimate silently recorded 60.00 — a rate they
+    never saw and may have quoted a customer against.
+
+    Asserts the 409 AND that the estimate was left untouched, because the
+    route's whole discipline is "validate everything before mutating
+    anything" — a guard that raises after the DELETE would be worse than no
+    guard at all.
+    """
+    admin = await _register_and_login(client, "Acme Construction", "rate-moved@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    # An existing set of lines, so the "nothing was mutated" assertion below
+    # has something to be true about.
+    seeded = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    assert seeded.status_code == 200, seeded.text
+
+    bumped = await client.patch(
+        f"/catalogs/items/{catalog_item['id']}",
+        json={"unit_rate": "60.00"},
+        headers=admin["headers"],
+    )
+    assert bumped.status_code == 200, bumped.text
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "cost_catalog_item_id": catalog_item["id"],
+                    "quantity": "10.00",
+                    "expected_unit_rate": "45.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    # Both rates named: "conflict" alone leaves the estimator no way to tell
+    # what moved or by how much.
+    assert "45.00" in detail and "60.00" in detail
+
+    detail_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    line_items = detail_response.json()["line_items"]
+    assert len(line_items) == 1
+    assert line_items[0]["quantity"] == "1.00"
+    assert line_items[0]["unit_rate_snapshot"] == "45.00"
+
+
+async def test_replace_line_items_without_expected_rate_is_unchecked_as_before(client):
+    """Opt-in, exactly like `expected_updated_at`: omitting the field must
+    leave the previous behaviour intact, or this becomes a breaking change
+    for every existing caller in one step."""
+    admin = await _register_and_login(client, "Acme Construction", "rate-optout@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    bumped = await client.patch(
+        f"/catalogs/items/{catalog_item['id']}",
+        json={"unit_rate": "60.00"},
+        headers=admin["headers"],
+    )
+    assert bumped.status_code == 200, bumped.text
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "2.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["line_items"][0]["unit_rate_snapshot"] == "60.00"

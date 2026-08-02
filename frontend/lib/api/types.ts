@@ -1524,7 +1524,7 @@ export interface paths {
          *     commits once after the handler returns), so as long as nothing below
          *     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
          *     guarantees the eventual commit never happens at all and the estimate's
-         *     line items are left completely untouched. Three independent checks,
+         *     line items are left completely untouched. Four independent checks,
          *     all performed before any DELETE/INSERT is issued:
          *       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
          *          snapshotted Estimate's line items are immutable).
@@ -1546,6 +1546,12 @@ export interface paths {
          *          request (not once per input line) and the result turned into an
          *          id-keyed dict for lookup, same shape `create_catalog_item_override`
          *          uses for its own single-call/membership-check pattern.
+         *       4. Each line's optional `expected_unit_rate`, when supplied, must
+         *          still equal the resolved item's `unit_rate` -> 409. This is what
+         *          stops the snapshot below from silently re-pricing an estimate
+         *          whose author saw a different number; see
+         *          `EstimateLineItemInput`'s own docstring for why the window is
+         *          real rather than theoretical.
          *
          *     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
          *     this moment, never a live reference (schema doc Section 9's historical-
@@ -4956,6 +4962,29 @@ export interface components {
          *     `quantity` is `Decimal`, never `float` (this codebase's monetary/
          *     quantity invariant, same as `MarkupProfileCreateRequest.overhead_pct`/
          *     `CostCatalogItemCreateRequest.unit_rate`).
+         *
+         *     `expected_unit_rate` is the rate the CALLER saw when they built this
+         *     line, and is the one exception to "don't accept server-computed values
+         *     from the client" above — because it is not accepted as a value. It is
+         *     never stored and never used in any arithmetic; the route compares it to
+         *     the catalog's current rate and refuses the whole request on a mismatch.
+         *     An estimator still cannot assert a price.
+         *
+         *     It exists because `unit_rate_snapshot` is copied at *replace-time*,
+         *     which silently assumes the caller saw the rate an instant ago. They did
+         *     not: an estimator picks items from the catalog panel, fills in
+         *     quantities, and saves minutes later — and a catalog edit in between
+         *     re-prices every line without telling anyone. The estimate then shows a
+         *     rate the person who built it never saw, and may have quoted a customer
+         *     against. The window is minutes today and would be days under any
+         *     draft-now-submit-later flow (see
+         *     `docs/superpowers/specs/2026-08-02-offline-pwa-design.md` §1.2).
+         *
+         *     Optional, exactly like `expected_updated_at` in
+         *     `app/services/concurrency.py`: omit it and the write proceeds
+         *     unchecked, as before. Same reasoning as that module gives — making it
+         *     mandatory is the stronger guarantee and the right eventual
+         *     destination, but it would break every existing caller in one step.
          */
         EstimateLineItemInput: {
             /**
@@ -4963,6 +4992,8 @@ export interface components {
              * Format: uuid
              */
             cost_catalog_item_id: string;
+            /** Expected Unit Rate */
+            expected_unit_rate?: number | string | null;
             /** Quantity */
             quantity: number | string;
         };
