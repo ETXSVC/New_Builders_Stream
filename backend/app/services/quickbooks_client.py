@@ -68,6 +68,13 @@ _REQUIRED_REFS: dict[str, tuple[RefSpec, ...]] = {
         RefSpec(payload_key="expense_account_id", kind="account", literal="Expense"),
         RefSpec(payload_key="payment_account_id", kind="account", literal="Bank"),
     ),
+    # A Payment is booked against the customer it came from, and linked to
+    # the invoice it settles — the link itself is the invoice's QuickBooks
+    # id, which the sync actor supplies from the invoice's own sync record
+    # rather than resolving here.
+    "payment": (
+        RefSpec(payload_key="customer_id", kind="customer", from_payload="customer_name"),
+    ),
 }
 
 _AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
@@ -352,6 +359,47 @@ class RealQuickBooksClient:
             request_id=idempotency_key,
         )
         return str(payload["Bill"]["Id"])
+
+    async def push_payment(
+        self, *, access_token: str, account_id: str, payment: dict, idempotency_key: str
+    ) -> str:
+        """A Payment linked to the invoice it settles.
+
+        `LinkedTxn` is what makes this a payment OF something rather than an
+        unapplied credit sitting on the customer's account — without it
+        QuickBooks takes the money but leaves the invoice showing as
+        outstanding, which is the exact confusion this sync exists to
+        prevent.
+
+        `external_invoice_id` is the invoice's QuickBooks id, supplied by
+        the sync actor from that invoice's own sync record. A payment
+        therefore cannot sync before its invoice has; the actor fails it
+        with a clear message rather than posting an unlinked payment.
+        """
+        body: dict[str, Any] = {
+            "CustomerRef": {"value": payment["customer_id"]},
+            "TotalAmt": float(payment["amount"]),
+            "Line": [
+                {
+                    "Amount": float(payment["amount"]),
+                    "LinkedTxn": [
+                        {"TxnId": payment["external_invoice_id"], "TxnType": "Invoice"}
+                    ],
+                }
+            ],
+        }
+        if payment.get("paid_date"):
+            body["TxnDate"] = payment["paid_date"]
+
+        result = await self._api(
+            "POST",
+            access_token=access_token,
+            account_id=account_id,
+            resource="payment",
+            json=body,
+            request_id=idempotency_key,
+        )
+        return str(result["Payment"]["Id"])
 
     async def push_expense(
         self, *, access_token: str, account_id: str, expense: dict, idempotency_key: str

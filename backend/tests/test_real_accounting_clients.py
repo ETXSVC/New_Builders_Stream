@@ -451,3 +451,85 @@ async def test_freshbooks_missing_expense_category_is_a_clear_error(monkeypatch)
             access_token="at", account_id="acct", kind="category", name="Other Expenses"
         )
     assert "Other Expenses" in str(exc.value)
+
+
+# =============================================================================
+# Payments. A payment is only meaningful as a payment OF something — the link
+# to the invoice is the part that stops the money landing as an unapplied
+# credit while the invoice still reads as outstanding.
+# =============================================================================
+
+
+def test_quickbooks_payment_needs_only_the_customer_resolved():
+    """The invoice link is not resolved here — it is the invoice's own
+    external id, which the sync actor supplies from its sync record."""
+    specs = qb().required_refs("payment")
+    assert [(s.payload_key, s.kind) for s in specs] == [("customer_id", "customer")]
+
+
+def test_freshbooks_payment_needs_nothing_resolved():
+    assert fb().required_refs("payment") == ()
+
+
+async def test_quickbooks_payment_links_to_the_invoice(monkeypatch):
+    recorder = install(monkeypatch, lambda *a: FakeResponse(200, {"Payment": {"Id": "3003"}}))
+    external_id = await qb().push_payment(
+        access_token="at",
+        account_id="realm",
+        payment={
+            "amount": "250.00",
+            "paid_date": "2026-08-01",
+            "customer_id": "58",
+            "external_invoice_id": "1001",
+        },
+        idempotency_key="pay-1",
+    )
+    assert external_id == "3003"
+    call = recorder.calls[0]
+    assert call["url"].endswith("/realm/payment")
+    assert call["params"]["requestid"] == "pay-1"
+    assert call["json"]["CustomerRef"] == {"value": "58"}
+    assert call["json"]["TotalAmt"] == 250.00
+    # LinkedTxn is what applies the money to the invoice. Without it
+    # QuickBooks records an unapplied credit and the invoice stays open.
+    assert call["json"]["Line"][0]["LinkedTxn"] == [
+        {"TxnId": "1001", "TxnType": "Invoice"}
+    ]
+
+
+async def test_freshbooks_payment_references_the_invoice(monkeypatch):
+    def handler(method, url, params, body):
+        if method == "GET":
+            return FakeResponse(200, {"response": {"result": {"payments": []}}})
+        return FakeResponse(200, {"response": {"result": {"payment": {"id": 44}}}})
+
+    recorder = install(monkeypatch, handler)
+    external_id = await fb().push_payment(
+        access_token="at",
+        account_id="acct",
+        payment={"amount": "250.00", "paid_date": "2026-08-01", "external_invoice_id": "77"},
+        idempotency_key="pay-2",
+    )
+    assert external_id == "44"
+    post = [c for c in recorder.calls if c["method"] == "POST"][0]
+    assert post["json"]["payment"]["invoiceid"] == "77"
+    assert post["json"]["payment"]["amount"]["amount"] == "250.00"
+    assert "bs-sync:pay-2" in post["json"]["payment"]["notes"]
+
+
+async def test_freshbooks_reuses_a_payment_already_carrying_the_key(monkeypatch):
+    recorder = install(
+        monkeypatch,
+        lambda *a: FakeResponse(
+            200,
+            {"response": {"result": {"payments": [{"id": 44, "notes": "bs-sync:pay-3"}]}}},
+        ),
+    )
+    external_id = await fb().push_payment(
+        access_token="at",
+        account_id="acct",
+        payment={"amount": "1.00", "external_invoice_id": "77"},
+        idempotency_key="pay-3",
+    )
+    assert external_id == "44"
+    assert all(c["method"] == "GET" for c in recorder.calls), "must not double-post a payment"

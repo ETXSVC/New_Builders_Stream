@@ -91,6 +91,7 @@ from app.models import (
     IntegrationEntityMapping,
     IntegrationSyncRecord,
     Invoice,
+    InvoicePayment,
     ProjectClient,
     User,
 )
@@ -112,11 +113,44 @@ from app.tasks import broker  # noqa: F401 - import-time side effect
 # is the same escape migration 0011 established for the Stripe webhook.
 _AppUserSessionLocal = SessionLocal
 
-_ENTITY_MODELS: dict[str, type[Invoice] | type[Expense] | type[Bill]] = {
+_ENTITY_MODELS: dict[str, type[Invoice] | type[Expense] | type[Bill] | type[InvoicePayment]] = {
     "invoice": Invoice,
     "expense": Expense,
     "bill": Bill,
+    "payment": InvoicePayment,
 }
+
+
+async def _external_invoice_id(
+    session: AsyncSession, *, connection_id: uuid.UUID, invoice_id: uuid.UUID
+) -> str:
+    """The provider's own id for an invoice, from its sync record.
+
+    A payment is only meaningful as a payment OF something: QuickBooks needs
+    a `LinkedTxn` and FreshBooks an `invoiceid`, or the money lands as an
+    unapplied credit and the invoice still reads as outstanding — the exact
+    confusion this sync exists to remove.
+
+    So a payment cannot sync before its invoice has. Raising here rather
+    than posting an unlinked payment means Dramatiq retries, and if the
+    invoice's own sync is genuinely broken the payment ends up 'failed' in
+    `GET /integrations/{provider}/sync-status` next to it, with a message
+    saying which one to fix first.
+    """
+    external_id = await session.scalar(
+        select(IntegrationSyncRecord.external_record_id).where(
+            IntegrationSyncRecord.connection_id == connection_id,
+            IntegrationSyncRecord.entity_type == "invoice",
+            IntegrationSyncRecord.entity_id == invoice_id,
+            IntegrationSyncRecord.status == "success",
+        )
+    )
+    if not external_id:
+        raise AccountingProviderError(
+            "This payment's invoice has not synced to the provider yet, so the "
+            "payment has nothing to apply against — retry once the invoice syncs"
+        )
+    return external_id
 
 
 async def _customer_name(session: AsyncSession, invoice: Invoice) -> str | None:
@@ -143,7 +177,7 @@ async def _customer_name(session: AsyncSession, invoice: Invoice) -> str | None:
 
 
 async def _serialize(
-    session: AsyncSession, entity_type: str, record: Invoice | Expense | Bill
+    session: AsyncSession, entity_type: str, record: Invoice | Expense | Bill | InvoicePayment
 ) -> dict:
     # isinstance, not entity_type string matching — the two are 1:1 via
     # _ENTITY_MODELS, and isinstance is the form mypy can narrow the union
@@ -160,6 +194,18 @@ async def _serialize(
         }
     if isinstance(record, Expense):
         return {"description": record.description, "amount": str(record.amount)}
+    if isinstance(record, InvoicePayment):
+        # The customer comes from the invoice's project, exactly as the
+        # invoice's own payload does — QuickBooks books a Payment against a
+        # customer, and it must be the same one the invoice went to.
+        invoice = await session.get(Invoice, record.invoice_id)
+        return {
+            "amount": str(record.amount),
+            "paid_date": record.paid_date.isoformat() if record.paid_date else None,
+            "customer_name": await _customer_name(session, invoice) if invoice else None,
+            # external_invoice_id is filled in by the caller, which has the
+            # connection id needed to look up the invoice's sync record.
+        }
     if isinstance(record, Bill):
         return {
             "vendor_name": record.vendor_name,
@@ -320,6 +366,13 @@ async def _push(
             expense=payload,
             idempotency_key=entity_id,
         )
+    if entity_type == "payment":
+        return await client.push_payment(
+            access_token=access_token,
+            account_id=account_id,
+            payment=payload,
+            idempotency_key=entity_id,
+        )
     return await client.push_bill(
         access_token=access_token,
         account_id=account_id,
@@ -415,6 +468,14 @@ async def _sync_financial_record(
                 )
 
             payload = await _serialize(session, entity_type, record)
+            if entity_type == "payment":
+                # Resolved here, not in _serialize, because it is a fact
+                # about THIS connection rather than about the payment.
+                payload["external_invoice_id"] = await _external_invoice_id(
+                    session,
+                    connection_id=connection.id,
+                    invoice_id=cast("InvoicePayment", record).invoice_id,
+                )
             await _resolve_refs(
                 session,
                 client,
