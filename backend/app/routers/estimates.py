@@ -461,7 +461,7 @@ async def replace_estimate_line_items(
     commits once after the handler returns), so as long as nothing below
     raises AFTER the DELETE/INSERTs are issued, a mid-request 409/422 here
     guarantees the eventual commit never happens at all and the estimate's
-    line items are left completely untouched. Three independent checks,
+    line items are left completely untouched. Four independent checks,
     all performed before any DELETE/INSERT is issued:
       1. `estimate.is_snapshotted` -> 409 (design decision #4: an approved/
          snapshotted Estimate's line items are immutable).
@@ -483,6 +483,12 @@ async def replace_estimate_line_items(
          request (not once per input line) and the result turned into an
          id-keyed dict for lookup, same shape `create_catalog_item_override`
          uses for its own single-call/membership-check pattern.
+      4. Each line's optional `expected_unit_rate`, when supplied, must
+         still equal the resolved item's `unit_rate` -> 409. This is what
+         stops the snapshot below from silently re-pricing an estimate
+         whose author saw a different number; see
+         `EstimateLineItemInput`'s own docstring for why the window is
+         real rather than theoretical.
 
     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
     this moment, never a live reference (schema doc Section 9's historical-
@@ -547,6 +553,30 @@ async def replace_estimate_line_items(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"cost_catalog_item_id {line.cost_catalog_item_id} does not resolve to a "
                 "visible catalog item for this company",
+            )
+        # Fourth pre-mutation check (see the docstring's list of three).
+        # `unit_rate_snapshot` below is copied from the catalog at THIS
+        # moment, which silently assumes the caller saw that rate an
+        # instant ago. An estimator picks items, types quantities, and
+        # saves minutes later; a catalog edit in between re-prices every
+        # line without telling anyone, and the estimate ends up showing a
+        # rate the person who built it never saw.
+        #
+        # 409, not 422: the request was well-formed and would have been
+        # accepted a moment earlier — this is the same "someone changed it
+        # under you" answer `guard_stale_write` gives, and the client's
+        # remedy is the same (re-read, show the difference, resubmit).
+        # Both rates are named because "conflict" alone leaves the
+        # estimator no way to tell what moved or by how much.
+        if (
+            line.expected_unit_rate is not None
+            and line.expected_unit_rate != catalog_item.unit_rate
+        ):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Unit rate for '{catalog_item.name}' changed from "
+                f"{line.expected_unit_rate} to {catalog_item.unit_rate} since this estimate "
+                "was built. Review the line items and resubmit.",
             )
         resolved_lines.append((line.cost_catalog_item_id, line.quantity, catalog_item))
 

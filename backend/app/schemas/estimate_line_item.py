@@ -20,10 +20,34 @@ class EstimateLineItemInput(BaseModel):
     `quantity` is `Decimal`, never `float` (this codebase's monetary/
     quantity invariant, same as `MarkupProfileCreateRequest.overhead_pct`/
     `CostCatalogItemCreateRequest.unit_rate`).
+
+    `expected_unit_rate` is the rate the CALLER saw when they built this
+    line, and is the one exception to "don't accept server-computed values
+    from the client" above — because it is not accepted as a value. It is
+    never stored and never used in any arithmetic; the route compares it to
+    the catalog's current rate and refuses the whole request on a mismatch.
+    An estimator still cannot assert a price.
+
+    It exists because `unit_rate_snapshot` is copied at *replace-time*,
+    which silently assumes the caller saw the rate an instant ago. They did
+    not: an estimator picks items from the catalog panel, fills in
+    quantities, and saves minutes later — and a catalog edit in between
+    re-prices every line without telling anyone. The estimate then shows a
+    rate the person who built it never saw, and may have quoted a customer
+    against. The window is minutes today and would be days under any
+    draft-now-submit-later flow (see
+    `docs/superpowers/specs/2026-08-02-offline-pwa-design.md` §1.2).
+
+    Optional, exactly like `expected_updated_at` in
+    `app/services/concurrency.py`: omit it and the write proceeds
+    unchecked, as before. Same reasoning as that module gives — making it
+    mandatory is the stronger guarantee and the right eventual
+    destination, but it would break every existing caller in one step.
     """
 
     cost_catalog_item_id: uuid.UUID
     quantity: Decimal
+    expected_unit_rate: Decimal | None = None
 
 
 class EstimateLineItemsReplaceRequest(BaseModel):

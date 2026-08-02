@@ -75,7 +75,18 @@ export function EstimateBuilder({
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          items: lines.map((l) => ({ cost_catalog_item_id: l.cost_catalog_item_id, quantity: l.quantity })),
+          // `expected_unit_rate` is the rate THIS screen showed while the
+          // estimate was being built — `l.unit_rate`, set when the line was
+          // added from the catalog panel or loaded from an existing line's
+          // snapshot. The server refuses the save with a 409 if the catalog
+          // moved underneath, rather than silently re-pricing every line to
+          // whatever the rate is at save-time. The error lands in the same
+          // banner as any other save failure, naming both rates.
+          items: lines.map((l) => ({
+            cost_catalog_item_id: l.cost_catalog_item_id,
+            quantity: l.quantity,
+            expected_unit_rate: l.unit_rate,
+          })),
         }),
       });
       const linesData = await linesResponse.json();
