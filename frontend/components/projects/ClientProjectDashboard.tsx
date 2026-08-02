@@ -7,66 +7,42 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useAuth } from "@/contexts/AuthContext";
 import { SigningPanel } from "@/components/esign/SigningPanel";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 function AwaitingSignatureCard({ projectId }: { projectId: string }) {
   const { accessToken } = useAuth();
-  const [sentEstimates, setSentEstimates] = React.useState<{ id: string; total: string | null }[]>([]);
-  const [pendingChangeOrders, setPendingChangeOrders] = React.useState<
-    { id: string; description: string; cost_delta: string }[]
-  >([]);
   const [expandedCoId, setExpandedCoId] = React.useState<string | null>(null);
 
-  const beginLoad = useLatestOnly();
-  const load = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoad();
-    const [allEstimates, allChangeOrders] = await Promise.all([
-      (async () => {
-        const all: { id: string; total: string | null; project_id?: string }[] = [];
-        try {
-          let cursor: string | null = null;
-          do {
-            const params = new URLSearchParams({ status: "sent" });
-            if (cursor) params.set("cursor", cursor);
-            const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-            if (!response.ok) return all;
-            const data = await response.json();
-            all.push(...data.items);
-            cursor = data.next_cursor ?? null;
-          } while (cursor);
-        } catch {
-          // Non-blocking — return whatever was accumulated before the failure.
-        }
-        return all;
-      })(),
-      (async () => {
-        const all: { id: string; description: string; cost_delta: string; project_id?: string }[] = [];
-        try {
-          let cursor: string | null = null;
-          do {
-            const params = new URLSearchParams({ status: "pending" });
-            if (cursor) params.set("cursor", cursor);
-            const response = await fetch(`/api/change-orders?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-            if (!response.ok) return all;
-            const data = await response.json();
-            all.push(...data.items);
-            cursor = data.next_cursor ?? null;
-          } while (cursor);
-        } catch {
-          // Non-blocking — return whatever was accumulated before the failure.
-        }
-        return all;
-      })(),
-    ]);
-    if (!isCurrent()) return;
-    setSentEstimates(allEstimates.filter((e) => e.project_id === projectId));
-    setPendingChangeOrders(allChangeOrders.filter((co) => co.project_id === projectId));
-  }, [accessToken, beginLoad, projectId]);
+  // Neither `error` is destructured: this card renders nothing at all when
+  // both lists are empty, so a failed load must degrade to "nothing awaiting
+  // signature" rather than push a banner onto a client's project page.
+  const { items: allEstimates, reload: reloadEstimates } = useCursorAll<{
+    id: string;
+    total: string | null;
+    project_id?: string;
+  }>({ path: "/api/estimates", params: { status: "sent" }, label: "estimates" });
 
-  React.useEffect(() => {
-    void Promise.resolve().then(() => load());
-  }, [load]);
+  const { items: allChangeOrders, reload: reloadChangeOrders } = useCursorAll<{
+    id: string;
+    description: string;
+    cost_delta: string;
+    project_id?: string;
+  }>({ path: "/api/change-orders", params: { status: "pending" }, label: "change orders" });
+
+  // Both endpoints are company-wide; this card is one project's.
+  const sentEstimates = React.useMemo(
+    () => allEstimates.filter((e) => e.project_id === projectId),
+    [allEstimates, projectId]
+  );
+  const pendingChangeOrders = React.useMemo(
+    () => allChangeOrders.filter((co) => co.project_id === projectId),
+    [allChangeOrders, projectId]
+  );
+
+  const load = React.useCallback(() => {
+    reloadEstimates();
+    reloadChangeOrders();
+  }, [reloadChangeOrders, reloadEstimates]);
 
   if (sentEstimates.length === 0 && pendingChangeOrders.length === 0) return null;
 
@@ -102,40 +78,18 @@ function AwaitingSignatureCard({ projectId }: { projectId: string }) {
 }
 
 function ClientInvoicesCard({ projectId }: { projectId: string }) {
-  const { accessToken } = useAuth();
-  const [invoices, setInvoices] = React.useState<
-    { id: string; invoice_number: string; amount: string; status: string; due_date: string | null; outstanding_balance: string }[]
-  >([]);
-
-  React.useEffect(() => {
-    if (!accessToken) return;
-    let cancelled = false;
-    (async () => {
-      // The backend already scopes this list for the client role (non-draft
-      // invoices only) — no client-side filtering needed.
-      const all: typeof invoices = [];
-      try {
-        let cursor: string | null = null;
-        do {
-          const params = new URLSearchParams();
-          if (cursor) params.set("cursor", cursor);
-          const response = await fetch(`/api/projects/${projectId}/invoices?${params}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          if (!response.ok) return;
-          const data = await response.json();
-          all.push(...data.items);
-          cursor = data.next_cursor ?? null;
-        } while (cursor);
-        if (!cancelled) setInvoices(all);
-      } catch {
-        // Non-blocking — the dashboard still renders without invoices.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken, projectId]);
+  // The backend already scopes this list for the client role (non-draft
+  // invoices only) — no client-side filtering needed. `error` is not
+  // destructured for the same reason as the card above: this one renders
+  // nothing when the list is empty, so a failure degrades rather than shouts.
+  const { items: invoices } = useCursorAll<{
+    id: string;
+    invoice_number: string;
+    amount: string;
+    status: string;
+    due_date: string | null;
+    outstanding_balance: string;
+  }>({ path: `/api/projects/${projectId}/invoices`, label: "invoices" });
 
   if (invoices.length === 0) return null;
 

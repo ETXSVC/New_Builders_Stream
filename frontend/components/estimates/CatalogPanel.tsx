@@ -1,11 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { formatCurrency } from "@/lib/format";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface CatalogItem {
   id: string;
@@ -16,47 +15,16 @@ interface CatalogItem {
 }
 
 export function CatalogPanel({ onAdd }: { onAdd: (item: CatalogItem) => void }) {
-  const { accessToken } = useAuth();
-  const [items, setItems] = React.useState<CatalogItem[]>([]);
   const [search, setSearch] = React.useState("");
-  const [error, setError] = React.useState<string | null>(null);
 
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      // Follows next_cursor to exhaustion — the catalog panel needs the
-      // whole browsable set, not one page (same pagination-completeness
-      // reasoning the CRM+PM tabs settled on for lists a user must see in
-      // full).
-      const all: CatalogItem[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (search) params.set("search", search);
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/catalog/items?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load catalog");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setItems(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll, search]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
+  // Follows next_cursor to exhaustion — the catalog panel needs the whole
+  // browsable set, not one page (same pagination-completeness reasoning the
+  // CRM+PM tabs settled on for lists a user must see in full).
+  const { items, error } = useCursorAll<CatalogItem>({
+    path: "/api/catalog/items",
+    params: { search },
+    label: "catalog",
+  });
 
   const grouped = React.useMemo(() => {
     const groups = new Map<string, CatalogItem[]>();

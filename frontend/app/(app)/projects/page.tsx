@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorList } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate } from "@/lib/format";
@@ -23,51 +23,14 @@ interface ClientProject extends StaffProject {
 }
 
 export default function ProjectsPage() {
-  const { accessToken, role } = useAuth();
-  const [items, setItems] = React.useState<(StaffProject | ClientProject)[]>([]);
-  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
+  const { role } = useAuth();
 
-  const beginLoad = useLatestOnly();
-  const load = React.useCallback(
-    async (cursor: string | null, replace: boolean) => {
-      if (!accessToken) return;
-      const isCurrent = beginLoad();
-      setLoading(true);
-      setError(null);
-      try {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        // ABOVE the !response.ok branch, not below it: putting the guard
-        // before the first setState would only cover the error path and
-        // leave the success write — the one that corrupts the list —
-        // exposed.
-        if (!isCurrent()) return;
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load projects");
-          return;
-        }
-        setItems((prev) => (replace ? data.items : [...prev, ...data.items]));
-        setNextCursor(data.next_cursor);
-      } catch {
-        setError("Unable to reach the server. Check your connection and try again.");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [accessToken, beginLoad]
-  );
-
-  React.useEffect(() => {
-    // Deferred to a promise callback so no setState in load's call path
-    // runs synchronously inside the effect (react-hooks/set-state-in-effect).
-    void Promise.resolve().then(() => load(null, true));
-  }, [load]);
+  // The one paged surface among the converted loaders: this list is read
+  // through rather than chosen from, so it keeps "Load more" rather than
+  // walking to exhaustion.
+  const { items, nextCursor, loading, error, loadMore } = useCursorList<
+    StaffProject | ClientProject
+  >({ path: "/api/projects", label: "projects" });
 
   const canCreate = role === "admin" || role === "project_manager";
 
@@ -111,7 +74,7 @@ export default function ProjectsPage() {
         ))}
       </ul>
       {nextCursor && (
-        <Button variant="outline" onClick={() => load(nextCursor, false)} disabled={loading}>
+        <Button variant="outline" onClick={loadMore} disabled={loading}>
           Load more
         </Button>
       )}

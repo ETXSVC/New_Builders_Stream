@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface Vendor {
   id: string;
@@ -27,78 +27,32 @@ interface BomLine {
 
 export function MaterialsTab({ projectId }: { projectId: string }) {
   const { accessToken, role } = useAuth();
-  const [lines, setLines] = React.useState<BomLine[]>([]);
-  const [vendors, setVendors] = React.useState<Vendor[]>([]);
   const [description, setDescription] = React.useState("");
   const [unit, setUnit] = React.useState("");
   const [quantity, setQuantity] = React.useState("");
   const [receiptQuantities, setReceiptQuantities] = React.useState<Record<string, string>>({});
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager";
 
-  const beginLoadLines = useLatestOnly();
-  const loadLines = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadLines();
-    try {
-      const all: BomLine[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects/${projectId}/materials?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load materials");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setLines(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadLines, projectId]);
+  const {
+    items: lines,
+    error,
+    setError,
+    reload: reloadLines,
+  } = useCursorAll<BomLine>({
+    path: `/api/projects/${projectId}/materials`,
+    label: "materials",
+  });
 
-  const beginLoadVendors = useLatestOnly();
-  const loadVendors = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadVendors();
-    try {
-      const all: Vendor[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/vendors?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) return;
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setVendors(all);
-    } catch {
-      // Vendor list is a supporting dropdown, not the primary data this
-      // tab exists for — a failure here shouldn't blank out the materials
-      // list itself, so it's swallowed rather than surfaced via `error`.
-    }
-  }, [accessToken, beginLoadVendors]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => {
-      void loadLines();
-      void loadVendors();
-    });
-  }, [loadLines, loadVendors]);
+  // The vendor list is a supporting dropdown, not the primary data this tab
+  // exists for, so its `error` is deliberately not destructured: a failure
+  // here must not blank out the materials list or claim the materials load
+  // failed. Same reasoning the hand-written loader recorded by swallowing it.
+  const { items: vendors } = useCursorAll<Vendor>({
+    path: "/api/vendors",
+    label: "vendors",
+  });
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -119,7 +73,7 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
       setDescription("");
       setUnit("");
       setQuantity("");
-      await loadLines();
+      reloadLines();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
@@ -134,7 +88,7 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
       body: JSON.stringify({ ordered: true, vendor_id: vendorId || null }),
     });
-    if (response.ok) await loadLines();
+    if (response.ok) reloadLines();
   }
 
   async function handleRecordReceipt(lineId: string) {
@@ -148,7 +102,7 @@ export function MaterialsTab({ projectId }: { projectId: string }) {
     });
     if (response.ok) {
       setReceiptQuantities((prev) => ({ ...prev, [lineId]: "" }));
-      await loadLines();
+      reloadLines();
     }
   }
 

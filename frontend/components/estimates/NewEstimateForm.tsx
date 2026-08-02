@@ -6,7 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface MarkupProfileOption {
   id: string;
@@ -22,39 +22,20 @@ export function NewEstimateForm({
 }) {
   const router = useRouter();
   const { accessToken } = useAuth();
-  const [profiles, setProfiles] = React.useState<MarkupProfileOption[]>([]);
   const [markupProfileId, setMarkupProfileId] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  const beginLoadProfiles = useLatestOnly();
-  const loadProfiles = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadProfiles();
-    try {
-      const all: MarkupProfileOption[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/markup-profiles?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!response.ok) return;
-        const data = await response.json();
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setProfiles(all);
-    } catch {
-      // Non-blocking — the Select just stays empty if this fails.
-    }
-  }, [accessToken, beginLoadProfiles]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadProfiles());
-  }, [loadProfiles]);
+  // The hook's `error` is deliberately NOT destructured, and `error` above
+  // stays this component's own submit-failure state. Loading the markup
+  // profiles is non-blocking: if it fails the Select simply stays empty,
+  // which is what the hand-written loader did by swallowing the failure.
+  // Surfacing it in the banner would report a broken dropdown as a failed
+  // form submission.
+  const { items: profiles } = useCursorAll<MarkupProfileOption>({
+    path: "/api/markup-profiles",
+    label: "markup profiles",
+  });
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
