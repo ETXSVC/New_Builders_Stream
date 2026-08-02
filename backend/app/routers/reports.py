@@ -39,7 +39,7 @@ from app.core.deps import CurrentUser, require_role
 from app.core.money import CENTS
 from app.models import Bill, BillPayment, Expense, Invoice, InvoicePayment, Project
 from app.schemas.profitability import AgingEntry, ProfitabilityReportResponse, ProjectProfitability
-from app.services.invoicing import DEFAULT_TAX_RATE
+from app.services.financial_settings import resolve_financial_settings
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -185,12 +185,17 @@ async def get_profitability_report(
 
     # Quantized to CENTS/ROUND_HALF_UP before it reaches the response — same
     # rule every other monetary write/computation in this codebase follows
-    # (app/core/money.py). Currently latent since DEFAULT_TAX_RATE is 0.00,
-    # but the moment invoicing.py's own documented placeholder becomes a
-    # real nonzero rate, an unquantized multiplication here would emit more
-    # than 2 decimal places.
+    # (app/core/money.py). No longer latent: the rate is the tenant's own
+    # (migration 0033) and carries up to five decimal places, so an
+    # unquantized multiplication here now really does emit more than two.
+    #
+    # Recomputed live rather than stored, which is right for a figure
+    # labelled an ESTIMATE of current liability: changing the rate should
+    # change what this says. That is the opposite of a deposit invoice,
+    # whose amount is fixed at approval and never rewritten.
+    settings = await resolve_financial_settings(current.session, current.company_id)
     tax_liability_estimate = (
-        sum(revenue_by_project.values(), Decimal("0.00")) * DEFAULT_TAX_RATE
+        sum(revenue_by_project.values(), Decimal("0.00")) * settings.tax_rate
     ).quantize(CENTS, rounding=ROUND_HALF_UP)
 
     return ProfitabilityReportResponse(

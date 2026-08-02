@@ -51,7 +51,8 @@ from app.core.money import CENTS
 from app.core.tier_gating import tier_allows
 from app.models import Invoice
 from app.services.audit import write_audit_log
-from app.services.invoicing import DEFAULT_DEPOSIT_PERCENTAGE, next_invoice_number
+from app.services.financial_settings import resolve_financial_settings
+from app.services.invoicing import next_invoice_number
 
 
 async def handle_estimate_approved(
@@ -78,12 +79,15 @@ async def handle_estimate_approved(
     # Quantized to CENTS/ROUND_HALF_UP before it ever reaches the Numeric
     # (12,2) column — same rule every other monetary write in this codebase
     # follows (see app/core/money.py's own docstring). Without this,
-    # approved_total * DEFAULT_DEPOSIT_PERCENTAGE can carry more than 2
-    # decimal places (e.g. 999.99 * 0.10 = 99.9990); Postgres would round on
-    # INSERT, but the in-memory invoice.amount on this ORM object would stay
+    # approved_total * the deposit percentage can carry more than 2 decimal
+    # places (e.g. 999.99 * 0.10 = 99.9990); Postgres would round on INSERT,
+    # but the in-memory invoice.amount on this ORM object would stay
     # unquantized after flush() (SQLAlchemy doesn't re-fetch plain columns
-    # post-insert), diverging from what's actually persisted.
-    deposit_amount = (approved_total * DEFAULT_DEPOSIT_PERCENTAGE).quantize(
+    # post-insert), diverging from what's actually persisted. The tenant's
+    # own rate can carry five decimals (migration 0033), so there is more to
+    # round away now than when this was a fixed 0.10.
+    settings = await resolve_financial_settings(session, company_id)
+    deposit_amount = (approved_total * settings.deposit_percentage).quantize(
         CENTS, rounding=ROUND_HALF_UP
     )
 
