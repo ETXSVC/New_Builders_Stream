@@ -1,11 +1,11 @@
 # Database ERD
 
-Generated from the **live schema** — a scratch database with all 29 Alembic
+Generated from the **live schema** — a scratch database with all 33 Alembic
 migrations applied — rather than from the ORM models or by hand, so it cannot
 quietly drift from what `alembic upgrade head` actually produces.
 
-**44 tables** (excluding `alembic_version`). Last re-derived 2026-08-01
-against migration `0029`; the counts and the no-RLS list below come from
+**46 tables** (excluding `alembic_version`). Last re-derived 2026-08-02
+against migration `0033`; the counts and the no-RLS list below come from
 `pg_class`/`pg_attribute`, not from memory.
 
 ## Read this first: the tenant boundary is in the database
@@ -16,7 +16,7 @@ application code. Every tenant table carries `company_id` and a `FOR ALL`
 policy scoped by `get_all_descendant_ids(current_setting('app.current_tenant'))`,
 so a query that forgets to filter by company still cannot cross tenants.
 
-- RLS enabled: **41 of 44** tables
+- RLS enabled: **43 of 46** tables
 - Deliberately without RLS: `refresh_tokens`, `users`, `password_reset_tokens`
 
 `users` is global by design (one person may belong to several companies, and
@@ -501,6 +501,17 @@ erDiagram
         text access_token_encrypted
         text refresh_token_encrypted
         timestamptz connected_at
+        varchar provider_account_id "nullable (0030)"
+    }
+    integration_entity_mappings {
+        uuid id "PK"
+        uuid company_id "FK"
+        uuid connection_id "FK"
+        varchar entity_kind
+        varchar local_key
+        varchar provider_entity_id
+        timestamptz created_at
+        timestamptz updated_at
     }
     integration_sync_records {
         uuid id "PK"
@@ -517,7 +528,68 @@ erDiagram
     }
 
     integration_connections ||--o{ integration_sync_records : "connection_id"
+    integration_connections ||--o{ integration_entity_mappings : "connection_id"
 ```
+
+`integration_entity_mappings` (migration 0030) is what a *real* provider
+needed and the fake never did: QuickBooks and FreshBooks each mint their own
+id for a customer or vendor, and a second sync of the same entity must reuse
+it rather than create a duplicate. Unique on
+`(connection_id, entity_kind, local_key)`.
+
+`local_key` is deliberately **the display name that was matched on, not a
+foreign key** — what is being mapped is not always a row in this database. A
+bill's vendor is free text on `bills.vendor_name`, and an expense account is
+a provider-side concept with no local counterpart at all. For the same
+reason it is one table with an `entity_kind` discriminator rather than three
+(`customers`/`vendors`/`accounts`): identical shape, identical lookup, so
+three tables would be three copies of the same policy, index and upsert.
+
+`provider_account_id` on `integration_connections` is the realm/account the
+tokens were issued for — nullable because the fake has no notion of one.
+
+## Tenant financial settings (migration 0033)
+
+```mermaid
+erDiagram
+    companies {
+        uuid id "PK"
+    }
+    company_financial_settings {
+        uuid id "PK"
+        uuid company_id "FK"
+        numeric deposit_percentage "nullable"
+        numeric tax_rate "nullable"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    companies ||--o| company_financial_settings : "company_id"
+```
+
+At most one row per company, holding the two rates that were previously
+module constants in `app/services/invoicing.py`: the deposit percentage
+`ESTIMATE_APPROVED` uses when it drafts a deposit invoice, and the tax rate
+the profitability report applies to estimated liability. `numeric(6,5)`
+stores a rate, not a percentage — 0.08250 is 8.25%.
+
+Both columns are nullable and resolved **independently, per value**: the
+company's own setting, else its **root** company's, else the code default
+(10% deposit, 0% tax). Two properties follow, and both are deliberate:
+
+- **Per value, not per row.** A tenant may want to state a deposit policy
+  and leave tax alone; resolving the whole row would make setting one
+  silently adopt the other's default.
+- **Root fallback, not plain per-company.** A head office sets a policy once
+  and branches follow it, while a branch in another state can still
+  override. This is deliberately *not* the root-only resolution
+  `subscriptions` uses — a subscription genuinely belongs to the root, but a
+  tax rate is exactly the thing a branch needs to differ on.
+
+Changing a rate does not rewrite history: a deposit invoice's amount is
+computed at approval and stored, so invoices already raised keep the rate
+they were agreed at. The report's tax figure *is* recomputed live, because
+it is labelled an estimate of current liability rather than a record.
 
 ## Platform administration
 
@@ -665,6 +737,7 @@ per-domain diagrams stay readable.
 | `communication_logs` | `company_id` | `companies` |
 | `compliance_documents` | `company_id` | `companies` |
 | `compliance_notifications` | `company_id` | `companies` |
+| `company_financial_settings` | `company_id` | `companies` |
 | `cost_catalog_items` | `company_id` | `companies` |
 | `daily_logs` | `author_id` | `users` |
 | `daily_logs` | `company_id` | `companies` |
@@ -679,6 +752,7 @@ per-domain diagrams stay readable.
 | `expenses` | `company_id` | `companies` |
 | `expenses` | `project_id` | `projects` |
 | `integration_connections` | `company_id` | `companies` |
+| `integration_entity_mappings` | `company_id` | `companies` |
 | `integration_sync_records` | `company_id` | `companies` |
 | `invoice_payments` | `company_id` | `companies` |
 | `invoice_payments` | `recorded_by` | `users` |
@@ -702,5 +776,5 @@ per-domain diagrams stay readable.
 | `tasks` | `company_id` | `companies` |
 | `vendors` | `company_id` | `companies` |
 
-_52 cross-domain references._
+_54 cross-domain references._
 
