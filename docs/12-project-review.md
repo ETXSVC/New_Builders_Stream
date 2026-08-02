@@ -649,7 +649,7 @@ them should never be done.
 |---|---|---|
 | Five module-level owner engines in `app/tasks/` | Open, unchanged | **Closed** — and §8 of this document already said so |
 | Money schemas lack a `decimal_places=2` backstop | Open | **Rejected** — the behaviour it asks for was deliberately designed out |
-| List components duplicating fetch/guard boilerplate | ~17 still hand-roll, 6 use the hook | **8 of 20 use it**, 12 do not, one of those by design |
+| List components duplicating fetch/guard boilerplate | ~17 still hand-roll, 6 use the hook | **15 files use the module**, 12 hand-roll, ~11 real candidates — and all of them already carry the guard |
 
 ### 12.1 The owner engines were closed before §10 was written
 
@@ -696,7 +696,34 @@ it.
 
 ### 12.3 The list-component consolidation moved without being recorded
 
-20 files handle cursor pagination; 8 use `lib/use-cursor-list.ts` and 12 do
-not, of which `integrations/page.tsx` is deliberately excluded (§8: different
+**15 files import `lib/use-cursor-list.ts`** — 7 `useCursorList`, 5
+`useCursorAll`, the rest its types. **12 still hand-roll the fetch**, of which
+`integrations/page.tsx` is the documented permanent exception (§8: different
 envelope, and a 404 there means "not connected", not an error). So ~11
-genuine candidates remain, not ~17, and adoption is 8 rather than 6.
+genuine candidates remain, not ~17.
+
+Two things make this easy to measure wrongly, and the first version of this
+section got both:
+
+- **Counting files that mention `next_cursor` undercounts adoption**, because
+  a file *using* the hook does not mention it — encapsulating that string is
+  the point. That set is biased toward hand-rollers by construction.
+- **`useCursorAll` is a second hook in the same module**, for the
+  walk-every-page pattern. Grepping the name `useCursorList` scores its five
+  callers as unconverted.
+
+**The safety argument is already spent, and that changes what this work is
+for.** All 11 candidates already carry the stale-response guard — via
+`lib/use-latest-only.ts`, a third shared helper, rather than by hand.
+`integrations/page.tsx` is the only file in the app using neither. So the
+original rationale — one of eight copy-pasted loaders having silently lost
+its guard — no longer describes anything outstanding. What remains is
+duplicated fetch/append/error boilerplate: worth removing for concision,
+but it is a refactor rather than a latent bug, and should be scheduled as
+one.
+
+Ten of the eleven are walk-every-page loops (`useCursorAll`); only
+`app/(app)/projects/page.tsx` is single-page-plus-`loadMore`
+(`useCursorList`). §10's row for that file — "uses the shared loader, which
+owns the guard" — is right in substance and wrong in detail: the loader it
+shares is `use-latest-only`, not `use-cursor-list`.
