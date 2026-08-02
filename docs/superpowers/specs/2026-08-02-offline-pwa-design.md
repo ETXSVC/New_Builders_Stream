@@ -1,80 +1,145 @@
-# Offline / PWA support for field crews — scoping
+# Offline support — scoping
 
-**Status: scoping only. No implementation is proposed here, and one is not
-recommended until §7's question is answered.**
+**Status: scoping only. No implementation proposed.**
 
-PRD §5.2 lists offline/PWA as out of scope for v1, and §8 question 1 —
-*"Does field crew usage require offline-capable mobile/PWA support?"*, owner
-Product — is still open. This document exists to make that question cheap to
-answer, by establishing what offline would actually cost against this
-codebase rather than against a generic Next.js app.
+PRD §8 question 1 asks *"Does field crew usage require offline-capable
+mobile/PWA support?"* — and the framing of that question is what made the
+first version of this document scope the wrong thing.
 
-Two findings dominate everything below, and they point in opposite
-directions:
+**The actual driver is an estimator on site**, capturing estimate
+information where there is no service so it is ready when they get signal.
+That is a different role (`admin`/`project_manager`, not `field_crew`), a
+much larger write surface, and — unlike the field crew case — it genuinely
+requires the expensive branch.
 
-- **The offline surface is remarkably small.** A `field_crew` user can
-  perform exactly **two writes** in the entire product. Not "two screens" —
-  two routes.
-- **The security architecture actively fights a cached app shell.** The
-  per-request CSP nonce and the 15-minute in-memory access token are both
-  load-bearing, both deliberate, and both incompatible with the naive
-  service-worker approach.
+Both cases are documented below, because the difference between them is the
+whole decision: one is a few days' work with no security implications, and
+the other is a change to the app's central security control.
 
 ---
 
-## 1. What a field crew can actually do
+## 1. The estimator case — what actually happens on site
 
-Derived from `require_role(...)` on every route, not from the RBAC matrix
-doc.
+An estimator standing in a building enters line items against the company's
+cost catalog, and wants a total. That is three server round-trips, in order:
 
-### Writes — the complete list
+| Step | Route | Depends on |
+|---|---|---|
+| 1 | `POST /estimates` | — |
+| 2 | `PUT /estimates/{id}/lines` (batch replace) | the id from step 1 |
+| 3 | `POST /estimates/{id}/calculate` | steps 1 and 2 |
+
+Plus **reads that are not optional**: the cost catalog (they are picking
+items from it) and the markup profiles (they select one).
+
+Four things make this materially harder than the field-crew case.
+
+### 1.1 The catalog must be readable offline, so the app shell must load offline
+
+An estimator does not open the app in the office and keep the tab alive
+through the drive. They arrive on site, open the app, and there is no signal.
+That is a **cold start while offline**, which means the HTML document itself
+must come from cache — which is exactly what §3 says the CSP forbids.
+
+The field-crew case could be served by "cache data, never documents,"
+because a crew member plausibly opens the app before losing signal. The
+estimator case cannot.
+
+### 1.2 `unit_rate_snapshot` is copied at *server write* time, not capture time
+
+This is the correctness problem, and it is subtle.
+
+`PUT /estimates/{id}/lines` copies `unit_rate_snapshot` from the resolved
+catalog item's `unit_rate` **at the moment the route runs**, deliberately —
+the schema's historical-immutability rule exists so a later catalog edit
+cannot retroactively change what an estimate shows.
+
+Queue-and-replay breaks that rule from the other direction. An estimator
+captures a line on Tuesday at $50/unit. Someone raises the catalog rate to
+$60 on Wednesday. The queue flushes on Thursday, and the estimate silently
+records **$60** — a rate the estimator never saw and did not quote. Nothing
+errors; the number is simply wrong, and it is wrong in the direction of a
+number a customer was given verbally on site.
+
+The rule was written assuming capture and write are the same instant.
+Offline makes them days apart, and the existing design has no way to express
+"the rate as of when I captured this."
+
+**Fixing it is an API change**, not a client concern: `PUT /lines` would
+need to accept the captured rate (and reject or flag a mismatch), or accept
+a `captured_at` the server resolves the rate against. Either is a real
+design decision with an audit dimension — an estimator should probably not
+be able to assert an arbitrary rate.
+
+### 1.3 The write chain has ordering dependencies
+
+The field-crew writes are two independent, self-contained requests. These
+three are a chain: step 2 needs the server-assigned estimate id from step 1.
+
+So the queue is not a flat list of replayable requests. It needs either
+client-generated ids the server accepts, or a dependency graph where a
+queued item is rewritten with the id its predecessor returned. The latter is
+the usual answer and is fiddly to get right — particularly on partial
+failure, where step 1 succeeded and step 2 got a 409.
+
+### 1.4 Totals are a server step, and the rounding rule is exact
+
+`POST /estimates/{id}/calculate` is deliberately a separate explicit step.
+An estimator offline therefore sees **no total** unless the client
+replicates the pipeline: line totals, category subtotals, overhead, profit,
+tax (a documented no-op at `Decimal("0")` for Phase 2), and the rounding
+rule — *only the final total is quantized*, `ROUND_HALF_UP` via
+`app/core/money.py`'s `CENTS`.
+
+A client-side reimplementation that rounds at a different step produces a
+total that disagrees with the server's by cents, on the document a customer
+signs. If offline totals are needed, that arithmetic has to be shared or
+specified precisely enough to be reproduced exactly — and then tested
+against the server's, or it will drift.
+
+### 1.5 Also: estimates are tier-gated
+
+Every mutating estimate route carries `require_module("estimation")`. A
+queued write can come back **403** at flush time if the tenant's tier or
+per-tenant override changed while they were offline. The queue must surface
+that, not retry it — it will never succeed.
+
+---
+
+## 2. The field-crew case, for contrast — and it is cheap
+
+Derived from `require_role(...)` on every route. A `field_crew` user can
+perform exactly **two writes** in the entire product:
 
 | Route | Shape | Offline character |
 |---|---|---|
-| `PATCH /tasks/{id}` | `status` **only**, and only where `assignee_id == self` | Small enum, own row only |
+| `PATCH /tasks/{id}` | `status` **only**, own task only | Small enum, no contention |
 | `POST /projects/{id}/daily-logs` | Create | **Append-only** |
 
-That is the entire write surface. `_DAILY_LOG_WRITE_ROLES` in
-`app/routers/projects.py` exists precisely because daily logs are "the only
-place field_crew gets any write verb at all" — the router says so in a
-comment rather than leaving it to be rediscovered.
+Daily logs are immutable by construction — no update or delete route, and
+migration 0004 does `REVOKE UPDATE, DELETE ON daily_logs, documents FROM
+app_user` at the database level. A replayed create cannot conflict; it can
+only *duplicate*, which is an idempotency key, not a merge strategy. Task
+status is a small enum on a row only that user may touch, so two crew members
+cannot race.
 
-### Reads
+Both are independent requests with no ordering, no id dependency, no
+server-side recomputation, and no capture-time semantics. **This case is a
+write queue and nothing else** — no cached documents, no CSP change, a few
+days' work.
 
-`GET /my-tasks` (the landing page — `app/(app)/dashboard/page.tsx` redirects
-`field_crew` there), the projects list and detail, project documents, daily
-logs, and phases/tasks. All are scoped further than the role suggests:
-`with_field_crew_scope` restricts the projects list to assigned projects, and
-`get_project_or_404` applies the same scope at every by-id chokepoint.
-
-### Why this matters
-
-Both writes are unusually well-suited to a queue:
-
-- **Daily logs are immutable by construction.** No update or delete route
-  exists, and migration 0004 additionally does
-  `REVOKE UPDATE, DELETE ON daily_logs, documents FROM app_user` at the
-  database level. A replayed create cannot
-  conflict with anything — the only failure mode is a *duplicate*, which is
-  an idempotency problem, not a merge problem.
-- **Task status is a small enum on a row only that user may touch.** Two
-  crew members cannot race each other on the same task, because each may
-  only patch a task assigned to themselves.
-
-A general offline sync layer solves conflict problems this surface does not
-have. That is the strongest argument for scoping any eventual
-implementation to a **write queue**, not a replication engine.
+It is worth keeping visible precisely because it is not what was asked for:
+if estimator capture is the goal, the field-crew feature is not a stepping
+stone toward it, and building it first buys very little of the harder thing.
 
 ---
 
-## 2. The blocker: a cached app shell cannot satisfy the CSP
-
-This is the finding that should drive the decision.
+## 3. The blocker: a cached app shell cannot satisfy the CSP
 
 `app/layout.tsx` sets `export const dynamic = "force-dynamic"`, and
-`middleware.ts` builds the Content-Security-Policy per request around a
-**fresh 16-byte nonce** that Next stamps into the inline bootstrap scripts it
-emits. `frontend/CLAUDE.md` records why prerendering was given up for it:
+`middleware.ts` builds the CSP per request around a fresh 16-byte nonce that
+Next stamps into the inline bootstrap scripts. `frontend/CLAUDE.md` records
+why prerendering was given up for it:
 
 > Prerendered HTML cannot carry a per-request nonce; it would ship a
 > build-time value, the browser would compare it against the header's fresh
@@ -82,167 +147,107 @@ emits. `frontend/CLAUDE.md` records why prerendering was given up for it:
 > **silently**, because nothing in the app itself errors.
 
 A service worker serving a cached HTML document is prerendering by another
-name. The cached document carries the nonce from whenever it was cached; the
-CSP header the browser evaluates against comes from... nothing, offline, or
-a stale cached header. Either way the app's own bootstrap scripts are
-blocked and the page renders as a blank shell **with no error surfaced**.
+name. `e2e/security-headers.spec.ts` asserts every script tag carries the
+response's own nonce and that a real load logs no CSP violation, so relaxing
+the policy is not available either.
 
-`e2e/security-headers.spec.ts` asserts that every script tag carries the
-response's own nonce and that a real page load logs no CSP violation. Any
-offline shell must keep those assertions passing, which rules out simply
-relaxing the policy.
+**Three ways out:**
 
-**Three ways out, none free:**
-
-1. **Serve the offline shell from a route with its own static CSP** — a
-   dedicated `/offline` entry point that does not use `'strict-dynamic'` +
-   nonce, with its own hashed script allowlist. Smallest blast radius;
-   means the offline experience is a *separate app*, not the product UI.
-2. **Move to hash-based CSP for the bootstrap** — build-time hashes instead
-   of per-request nonces. Restores prerendering and makes caching viable,
-   but it is a change to the app's central security control, and
-   `'strict-dynamic'` with a nonce is what currently makes `script-src`
+1. **A dedicated offline entry point with its own static CSP** — hashed
+   script allowlist, no nonce. Smallest blast radius, but the offline
+   experience becomes a separate mini-app rather than the product UI. For
+   estimate capture specifically this may be the right answer: it is one
+   focused screen, not the whole product.
+2. **Hash-based CSP for the bootstrap** — build-time hashes instead of
+   per-request nonces. Restores prerendering and makes caching viable
+   everywhere, but changes the app's central security control, and
+   `'strict-dynamic'` plus a nonce is what currently makes `script-src`
    meaningful.
-3. **Cache data, not documents.** The service worker caches only `/api/*`
-   responses and queues writes; the HTML is always fetched live. Preserves
-   the CSP exactly — and provides **no** benefit when the device is truly
-   offline at page load, only when it goes offline mid-session.
+3. **Cache data, never documents.** Preserves the CSP exactly — and does not
+   solve the estimator case at all, per §1.1.
 
-Option 3 is the only one that changes nothing security-relevant, and it is
-also the one that does not deliver what "offline support" usually means.
-That trade is the substance of the decision.
+Option 1 is the one worth costing first.
 
 ---
 
-## 3. Credentials expire in 15 minutes and cannot be renewed offline
+## 4. Credentials and the cache boundary
 
-`jwt_expire_minutes: int = 15`. The access token lives **in React state
-only** (`AuthContext`), never in storage — a fresh tab starts with
-`accessToken === null` and takes one round-trip to recover. The refresh
-token is a 14-day httpOnly cookie the BFF holds, and exchanging it requires
-reaching the backend.
+Unchanged by the re-scoping, and both still apply.
 
-For a crew on a site with no signal, this means:
+**The access token is 15 minutes and lives in React state only.** The
+refresh token is a 14-day httpOnly cookie the BFF holds, and exchanging it
+needs the network. An estimator offline for an afternoon has no valid
+credential, and a cold page load offline has no token at all — so **any
+offline read is served without revalidating authorization**, because there
+is nothing to revalidate against. That is not a bug to fix: the short window
+is the point, and lengthening it would weaken every online session.
 
-- Within ~15 minutes of going offline, no cached bearer token is valid.
-- A page reload offline has no token at all, valid or otherwise.
-- Therefore **any offline read must be served from cache without
-  revalidating authorization**, because there is nothing to revalidate
-  against.
+**A cache sits outside RLS entirely.** `CLAUDE.md`'s central claim is that
+PostgreSQL RLS is the enforcement boundary, not application code — every
+tenant guarantee is evaluated at query time under `app.current_tenant`. A
+cached payload has already left that boundary; whatever is in it is readable
+by whoever holds the device, with no policy evaluated.
 
-This is not a bug to fix. Shortening the window is the whole point of a
-15-minute token; lengthening it for offline would weaken every online
-session to serve a case that may not exist.
+For the estimator case this is sharper than for a crew tablet, because the
+thing being cached is **the company's entire cost catalog** — its pricing,
+which is commercially sensitive and is the one dataset a competitor would
+want. Multi-company membership (migration 0031) makes it sharper again: one
+person may hold memberships in several companies, so a cache keyed by URL
+alone would serve company A's catalog while the user is acting as company B.
 
----
-
-## 4. What a cache means for tenant isolation
-
-The most important sentence in `CLAUDE.md` is that **PostgreSQL RLS is the
-enforcement boundary, not application code**. Every guarantee in this system
-— tenant isolation, the `client` role's row scope, `field_crew`'s
-assigned-only scope — is enforced at the moment a query runs, under
-`app.current_tenant`.
-
-A cached response has already left that boundary. Whatever is in the cache is
-readable by whoever holds the device, with no policy evaluated and no token
-required. Concretely, on a **shared site tablet**:
-
-- Cached `/api/my-tasks` from crew member A is readable by crew member B
-  after A logs out, unless the cache is scoped per user and cleared on
-  logout.
-- `POST /auth/logout` revokes the refresh token server-side; it does not and
-  cannot reach a Cache Storage entry.
-- Multi-company membership (migration 0031) makes this sharper: one person
-  may hold memberships in several companies and switch between them. A cache
-  keyed by URL alone would serve company A's payload to the same person
-  acting as company B — the exact cross-tenant read RLS exists to prevent,
-  reintroduced client-side.
-
-**Any cache must therefore be keyed by `(user_id, active_company_id)` and
-cleared on logout and on company switch.** That is a requirement, not a
-refinement. It is also the part most likely to be got wrong quietly, since
-nothing fails loudly when a cache key is too coarse.
+**Any cache must be keyed by `(user_id, active_company_id)` and cleared on
+logout and on company switch.** That is a requirement, not a refinement, and
+it is the part most likely to be got wrong quietly — nothing fails loudly
+when a cache key is too coarse.
 
 ---
 
-## 5. What the existing architecture gets right for this
-
-Three decisions already in place help, and are worth not undoing:
+## 5. What the existing architecture gets right
 
 - **Everything goes through the BFF.** All browser calls are same-origin
-  `/api/*` Route Handlers, so one service worker `fetch` handler intercepts
-  the entire API surface uniformly. There is no cross-origin case to special
-  case.
+  `/api/*` Route Handlers, so one service worker `fetch` handler covers the
+  entire API surface with no cross-origin special cases.
 - **Optimistic concurrency is a body field, not a header.**
-  `app/services/concurrency.py` uses `expected_updated_at` in the request
-  body specifically because the BFF's `apiFetch` forwards a fixed header
-  allowlist and would drop `If-Match`. A queued request stored as
-  `(method, url, body)` therefore replays with its guard intact — a header
-  form would have been silently stripped by the queue as well.
-- **`PATCH /tasks/{id}` carries no stale-write guard at all**, so it is
-  last-write-wins today. Queue-and-replay does not make it worse, but a
-  status queued at 09:00 and flushed at 17:00 will overwrite whatever
-  happened in between. If offline is built, that route should gain
-  `expected_updated_at` **and** the queue should surface the resulting 409 to
-  the user rather than discarding it.
+  `app/services/concurrency.py` uses `expected_updated_at` in the body
+  because the BFF forwards a fixed header allowlist and would drop
+  `If-Match`. A queued `(method, url, body)` therefore replays with its
+  guard intact — a header form would have been stripped by the queue too.
+- **Catalog reads already walk to exhaustion.** `CatalogPanel` and
+  `CatalogItemsTab` use `useCursorAll`, so "the whole catalog, client-side"
+  is already the access pattern; caching it is not a new shape. Note the
+  known limit recorded in `lib/use-cursor-list.ts`: that walk is unbounded,
+  and a ten-thousand-item catalog is four hundred requests to prime a cache.
 
 ---
 
-## 6. Rough shape, if it is built
+## 6. What to decide, in order
 
-Not a plan — a sketch to price the decision.
+1. **§1.2 first — the rate-snapshot semantics.** It is the only item here
+   that can produce a *wrong number on a signed document*, and it is an API
+   design question that does not depend on any of the client work. It is
+   worth resolving even if offline is never built, because it is latent in
+   any "draft now, submit later" flow.
+2. **§3 — which CSP route.** This is the cost driver. Option 1 (a dedicated
+   offline capture screen) is plausibly much cheaper than it sounds, because
+   estimate capture is one screen rather than the product.
+3. **Then the queue**, which is the least interesting part: dependency
+   ordering, idempotency keys, and surfacing 403/409 at flush rather than
+   swallowing them.
 
-| Piece | Notes |
-|---|---|
-| Manifest + icons | Trivial. `frontend/public/` has no manifest today; this is greenfield. |
-| Service worker registration | Must not be registered on `(platform)` routes — the operator console is a different trust tier with its own cookie, and must never share a cache with the product UI. |
-| API response cache | Keyed by `(user_id, active_company_id, url)`. Cleared on logout and company switch. Read-through for the five `field_crew` read routes only. |
-| Write queue | Two request shapes. IndexedDB, replayed on reconnect, with a per-item idempotency key so a retried daily log does not double-post. |
-| Conflict surfacing | A flush that returns 409 or 403 must be shown, not swallowed. A silently dropped daily log is worse than no offline support. |
-| CSP resolution | §2 — the real cost, and the one that needs a decision before anything else is worth building. |
-| E2E | Playwright can drive offline via CDP. The existing `security-headers.spec.ts` assertions must keep passing. |
-
-The queue and the cache are each a few days. §2 is the whole risk.
-
----
-
-## 7. The question this was written to sharpen
-
-PRD §8 question 1 asks whether field crew usage *requires* offline support.
-It cannot be answered from the code, and this document does not pretend to
-answer it. It can be made much more specific:
-
-> When a crew member is on site with no usable signal, are they trying to
-> (a) **flip a task status**, (b) **file a daily log**, or (c) **look
-> something up** — and how often does the third one matter?
-
-That split matters because the three have very different prices:
-
-- **(a) and (b) alone** are the write queue: no cached HTML, no CSP change,
-  no offline page load. It only helps a session that started online and lost
-  signal — which, for someone who opened the app in the truck and walked
-  into a basement, may be the entire real-world case.
-- **(c) requires a cached app shell**, and therefore requires resolving §2 —
-  a change to the app's central security control — plus §4's per-user cache
-  scoping.
-
-**A useful intermediate exists.** The write queue can be built without any
-CSP work and without caching a single document, and it covers both of the
-only two writes this role has. If the answer to the question above is mostly
-(a) and (b), the feature is small and safe. If it is (c), it is a security
-architecture change and should be scoped as one.
-
-The cheapest way to find out is to ask three foremen what they were doing
-the last time the app failed them on site — not to build either version.
+The field-crew write queue (§2) is a genuinely separate, much smaller
+feature. It should be decided on its own merits rather than bundled — it
+shares almost nothing with the estimator case beyond the words "offline
+support."
 
 ---
 
 ## Sources
 
-Everything above is derived from the code as of `d635ae2`:
-`app/routers/tasks.py`, `app/routers/projects.py`, `app/services/project_lookup.py`,
-`app/services/concurrency.py`, `app/config.py`, `frontend/middleware.ts`,
+Derived from the code as of `d635ae2`: `app/routers/estimates.py`,
+`app/routers/tasks.py`, `app/routers/projects.py`,
+`app/services/estimate_calculation.py`, `app/services/concurrency.py`,
+`app/services/project_lookup.py`, `app/core/tier_gating.py`,
+`app/config.py`, migration 0004, `frontend/middleware.ts`,
 `frontend/app/layout.tsx`, `frontend/contexts/AuthContext.tsx`,
-`frontend/app/(app)/api/auth/login/route.ts`, and `frontend/CLAUDE.md`'s CSP
-section. PRD §5.2 and §8 for scope and the open question.
+`frontend/lib/use-cursor-list.ts`, and `frontend/CLAUDE.md`'s CSP section.
+PRD §5.2 and §8 for scope and the open question.
