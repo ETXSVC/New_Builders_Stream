@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency } from "@/lib/format";
 import { CsvImport } from "./CsvImport";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface CatalogItem {
   id: string;
@@ -20,7 +20,6 @@ interface CatalogItem {
 
 export function CatalogItemsTab() {
   const { accessToken, role } = useAuth();
-  const [items, setItems] = React.useState<CatalogItem[]>([]);
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editRate, setEditRate] = React.useState("");
   const [category, setCategory] = React.useState("");
@@ -28,41 +27,17 @@ export function CatalogItemsTab() {
   const [unit, setUnit] = React.useState("");
   const [unitRate, setUnitRate] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager";
 
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      const all: CatalogItem[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/catalog/items?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load catalog items");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setItems(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
+  // The whole catalog, not a page: the picker surfaces below choose from
+  // the set rather than read through it.
+  const {
+    items,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<CatalogItem>({ path: "/api/catalog/items", label: "catalog items" });
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -84,7 +59,7 @@ export function CatalogItemsTab() {
       setName("");
       setUnit("");
       setUnitRate("");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
@@ -101,7 +76,7 @@ export function CatalogItemsTab() {
     });
     if (response.ok) {
       setEditingId(null);
-      await loadAll();
+      reload();
     }
   }
 
@@ -112,7 +87,7 @@ export function CatalogItemsTab() {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (response.status === 204) {
-      await loadAll();
+      reload();
     } else {
       const data = await response.json();
       setError(data.detail ?? "Failed to delete catalog item");
@@ -145,7 +120,7 @@ export function CatalogItemsTab() {
       {canWrite && (
         <CsvImport
           currentItems={items.map((i) => ({ category: i.category, name: i.name, unit: i.unit, unit_rate: i.unit_rate }))}
-          onImported={loadAll}
+          onImported={reload}
         />
       )}
       {error && (

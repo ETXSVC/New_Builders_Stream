@@ -19,6 +19,7 @@ import { MaterialsTab } from "@/components/materials/MaterialsTab";
 import { SubcontractorAssignments } from "@/components/projects/SubcontractorAssignments";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface StaffProject {
   id: string;
@@ -205,38 +206,23 @@ function OverviewTab({ project, onSaved }: { project: StaffProject; onSaved: () 
 }
 
 function ProjectEstimatesTab({ projectId }: { projectId: string }) {
-  const { accessToken } = useAuth();
-  const [estimates, setEstimates] = React.useState<{ id: string; status: string; total: string | null }[]>([]);
+  // Client-side filter: no ?project_id= query param exists on GET /estimates
+  // (out of that plan's scope to add one). The hook walks every page, so the
+  // filter sees the full result set.
+  //
+  // `error` is deliberately not destructured — non-blocking, the list just
+  // stays empty if this fails.
+  const { items: allEstimates } = useCursorAll<{
+    id: string;
+    status: string;
+    total: string | null;
+    project_id?: string;
+  }>({ path: "/api/estimates", label: "estimates" });
 
-  const beginLoad = useLatestOnly();
-  const load = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoad();
-    // Client-side filter: no ?project_id= query param exists on
-    // GET /estimates (out of this plan's scope to add one). All pages
-    // are fetched to exhaustion so the filter sees the full result set.
-    try {
-      const all: { id: string; status: string; total: string | null; project_id?: string }[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/estimates?${params}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-        if (!response.ok) return;
-        const data = await response.json();
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setEstimates(all.filter((e) => e.project_id === projectId));
-    } catch {
-      // Non-blocking — the list just stays empty if this fails.
-    }
-  }, [accessToken, beginLoad, projectId]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => load());
-  }, [load]);
+  const estimates = React.useMemo(
+    () => allEstimates.filter((e) => e.project_id === projectId),
+    [allEstimates, projectId]
+  );
 
   return (
     <div className="flex flex-col gap-3">

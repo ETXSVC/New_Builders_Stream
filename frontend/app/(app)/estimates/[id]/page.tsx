@@ -4,6 +4,7 @@ import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -60,7 +61,6 @@ export default function EstimateDetailPage() {
   const { accessToken, role } = useAuth();
   const [estimate, setEstimate] = React.useState<Estimate | null>(null);
   const [breakdown, setBreakdown] = React.useState<CategorySubtotal[]>([]);
-  const [profiles, setProfiles] = React.useState<MarkupProfileOption[]>([]);
   const [esignature, setEsignature] = React.useState<Esignature | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [duplicating, setDuplicating] = React.useState(false);
@@ -106,42 +106,24 @@ export default function EstimateDetailPage() {
     }
   }, [accessToken, beginLoad, id]);
 
-  // A SECOND counter, deliberately not shared with `beginLoad` above: the two
-  // loaders are independent, and one counter between them would mean starting
-  // a profile load invalidates an in-flight estimate load (and vice versa),
-  // silently dropping a result that was never superseded.
-  const beginLoadProfiles = useLatestOnly();
-
-  const loadProfiles = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadProfiles();
-    try {
-      const all: MarkupProfileOption[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/markup-profiles?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!response.ok) return;
-        const data = await response.json();
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setProfiles(all);
-    } catch {
-      // Non-blocking — the Select just stays empty if this fails.
-    }
-  }, [accessToken, beginLoadProfiles]);
+  // The hook keeps its own generation counter, independent of `beginLoad`
+  // above — which is what the hand-written loader used a SECOND
+  // `useLatestOnly` to achieve. Sharing one counter between the two would
+  // mean starting a profile load invalidates an in-flight estimate load
+  // (and vice versa), silently dropping a result that was never superseded.
+  //
+  // `error` is deliberately not destructured: loading the profiles is
+  // non-blocking, and the Select simply stays empty if it fails.
+  const { items: profiles } = useCursorAll<MarkupProfileOption>({
+    path: "/api/markup-profiles",
+    label: "markup profiles",
+  });
 
   React.useEffect(() => {
     void Promise.resolve().then(() => {
       void load();
-      void loadProfiles();
     });
-  }, [load, loadProfiles]);
+  }, [load]);
 
   async function handleMarkupChange(markupProfileId: string) {
     if (!accessToken || !estimate) return;

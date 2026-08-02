@@ -1,10 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { useAuth } from "@/contexts/AuthContext";
 import { Select } from "@/components/ui/select";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface BomLine {
   id: string;
@@ -19,42 +18,14 @@ interface BomLine {
 const STATUS_FILTERS = ["All", "needed", "ordered", "partially_received", "received"] as const;
 
 export default function MaterialsPage() {
-  const { accessToken } = useAuth();
-  const [lines, setLines] = React.useState<BomLine[]>([]);
   const [statusFilter, setStatusFilter] = React.useState<(typeof STATUS_FILTERS)[number]>("All");
-  const [error, setError] = React.useState<string | null>(null);
-
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      const all: BomLine[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/materials?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load materials");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setLines(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
+  // The whole set, not a page: the status filter below is applied in the
+  // browser, so a "Load more" button would filter only what had been
+  // fetched so far and silently under-report every status.
+  const { items: lines, error } = useCursorAll<BomLine>({
+    path: "/api/materials",
+    label: "materials",
+  });
 
   const visibleLines = statusFilter === "All" ? lines : lines.filter((line) => line.status === statusFilter);
 

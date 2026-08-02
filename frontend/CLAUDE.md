@@ -88,9 +88,19 @@ and the one to reach for in new code. It carries the stale-response guard
 request can write neither data nor an error — which one of eight
 copy-pasted loaders had silently been missing.
 
-**Six surfaces use it today** (leads, estimates, subcontractors, and the
-three billing panels); roughly seventeen others still hand-roll the fetch,
-so do not assume a list page you are editing is on the hook — check.
+**Every cursor-paginated surface now uses it** — 26 files import the module,
+8 calling `useCursorList` (one page plus "Load more") and 15 calling
+`useCursorAll` (walk to exhaustion, for a set the user chooses from rather
+than reads through). `app/(app)/integrations/page.tsx` is the only remaining
+hand-written loader, and deliberately so; see the exception below. A new list
+surface should not be the second.
+
+`lib/use-latest-only.ts` is a different tool and is still the right one:
+seventeen files use it to guard a **single-object** fetch (a detail page, a
+PDF panel), where there is no cursor to walk. Reach for it there and for the
+cursor hooks here — a list that guards by hand is re-deriving what the hook
+already owns.
+
 It is split into `useCursorListCore` (the loader) and `useCursorList` (the
 core plus AuthContext's bearer token) because the platform console cannot
 call the wrapper: `useAuth()` throws without a provider, and the console has

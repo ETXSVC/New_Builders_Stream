@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatCurrency } from "@/lib/format";
-import { useLatestOnly } from "@/lib/use-latest-only";
+import { useCursorAll } from "@/lib/use-cursor-list";
 
 interface ChangeOrder {
   id: string;
@@ -20,46 +20,22 @@ interface ChangeOrder {
 
 export function ChangeOrdersTab({ projectId }: { projectId: string }) {
   const { accessToken, role } = useAuth();
-  const [changeOrders, setChangeOrders] = React.useState<ChangeOrder[]>([]);
   const [description, setDescription] = React.useState("");
   const [costDelta, setCostDelta] = React.useState("");
   const [scheduleImpactDays, setScheduleImpactDays] = React.useState("0");
   const [submitting, setSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
 
   const canWrite = role === "admin" || role === "project_manager";
 
-  const beginLoadAll = useLatestOnly();
-  const loadAll = React.useCallback(async () => {
-    if (!accessToken) return;
-    const isCurrent = beginLoadAll();
-    try {
-      const all: ChangeOrder[] = [];
-      let cursor: string | null = null;
-      do {
-        const params = new URLSearchParams();
-        if (cursor) params.set("cursor", cursor);
-        const response = await fetch(`/api/projects/${projectId}/change-orders?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          setError(data.detail ?? "Failed to load change orders");
-          return;
-        }
-        all.push(...data.items);
-        cursor = data.next_cursor ?? null;
-      } while (cursor);
-      if (!isCurrent()) return;
-      setChangeOrders(all);
-    } catch {
-      setError("Unable to reach the server. Check your connection and try again.");
-    }
-  }, [accessToken, beginLoadAll, projectId]);
-
-  React.useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
-  }, [loadAll]);
+  const {
+    items: changeOrders,
+    error,
+    setError,
+    reload,
+  } = useCursorAll<ChangeOrder>({
+    path: `/api/projects/${projectId}/change-orders`,
+    label: "change orders",
+  });
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -84,7 +60,7 @@ export function ChangeOrdersTab({ projectId }: { projectId: string }) {
       setDescription("");
       setCostDelta("");
       setScheduleImpactDays("0");
-      await loadAll();
+      reload();
     } catch {
       setError("Unable to reach the server. Check your connection and try again.");
     } finally {
@@ -98,7 +74,7 @@ export function ChangeOrdersTab({ projectId }: { projectId: string }) {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (response.ok) await loadAll();
+    if (response.ok) reload();
   }
 
   return (
