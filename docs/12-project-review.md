@@ -700,14 +700,3 @@ it.
 not, of which `integrations/page.tsx` is deliberately excluded (§8: different
 envelope, and a 404 there means "not connected", not an error). So ~11
 genuine candidates remain, not ~17, and adoption is 8 rather than 6.
-
-### The lesson, which is the same one §10 and §11 already taught
-
-CLAUDE.md says this document's status claims must be re-derived from the code
-before being repeated. Both §10's wrong rows were repeated *from this
-document* into a work plan before anyone looked at the code — which is
-exactly the failure the instruction exists to prevent, committed by someone
-who had read the instruction. A dated audit trail is evidence about a moment,
-and the older the section the weaker the claim; **a row saying "Open" is the
-weakest kind of claim in here**, because it is the only one that decays
-silently. "Closed" rows stay true.
