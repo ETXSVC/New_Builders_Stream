@@ -226,14 +226,27 @@ needs the network.
    the cache entry, so the nonce stops being per-request. Bounded by the
    cache TTL. Decide the bound, and write down that it was decided rather
    than letting it fall out of whatever the worker happens to do.
-3. **What a 409 at flush does.** The guard makes the conflict visible; it
-   does not say what happens next. Options: re-open the draft with both
-   rates shown and let the estimator re-confirm (probably right), or
-   auto-accept the new rate (fast, and exactly the silent re-pricing the
-   guard exists to prevent). This is the main UX question and it is not a
-   small one — the estimator may have already given the customer a number.
+3. ~~What a 409 at flush does.~~ **Largely answered by PR #131**, which
+   built the recovery for the *online* case: the 409 reports every
+   conflicting line at once and carries the current rate for each, the
+   builder shows old → new per item, and a "Use new rates" button updates
+   the draft **without saving** — the estimator sees the new total and
+   presses save themselves. Offline flush should reuse that component
+   rather than invent a second policy.
+
+   One difference the online case does not have, and it is the part still
+   open: **at flush there may be nobody looking at the screen.** Adopting
+   rates requires a human, so a background flush that hits a 409 has to
+   park the draft and surface it, not resolve it. Decide what "park and
+   surface" means — a badge, a list of drafts needing attention, something
+   else — before the flush is written, because a queue that silently
+   retries a 409 forever is the same silent failure in a new place.
 4. **Whether the catalog may be cached at all**, given it is the company's
-   pricing. A product/security call, not an engineering one.
+   pricing. A product/security call, not an engineering one — **and the one
+   that should be answered first.** The entire design assumes an estimator
+   can pick from a cached catalog offline; if the answer is no, this
+   feature does not exist in its current shape and nothing below is worth
+   building.
 
 ## 7. What this deliberately does not include
 
