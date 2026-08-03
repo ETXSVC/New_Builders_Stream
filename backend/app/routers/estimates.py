@@ -488,7 +488,11 @@ async def replace_estimate_line_items(
          stops the snapshot below from silently re-pricing an estimate
          whose author saw a different number; see
          `EstimateLineItemInput`'s own docstring for why the window is
-         real rather than theoretical.
+         real rather than theoretical. Unlike 1-3, this one COLLECTS every
+         mismatch before raising, and its `detail` is a dict carrying the
+         current rate per conflicting line: the caller's remedy is to show
+         a human old-vs-new and let them re-confirm, which they cannot do
+         one line per round trip.
 
     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
     this moment, never a live reference (schema doc Section 9's historical-
@@ -546,6 +550,7 @@ async def replace_estimate_line_items(
     resolved_by_id: dict[uuid.UUID, CostCatalogItem] = {item.id: item for item in resolved_items}
 
     resolved_lines: list[tuple[uuid.UUID, Decimal, CostCatalogItem]] = []
+    rate_conflicts: list[dict[str, str]] = []
     for line in payload.items:
         catalog_item = resolved_by_id.get(line.cost_catalog_item_id)
         if catalog_item is None:
@@ -566,19 +571,48 @@ async def replace_estimate_line_items(
         # accepted a moment earlier — this is the same "someone changed it
         # under you" answer `guard_stale_write` gives, and the client's
         # remedy is the same (re-read, show the difference, resubmit).
-        # Both rates are named because "conflict" alone leaves the
-        # estimator no way to tell what moved or by how much.
+        #
+        # COLLECTED, not raised on the first one. Raising immediately made
+        # the caller play whack-a-mole: fix one line, resubmit, discover the
+        # next. The whole point of this check is to let a human compare what
+        # they quoted against what the catalog now says, and they cannot do
+        # that one line at a time.
         if (
             line.expected_unit_rate is not None
             and line.expected_unit_rate != catalog_item.unit_rate
         ):
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                f"Unit rate for '{catalog_item.name}' changed from "
-                f"{line.expected_unit_rate} to {catalog_item.unit_rate} since this estimate "
-                "was built. Review the line items and resubmit.",
+            rate_conflicts.append(
+                {
+                    "cost_catalog_item_id": str(line.cost_catalog_item_id),
+                    "name": catalog_item.name,
+                    # Strings, not Decimals: `jsonable_encoder` turns a
+                    # Decimal into a float, which would render 45.00 as 45.0
+                    # in the very message whose job is to show an exact
+                    # price. Every money value this API returns is a string
+                    # for the same reason.
+                    "expected_unit_rate": str(line.expected_unit_rate),
+                    "current_unit_rate": str(catalog_item.unit_rate),
+                }
             )
         resolved_lines.append((line.cost_catalog_item_id, line.quantity, catalog_item))
+
+    # Still before any DELETE/INSERT — the whole loop above only reads.
+    if rate_conflicts:
+        # A dict rather than a bare string, because the client needs to DO
+        # something with this: it carries the current rates, so adopting
+        # them costs no extra round trip and the UI can show old-vs-new per
+        # line. `message` stays human-readable for anything that only knows
+        # how to render `detail` as text.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "message": (
+                    f"{len(rate_conflicts)} catalog rate(s) changed since this estimate was "
+                    "built. Review the new rates and resubmit."
+                ),
+                "rate_conflicts": rate_conflicts,
+            },
+        )
 
     # Nothing above this point has touched estimate_line_items — both
     # failure modes (409, 422) raise before either the DELETE or any INSERT

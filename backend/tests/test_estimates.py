@@ -1803,9 +1803,16 @@ async def test_replace_line_items_rejects_a_rate_that_moved_underneath(client):
     )
     assert response.status_code == 409, response.text
     detail = response.json()["detail"]
-    # Both rates named: "conflict" alone leaves the estimator no way to tell
-    # what moved or by how much.
-    assert "45.00" in detail and "60.00" in detail
+    # Structured, not a bare string: the caller has to be able to show a
+    # human old-vs-new per line, and adopting the new rates must not need a
+    # second round trip to discover them.
+    conflicts = detail["rate_conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["cost_catalog_item_id"] == catalog_item["id"]
+    assert conflicts[0]["expected_unit_rate"] == "45.00"
+    # Exact strings, not floats: `jsonable_encoder` would render a Decimal
+    # 45.00 as 45.0, in the very message whose job is to show a price.
+    assert conflicts[0]["current_unit_rate"] == "60.00"
 
     detail_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
     line_items = detail_response.json()["line_items"]
@@ -1843,3 +1850,61 @@ async def test_replace_line_items_without_expected_rate_is_unchecked_as_before(c
     )
     assert response.status_code == 200, response.text
     assert response.json()["line_items"][0]["unit_rate_snapshot"] == "60.00"
+
+
+async def test_replace_line_items_reports_every_rate_conflict_at_once(client):
+    """Raising on the first mismatch made the caller play whack-a-mole: fix
+    one line, resubmit, discover the next. An estimator comparing what they
+    quoted against what the catalog now says cannot do that one line per
+    round trip."""
+    admin = await _register_and_login(client, "Acme Construction", "rate-multi@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    first = await _create_catalog_item(
+        client, admin["headers"], name="Framing", unit_rate="45.00"
+    )
+    second = await _create_catalog_item(
+        client, admin["headers"], name="Drywall", unit_rate="12.50"
+    )
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    for item, new_rate in ((first, "60.00"), (second, "15.00")):
+        bumped = await client.patch(
+            f"/catalogs/items/{item['id']}",
+            json={"unit_rate": new_rate},
+            headers=admin["headers"],
+        )
+        assert bumped.status_code == 200, bumped.text
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "cost_catalog_item_id": first["id"],
+                    "quantity": "1.00",
+                    "expected_unit_rate": "45.00",
+                },
+                {
+                    "cost_catalog_item_id": second["id"],
+                    "quantity": "2.00",
+                    "expected_unit_rate": "12.50",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+    conflicts = response.json()["detail"]["rate_conflicts"]
+    assert len(conflicts) == 2, "both conflicts must be reported in one response"
+    by_id = {c["cost_catalog_item_id"]: c for c in conflicts}
+    assert by_id[first["id"]]["current_unit_rate"] == "60.00"
+    assert by_id[second["id"]]["current_unit_rate"] == "15.00"
+    # The name is carried so the UI can say WHICH line moved without holding
+    # a catalog lookup of its own.
+    assert by_id[first["id"]]["name"] == "Framing"
