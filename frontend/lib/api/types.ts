@@ -1551,7 +1551,11 @@ export interface paths {
          *          stops the snapshot below from silently re-pricing an estimate
          *          whose author saw a different number; see
          *          `EstimateLineItemInput`'s own docstring for why the window is
-         *          real rather than theoretical.
+         *          real rather than theoretical. Unlike 1-3, this one COLLECTS every
+         *          mismatch before raising, and its `detail` is a dict carrying the
+         *          current rate per conflicting line: the caller's remedy is to show
+         *          a human old-vs-new and let them re-confirm, which they cannot do
+         *          one line per round trip.
          *
          *     `unit_rate_snapshot` is COPIED from the resolved item's `unit_rate` at
          *     this moment, never a live reference (schema doc Section 9's historical-
