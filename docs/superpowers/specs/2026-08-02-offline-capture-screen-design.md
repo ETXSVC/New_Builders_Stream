@@ -12,7 +12,7 @@ what still needs proving.
 
 ---
 
-## 1. The CSP is probably not a blocker — and I got this wrong
+## 1. The CSP is not a blocker — and I got this wrong first time
 
 The claim was that a cached HTML document carries a stale nonce while the
 CSP header is minted fresh per request, so the page fails to hydrate.
@@ -42,14 +42,73 @@ the nonce out of it, so the practical loss is smaller than "we removed the
 nonce," but it is a real weakening and should be a stated decision rather
 than a side effect. Bounding the cache entry's lifetime bounds the reuse.
 
-**This needs a spike before anything is built on it.** The reasoning is
-sound but Next's App Router streams RSC payloads and does client-side
-navigation, and I have not proven that a cached document + cached
-`/_next/static` chunks hydrate offline in this app specifically. That spike
-is half a day and it determines whether this feature is small or large.
+### Spike result, 2026-08-02: confirmed
 
-If it holds: **no CSP change, no separate entry point, no static-CSP
-screen.** The offline capture screen is an ordinary `(app)` route.
+Run against a **production** build (`next start`, so no `'unsafe-eval'`) with
+a naive service worker caching `response.clone()` for navigations and
+`/_next/static`:
+
+| Case | Result |
+|---|---|
+| Worker registered, `/login` cached, offline reload | **Hydrates.** Renders, and typing into a controlled React input works — so the JS ran, not just the markup. **Zero CSP violations** on the console. |
+| **Control:** no worker, offline reload | **Fails outright** (`page.reload()` rejects) |
+
+The control is the half that makes it evidence: without it, the first case
+proves only that a page rendered, not that the worker is why.
+
+**So: no CSP change, no separate entry point, no static-CSP screen.** The
+offline capture screen can be an ordinary `(app)` route.
+
+The one thing that must be preserved is *how* the response is cached:
+`cache.put(request, response.clone())`. Re-fabricating a `Response` from the
+body would drop the `Content-Security-Policy` header, the cached document's
+nonce would have no matching policy, and the page would fail silently —
+which is the failure this section originally predicted, reachable by getting
+the caching wrong rather than by caching at all.
+
+<details>
+<summary>Reproduction (the spike code itself was not kept)</summary>
+
+```js
+// public/sw.js — naive on purpose; no versioning, no per-user key
+const CACHE = "csp-spike-v1";
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (request.mode !== "navigate" && !url.pathname.startsWith("/_next/static")) return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(request);
+      (await caches.open(CACHE)).put(request, response.clone()); // clone: keeps headers
+      return response;
+    } catch {
+      const cached = await caches.match(request);
+      if (cached) return cached;
+      throw new Error("offline and not cached");
+    }
+  })());
+});
+```
+
+Register it from a throwaway client route, then in Playwright: wait for
+`navigator.serviceWorker.controller`, visit `/login` online, `setOffline(true)`,
+`reload()`, assert the sign-in button is visible and a controlled input
+accepts typing, with a `page.on("console")` filter for
+`/content security policy/i` asserting none. Add the no-worker control.
+
+Must run against `next start`, not `next dev` — dev adds `'unsafe-eval'` to
+`script-src` and would mask the failure being looked for.
+
+</details>
+
+The spike's worker was deliberately **not** merged: it has scope `/`, no
+versioning, and no per-user cache key, so a route that installs it would
+cache every document unkeyed by user — the exact RLS-boundary problem §4
+warns about.
 
 ---
 
@@ -161,12 +220,12 @@ needs the network.
 
 ## 6. What to decide before building
 
-1. **Run the §1 spike.** Everything else is priced off the answer. Half a
-   day, and it turns this from "a security-architecture change" into "a
-   screen."
-2. **Nonce reuse.** If the spike holds, caching a document means replaying
-   its nonce for the cache's lifetime. Bounded by cache TTL. Decide the
-   bound, and write down that it was decided.
+1. ~~Run the §1 spike.~~ **Done 2026-08-02, confirmed** — see §1. This is
+   a screen, not a security-architecture change.
+2. **Nonce reuse.** Caching a document replays its nonce for the life of
+   the cache entry, so the nonce stops being per-request. Bounded by the
+   cache TTL. Decide the bound, and write down that it was decided rather
+   than letting it fall out of whatever the worker happens to do.
 3. **What a 409 at flush does.** The guard makes the conflict visible; it
    does not say what happens next. Options: re-open the draft with both
    rates shown and let the estimator re-confirm (probably right), or
