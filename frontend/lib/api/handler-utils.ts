@@ -17,7 +17,13 @@ export function missingTokenResponse(): NextResponse {
 
 export function errorResponse(err: unknown, fallback: string): NextResponse {
   if (err instanceof ApiError) {
-    return NextResponse.json({ detail: err.detail }, { status: err.status });
+    // The structured payload wins when there is one, so a client that needs
+    // the data gets it; `detail` alone would flatten it back to a sentence
+    // and the BFF would be the place the information disappeared.
+    return NextResponse.json(
+      { detail: err.detailPayload ?? err.detail },
+      { status: err.status }
+    );
   }
   return NextResponse.json({ detail: fallback }, { status: 502 });
 }

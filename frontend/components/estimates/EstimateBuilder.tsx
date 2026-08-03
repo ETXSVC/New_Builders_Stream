@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { CatalogPanel } from "./CatalogPanel";
 import { LineRows, DraftLine } from "./LineRows";
+import { formatCurrency } from "@/lib/format";
 
 interface ExistingLineItem {
   cost_catalog_item_id: string;
@@ -184,11 +185,17 @@ export function EstimateBuilder({
               {rateConflicts.map((conflict) => (
                 <li key={conflict.cost_catalog_item_id} className="flex items-center gap-2">
                   <span className="flex-1">{conflict.name}</span>
+                  {/* `precise` on both: whole-dollar rounding is the default
+                      because list screens read better without a column of
+                      ".00", and it is exactly wrong here — a conflict
+                      between 4.00 and 4.05 would render as "$4 → $4". */}
                   <span className="text-slate-500 line-through">
-                    {conflict.expected_unit_rate}
+                    {formatCurrency(conflict.expected_unit_rate, { precise: true })}
                   </span>
                   <span aria-hidden="true">→</span>
-                  <span className="font-medium">{conflict.current_unit_rate}</span>
+                  <span className="font-medium">
+                    {formatCurrency(conflict.current_unit_rate, { precise: true })}
+                  </span>
                 </li>
               ))}
             </ul>

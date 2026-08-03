@@ -30,11 +30,24 @@ interface RequestOptions {
 export class ApiError extends Error {
   status: number;
   detail: string;
+  /**
+   * The backend's `detail` when it is a structured object rather than a
+   * string — currently `PUT /estimates/{id}/lines`'s 409, which carries the
+   * conflicting rates so the client can offer to adopt them without a
+   * second round trip.
+   *
+   * Kept ALONGSIDE `detail` rather than widening it: `detail` is rendered
+   * as text in a dozen components, and making it `string | object` would
+   * put "[object Object]" in a banner the first time somebody forgot to
+   * narrow it. `detail` stays the human sentence; this carries the data.
+   */
+  detailPayload?: Record<string, unknown>;
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, detailPayload?: Record<string, unknown>) {
     super(detail);
     this.status = status;
     this.detail = detail;
+    this.detailPayload = detailPayload;
   }
 }
 
@@ -84,10 +97,25 @@ export async function apiFetch<Path extends keyof paths, M extends Method>(
 
   if (!response.ok) {
     let detail = response.statusText;
+    let detailPayload: Record<string, unknown> | undefined;
     try {
       const errorBody = await response.json();
       if (typeof errorBody.detail === "string") {
         detail = errorBody.detail;
+      } else if (errorBody.detail && typeof errorBody.detail === "object" && !Array.isArray(errorBody.detail)) {
+        // A structured detail — an HTTPException raised with a dict rather
+        // than a string, because the caller has to DO something with it and
+        // not merely display it.
+        //
+        // Before this branch existed such a body fell through to
+        // `response.statusText`, so a 409 carrying a list of changed
+        // catalog rates reached the browser as the single word "Conflict".
+        // Nothing errored: the route returned a valid JSON error with a
+        // plausible message, and the recovery UI simply never appeared.
+        // Caught by e2e, invisible to typecheck and to every unit test on
+        // either side of the BFF.
+        detailPayload = errorBody.detail as Record<string, unknown>;
+        if (typeof detailPayload.message === "string") detail = detailPayload.message;
       } else if (Array.isArray(errorBody.detail)) {
         // FastAPI's default 422 shape is HTTPValidationError: an ARRAY of
         // {loc, msg, type} objects, not a string — every field-validated
@@ -99,7 +127,7 @@ export async function apiFetch<Path extends keyof paths, M extends Method>(
     } catch {
       // response body wasn't JSON — fall back to statusText, already set
     }
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, detail, detailPayload);
   }
 
   if (response.status === 204) return undefined;
