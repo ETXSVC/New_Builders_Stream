@@ -134,7 +134,19 @@ stone toward it, and building it first buys very little of the harder thing.
 
 ---
 
-## 3. The blocker: a cached app shell cannot satisfy the CSP
+## 3. The CSP and a cached app shell
+
+> **Corrected 2026-08-02, the same day this was written.** This section
+> originally read "the blocker: a cached app shell cannot satisfy the CSP."
+> That is true of *static prerendering* and false of a *service worker*: the
+> nonce and the policy are minted together in one `middleware()` pass, so a
+> worker caching the whole response — headers included — replays a document
+> whose script tags and whose policy carry the same nonce. The cost is nonce
+> reuse for the cache's lifetime, not a page that fails to hydrate.
+> `2026-08-02-offline-capture-screen-design.md` §1 supersedes the conclusion
+> below and prices the feature far lower as a result. The rest of this
+> section is retained because the prerendering half is correct, and is
+> exactly why `layout.tsx` is `force-dynamic`.
 
 `app/layout.tsx` sets `export const dynamic = "force-dynamic"`, and
 `middleware.ts` builds the CSP per request around a fresh 16-byte nonce that
