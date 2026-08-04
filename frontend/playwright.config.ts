@@ -28,8 +28,8 @@ export default defineConfig({
   // flaky, which is the signal worth having. A real regression fails both
   // attempts and stays red.
   //
-  // `on-first-retry` rather than `on`: tracing every attempt of a green
-  // run costs time and uploads artifacts nobody opens.
+  // (Tracing is set in `use` below, and no longer keyed to the retry — see
+  // the note there for why the retry was the wrong attempt to record.)
   retries: 1,
   // ...and CI must ACT on that signal, not merely print it.
   //
@@ -53,7 +53,24 @@ export default defineConfig({
   // gate's behaviour.
   failOnFlakyTests: !!process.env.CI,
   use: {
-    trace: "on-first-retry",
+    // `retain-on-first-failure`, NOT `on-first-retry`, and the two are almost
+    // opposites in practice. `on-first-retry` traces the RETRY — so when a
+    // test fails once and passes on retry, the artifact you get is a
+    // recording of the run that worked. The failure, which is the only thing
+    // anyone opens a trace for, is the one attempt not recorded.
+    //
+    // That is not hypothetical: the estimate-duplicate flake was diagnosed
+    // from a Playwright aria snapshot in `error-context.md` because the
+    // trace in the artifact was of the passing retry, and the network log
+    // that would have said which request failed did not exist. Two CI runs
+    // and a manual code trace substituted for one artifact.
+    //
+    // `failOnFlakyTests` below is what makes this the right trade. A flake is
+    // already a red gate here, so the first attempt failing IS the event
+    // worth recording. `retain-on-first-failure` records every first attempt
+    // and keeps the recording only when it failed — so a green run still
+    // uploads nothing, which was the original comment's actual concern.
+    trace: "retain-on-first-failure",
     // The worktree's docker-compose.yml maps the frontend container to
     // host port 3001, not 3000 (this default) — running against Compose
     // requires E2E_BASE_URL=http://localhost:3001. This default suits
