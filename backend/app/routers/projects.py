@@ -721,8 +721,33 @@ async def create_daily_log(
     company's session acting on a descendant branch's Project, without
     switching `X-Tenant-ID`, must not stamp this child row with the
     parent's own company_id).
+
+    **`client_reference` makes this route idempotent** (migration 0034). A
+    field crew member's offline queue retries a log whose response was lost,
+    and this table cannot be cleaned up afterwards — 0004 revokes UPDATE and
+    DELETE on it, so a duplicate is permanent. When the key is supplied and
+    already exists in this tenant, the ORIGINAL row is returned and nothing
+    is written. The status stays 201: from the caller's point of view the
+    log they asked for exists, which is exactly what they wanted to be told,
+    and a queue that treated 200-vs-201 as different outcomes would be
+    reading meaning into a distinction this route does not draw.
     """
     project = await get_project_or_404(current, project_id)
+
+    if payload.client_reference is not None:
+        # Scoped to the resolved project's company, matching the row this
+        # would otherwise INSERT — and RLS-scoped besides, so a key that
+        # collides with another tenant's is simply invisible here rather
+        # than an error.
+        existing = await current.session.execute(
+            select(DailyLog).where(
+                DailyLog.company_id == project.company_id,
+                DailyLog.client_reference == payload.client_reference,
+            )
+        )
+        already_written = existing.scalar_one_or_none()
+        if already_written is not None:
+            return DailyLogResponse.model_validate(already_written)
 
     daily_log = DailyLog(
         project_id=project.id,
@@ -731,6 +756,9 @@ async def create_daily_log(
         log_date=payload.log_date,
         weather=payload.weather,
         notes=payload.notes,
+        # Stored, or the lookup above has nothing to find on the retry and
+        # every replay writes a second row while the code reads as correct.
+        client_reference=payload.client_reference,
     )
     current.session.add(daily_log)
     await current.session.flush()

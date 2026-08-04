@@ -398,3 +398,128 @@ async def test_client_cannot_list_daily_logs(client):
 
     response = await client.get(f"/projects/{project_id}/daily-logs", headers=client_role["headers"])
     assert response.status_code == 403
+
+
+# --- Idempotency (migration 0034) ---------------------------------------
+#
+# The offline write queue's exactly-once key. These matter more than an
+# ordinary duplicate-prevention test because this table cannot be repaired:
+# migration 0004 revokes UPDATE and DELETE on `daily_logs` from `app_user`,
+# so a duplicate written by a retry stays in the site record permanently.
+
+
+async def test_replaying_a_daily_log_with_the_same_client_reference_writes_one_row(client):
+    """The case the key exists for: the row committed and the RESPONSE was
+    lost, so the queue sends the identical request again."""
+    admin = await register_and_login(client, "Acme Construction", "dl-idem-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    reference = "11111111-1111-1111-1111-111111111111"
+
+    first = await _create_daily_log(client, admin, project_id, client_reference=reference)
+    assert first.status_code == 201, first.text
+
+    second = await _create_daily_log(client, admin, project_id, client_reference=reference)
+    assert second.status_code == 201, second.text
+    # The SAME row, not a second one that merely looks alike.
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["client_reference"] == reference
+
+    listed = await client.get(f"/projects/{project_id}/daily-logs", headers=admin["headers"])
+    assert listed.status_code == 200, listed.text
+    assert len(listed.json()["items"]) == 1
+
+
+async def test_a_replay_does_not_overwrite_the_original_log(client):
+    """A retry carries whatever the device had; the stored log must stay the
+    one that was actually written. Idempotent means "no second row", and it
+    must not quietly mean "last one wins" either — this table is immutable,
+    and a route that updated on replay would be writing to a table the
+    database forbids updating."""
+    admin = await register_and_login(client, "Acme Construction", "dl-idem-nooverwrite@acme.test")
+    project_id = await _create_project(client, admin)
+    reference = "22222222-2222-2222-2222-222222222222"
+
+    first = await _create_daily_log(
+        client, admin, project_id, client_reference=reference, notes="Poured footings."
+    )
+    assert first.status_code == 201, first.text
+
+    replay = await _create_daily_log(
+        client, admin, project_id, client_reference=reference, notes="Something else entirely."
+    )
+    assert replay.status_code == 201, replay.text
+    assert replay.json()["notes"] == "Poured footings."
+
+
+async def test_different_client_references_write_different_logs(client):
+    """The non-vacuity floor: two genuinely different logs from the same
+    device must both land. A route that deduplicated on anything coarser —
+    project, author, date — would pass the test above and silently discard
+    the second log of a working day."""
+    admin = await register_and_login(client, "Acme Construction", "dl-idem-distinct@acme.test")
+    project_id = await _create_project(client, admin)
+
+    first = await _create_daily_log(
+        client, admin, project_id, client_reference="33333333-3333-3333-3333-333333333333"
+    )
+    second = await _create_daily_log(
+        client, admin, project_id, client_reference="44444444-4444-4444-4444-444444444444"
+    )
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] != second.json()["id"]
+
+    listed = await client.get(f"/projects/{project_id}/daily-logs", headers=admin["headers"])
+    assert len(listed.json()["items"]) == 2
+
+
+async def test_omitting_client_reference_still_writes_every_log(client):
+    """Every online caller omits the key, and the uniqueness constraint must
+    not turn two ordinary logs into one. `NULLS DISTINCT` is what makes this
+    true at the database level; this is the test that would fail if the index
+    were ever changed to `NULLS NOT DISTINCT`."""
+    admin = await register_and_login(client, "Acme Construction", "dl-idem-null@acme.test")
+    project_id = await _create_project(client, admin)
+
+    first = await _create_daily_log(client, admin, project_id)
+    second = await _create_daily_log(client, admin, project_id)
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["client_reference"] is None
+
+
+async def test_one_company_client_reference_does_not_collide_with_anothers(client):
+    """The key is generated on a device this system does not control, so its
+    uniqueness is a claim rather than a guarantee. Two tenants presenting the
+    same value must each get their own log — and neither may see the other's."""
+    first_admin = await register_and_login(client, "Acme Construction", "dl-idem-t1@acme.test")
+    second_admin = await register_and_login(client, "Beta Builders", "dl-idem-t2@beta.test")
+    first_project = await _create_project(client, first_admin)
+    second_project = await _create_project(client, second_admin)
+    shared = "55555555-5555-5555-5555-555555555555"
+
+    first = await _create_daily_log(client, first_admin, first_project, client_reference=shared)
+    second = await _create_daily_log(client, second_admin, second_project, client_reference=shared)
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["company_id"] != second.json()["company_id"]
+
+
+async def test_field_crew_replay_is_idempotent_too(client):
+    """The role the feature is actually for — the checks above all run as an
+    admin, and field_crew reaches this route through a different scope
+    (`get_project_or_404`'s assigned-only filter), which runs BEFORE the
+    idempotency lookup."""
+    admin = await register_and_login(client, "Acme Construction", "dl-idem-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "dl-idem-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    await _assign_field_crew_to_project(client, admin, project_id, field_crew["user_id"])
+    reference = "66666666-6666-6666-6666-666666666666"
+
+    first = await _create_daily_log(client, field_crew, project_id, client_reference=reference)
+    second = await _create_daily_log(client, field_crew, project_id, client_reference=reference)
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["id"] == second.json()["id"]

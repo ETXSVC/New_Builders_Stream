@@ -393,10 +393,49 @@ async def patch_task(
     instinct behind this codebase's other explicit-rejection choices,
     e.g. the illegal-status-transition 409s in leads.py/projects.py rather
     than silently no-op'ing an illegal transition).
+
+    `expected_status` (optional) makes the write conditional on the task
+    still saying what its author saw — see the field's own docstring in
+    `app/schemas/task.py` for why the comparison is against the value rather
+    than an `updated_at` this table does not have. Omitted, the route
+    behaves exactly as it always has: last write wins.
     """
     task = await _get_task_or_404(current, task_id)
 
     update_fields = payload.model_dump(exclude_unset=True)
+
+    # Popped BEFORE anything below reads `update_fields`, and both readers
+    # would be wrong about it: the field_crew check treats every key that is
+    # not "status" as an attempted privilege escalation (so a crew member
+    # guarding their own write would get a 403 for doing the safer thing),
+    # and the setattr loop at the bottom would try to write a column that
+    # does not exist. It is an assertion about state, not a field.
+    expected_status = update_fields.pop("expected_status", None)
+
+    # Compare-and-set: refuse a write whose author was looking at a
+    # different task than the one that is here now.
+    #
+    # 409, not 422: the request was well-formed and would have been accepted
+    # a moment earlier — the same "someone changed it under you" answer
+    # `guard_stale_write` and the estimate line-item route give, and the same
+    # remedy (show the human what it says now, let them decide).
+    #
+    # The detail is a dict rather than a sentence because the caller has to
+    # DO something with it: an offline queue parks the change and shows both
+    # values, and re-deriving the current status would cost another round
+    # trip on a connection that has just proved unreliable.
+    if expected_status is not None and task.status != expected_status:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "message": (
+                    f"This task is now '{task.status}', not '{expected_status}' as expected. "
+                    "Review the change before applying it."
+                ),
+                "expected_status": expected_status,
+                "current_status": task.status,
+            },
+        )
 
     if current.role == "field_crew":
         # Keyed on which fields are PRESENT in the payload, not on whether

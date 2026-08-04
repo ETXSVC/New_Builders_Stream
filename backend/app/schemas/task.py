@@ -48,8 +48,26 @@ class TaskUpdateRequest(BaseModel):
     due_date: date | None = None
     status: str | None = None
     assignee_id: uuid.UUID | None = None
+    # The status the caller BELIEVED the task had when they decided to
+    # change it. Optional, and not a field to set — an assertion about the
+    # server's state, checked and then discarded by the router (409 if the
+    # task has moved since).
+    #
+    # `tasks` has no `updated_at` (see TaskResponse below), so the usual
+    # `expected_updated_at` guard has nothing to compare against. For a
+    # three-value enum that only moves when a person moves it, the value IS
+    # the version — so this compares the value, in the same shape and for
+    # the same reason `expected_unit_rate` guards an estimate's line items.
+    #
+    # It exists for the field crew's offline queue, where a status change
+    # can be applied HOURS after it was made: a crew member marks a task done
+    # with no signal, a project manager moves it back at lunchtime, and
+    # without this the queue silently overwrites that decision at five
+    # o'clock. Online, where the window is seconds, callers can keep omitting
+    # it and keep last-write-wins.
+    expected_status: str | None = None
 
-    @field_validator("status")
+    @field_validator("status", "expected_status")
     @classmethod
     def status_must_be_a_known_value(cls, v: str | None) -> str | None:
         if v is not None and v not in VALID_STATUSES:

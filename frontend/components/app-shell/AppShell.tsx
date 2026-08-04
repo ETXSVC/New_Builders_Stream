@@ -80,7 +80,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 // that can be open with no network at all. Keep in step with `sw.js`'s own
 // OFFLINE_PATHS — a path cached there but missing here cold-starts into a
 // redirect to /login, which is the feature not working.
-const OFFLINE_CAPABLE_PATHS = ["/estimates/capture"];
+const OFFLINE_CAPABLE_PATHS = ["/estimates/capture", "/my-tasks"];
 
 /*
  * Why `sessionUnreachable` and not `navigator.onLine`:

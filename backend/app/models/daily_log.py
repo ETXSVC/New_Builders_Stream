@@ -31,6 +31,15 @@ class DailyLog(Base, UUIDPKMixin, TimestampMixin):
     log_date: Mapped[date] = mapped_column(Date, nullable=False)
     weather: Mapped[str | None] = mapped_column(String(100), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Migration 0034. A key the CLIENT generates, so a log written with no
+    # signal and sent later cannot be written twice by a retry — and this
+    # table is the one where that matters most, because 0004 revokes UPDATE
+    # and DELETE on it, so a duplicate can never be removed. Nullable: every
+    # online caller omits it, and unique per company only among rows that
+    # supply one.
+    client_reference: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     # No updated_at column: immutable once submitted (application-layer
     # enforced per the schema doc's comment, DB-level REVOKE UPDATE, DELETE
     # hardening lands in Task 1.10) — same pattern as CommunicationLog.

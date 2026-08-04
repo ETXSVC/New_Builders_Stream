@@ -22,6 +22,21 @@ class DailyLogCreateRequest(BaseModel):
     weather: str | None = Field(None, max_length=100)
     # TEXT column, no DB-level max length.
     notes: str | None = None
+    # Migration 0034 — the offline write queue's exactly-once key.
+    #
+    # Supplied by the CLIENT, once per log it means to write, and repeated
+    # verbatim on every retry of that same log. The route returns the
+    # existing row rather than creating a second one, which is what makes a
+    # queue safe against the case that motivates it: the request arrives,
+    # the row commits, and the response is lost on the way back.
+    #
+    # A body field rather than an `Idempotency-Key` header because the Next
+    # BFF forwards a fixed header allowlist and would drop the header
+    # silently — the same reason `expected_updated_at` is a body field
+    # rather than `If-Match` (`app/services/concurrency.py`).
+    #
+    # Optional: nothing writing a log while online needs one.
+    client_reference: uuid.UUID | None = None
 
 
 class DailyLogResponse(BaseModel):
@@ -39,6 +54,10 @@ class DailyLogResponse(BaseModel):
     log_date: date
     weather: str | None
     notes: str | None
+    # Echoed back so a queue can tell "you already sent this one" from "here
+    # is a new log": a replay returns 201 with the ORIGINAL row, and this is
+    # how the caller recognises it as theirs.
+    client_reference: uuid.UUID | None
     created_at: datetime
 
 
