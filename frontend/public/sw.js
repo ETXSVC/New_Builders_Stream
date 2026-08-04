@@ -163,6 +163,28 @@ async function cacheAssets(urls) {
 }
 
 /**
+ * Drop every stored asset that this prime did not just store.
+ *
+ * `/_next/static` URLs are content-addressed per BUILD, so a deploy renames
+ * the lot and the previous build's entries are never requested again. They
+ * are also never evicted: the version bump in `activate` only fires when
+ * this worker changes, which a deploy of the app does not do. A device that
+ * primes across a year of deploys would carry every build it ever saw.
+ *
+ * Runs AFTER the new assets are safely stored, and prunes rather than
+ * clearing up front — a prune that ran first would leave a device with
+ * nothing if the re-fetch then failed.
+ */
+async function pruneStaticCache(keepUrls) {
+  const cache = await caches.open(STATIC_CACHE);
+  const keep = new Set(keepUrls.map((url) => new URL(url, self.location.origin).href));
+  const stored = await cache.keys();
+  await Promise.all(
+    stored.filter((request) => !keep.has(request.url)).map((request) => cache.delete(request))
+  );
+}
+
+/**
  * Assets the PAGE reports having loaded — best effort, unlike the above.
  *
  * A superset belt to the document's braces: shared chunks a future build
@@ -273,6 +295,7 @@ self.addEventListener("message", (event) => {
     event.waitUntil(
       (async () => {
         try {
+          const primed = [];
           for (const path of OFFLINE_PATHS) {
             const response = await fetch(path, {
               cache: "reload",
@@ -286,9 +309,13 @@ self.addEventListener("message", (event) => {
             // body can only be read once from each.
             const html = await response.clone().text();
             await putDocument(path, response);
-            await cacheAssets(assetsReferencedBy(html));
+            const assets = assetsReferencedBy(html);
+            await cacheAssets(assets);
+            primed.push(...assets);
           }
-          await cacheAssetsBestEffort(data.assets ?? []);
+          const supplementary = data.assets ?? [];
+          await cacheAssetsBestEffort(supplementary);
+          await pruneStaticCache([...primed, ...supplementary]);
           reply({ ok: true });
         } catch (err) {
           reply({ ok: false, error: String(err) });
