@@ -232,12 +232,51 @@ CREATE TABLE estimate_line_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     estimate_id UUID NOT NULL REFERENCES estimates(id) ON DELETE CASCADE,
     company_id UUID NOT NULL REFERENCES companies(id),
-    cost_catalog_item_id UUID NOT NULL REFERENCES cost_catalog_items(id),
+    -- NULLABLE since migration 0035: a free-form line has no catalog item.
+    cost_catalog_item_id UUID REFERENCES cost_catalog_items(id),
+    -- Free-form lines only; NULL on a catalogued line, where both live on
+    -- the catalog item and a second copy here would be free to drift.
+    description VARCHAR(255),
+    unit VARCHAR(50),
     quantity NUMERIC(12,2) NOT NULL,
-    unit_rate_snapshot NUMERIC(12,2) NOT NULL, -- copied at add-time; immune to later catalog price changes
-    line_total NUMERIC(12,2) NOT NULL
+    -- Copied from the catalog at add-time on a catalogued line (immune to
+    -- later catalog price changes); on a FREE-FORM line it is the rate the
+    -- estimator supplied — see the note below.
+    unit_rate_snapshot NUMERIC(12,2) NOT NULL,
+    line_total NUMERIC(12,2) NOT NULL,
+    -- Exactly one shape, never a mixture and never neither.
+    CONSTRAINT ck_estimate_line_items_catalogued_xor_free_form CHECK (
+        (cost_catalog_item_id IS NOT NULL AND description IS NULL AND unit IS NULL)
+        OR
+        (cost_catalog_item_id IS NULL AND description IS NOT NULL AND unit IS NOT NULL)
+    )
 );
 ```
+
+**Free-form lines (migration 0035).** Every line used to require a catalog
+item, which left nowhere to put the last line of most real estimates — site
+cleanup, a permit fee, a one-off allowance. The workaround in the field was a
+catalog item called "Miscellaneous" priced at $1.00 with the dollar amount
+typed into the quantity box, which prints "400 × $1.00" on the document a
+customer signs.
+
+A free-form line is the one place in this schema where **a price the caller
+supplied is stored as given**. That is a deliberate, narrow exception to the
+rule stated in Section 9 below and in `EstimateLineItemInput`'s own docstring
+("an estimator still cannot assert a price"), and it does not weaken it: that
+rule stops a catalogued line disagreeing with the catalog item behind it, and
+a free-form line has no catalog item to disagree with. A catalogued line that
+tries to supply `unit_rate` is still a 422.
+
+**Anything joining from this table to `cost_catalog_items` must use an OUTER
+join.** Two queries did not, each justified by a comment stating this FK could
+never be NULL — `app/services/estimate_calculation.py` (whose `subtotal` is
+accumulated from those very rows, so an inner join made the estimate total
+less than the sum of its own lines) and `app/tasks/estimate_pdf.py` (which
+would have omitted the line from the signed PDF while still counting its
+money in the total). Both are outer joins now, and
+`tests/test_estimates.py::test_free_form_line_reaches_the_subtotal_and_the_breakdown`
+fails if either is changed back.
 
 ## 6. E-Signatures & Compliance (Cross-Cutting)
 
@@ -565,4 +604,4 @@ because a subscription genuinely belongs to the root and a tax rate does not.
 - Every `company_id` foreign key column should be indexed; most access patterns filter or join on it.
 - RLS policies for every table in Sections 3–6 and 8 follow the identical pattern shown in Section 3 — omitted per-table above for brevity, but is a **mandatory** part of each table's migration, not optional. Section 9's two tables are the documented exceptions and spell their policies out in full.
 - Adding a tenant table means adding its policy in the same migration. This is enforced, not trusted: `tests/test_rls_policy_coverage.py` sweeps every table Postgres reports and fails on one that has no policy, a policy that does not actually scope by the tenant tree, or no `company_id` column and no explicit declaration that it holds no tenant data.
-- `estimate_line_items.unit_rate_snapshot` and `cost_catalog_items.unit_rate` are intentionally separate columns — this is what implements the historical-immutability rule from [Functional Requirements](02-functional-requirements.md), Section 4.
+- `estimate_line_items.unit_rate_snapshot` and `cost_catalog_items.unit_rate` are intentionally separate columns — this is what implements the historical-immutability rule from [Functional Requirements](02-functional-requirements.md), Section 4. On a free-form line (migration 0035) there is no catalog row to snapshot from, and the column holds the rate the estimator supplied; see Section 5's note.

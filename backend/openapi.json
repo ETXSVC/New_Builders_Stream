@@ -2883,12 +2883,32 @@
         "type": "object"
       },
       "EstimateLineItemInput": {
-        "description": "One entry inside `EstimateLineItemsReplaceRequest.items` \u2014 not a\nstandalone create-route body (there is no `POST\n/estimates/{id}/lines`; line items are only ever written via the\nbatch-replace route, API spec Section 5). `unit_rate_snapshot`/\n`line_total` are deliberately NOT fields here: both are\nserver-computed at replace-time (unit_rate copied from the referenced\n`CostCatalogItem.unit_rate` at that moment, line_total derived from\n`quantity * unit_rate_snapshot`), never supplied by the caller \u2014 same\n\"don't accept server-computed values from the client\" discipline as\n`CostCatalogItemResponse.is_override` being computed rather than\nstored input.\n\n`quantity` is `Decimal`, never `float` (this codebase's monetary/\nquantity invariant, same as `MarkupProfileCreateRequest.overhead_pct`/\n`CostCatalogItemCreateRequest.unit_rate`).\n\n`expected_unit_rate` is the rate the CALLER saw when they built this\nline, and is the one exception to \"don't accept server-computed values\nfrom the client\" above \u2014 because it is not accepted as a value. It is\nnever stored and never used in any arithmetic; the route compares it to\nthe catalog's current rate and refuses the whole request on a mismatch.\nAn estimator still cannot assert a price.\n\nIt exists because `unit_rate_snapshot` is copied at *replace-time*,\nwhich silently assumes the caller saw the rate an instant ago. They did\nnot: an estimator picks items from the catalog panel, fills in\nquantities, and saves minutes later \u2014 and a catalog edit in between\nre-prices every line without telling anyone. The estimate then shows a\nrate the person who built it never saw, and may have quoted a customer\nagainst. The window is minutes today and would be days under any\ndraft-now-submit-later flow (see\n`docs/superpowers/specs/2026-08-02-offline-pwa-design.md` \u00a71.2).\n\nOptional, exactly like `expected_updated_at` in\n`app/services/concurrency.py`: omit it and the write proceeds\nunchecked, as before. Same reasoning as that module gives \u2014 making it\nmandatory is the stronger guarantee and the right eventual\ndestination, but it would break every existing caller in one step.",
+        "description": "One entry inside `EstimateLineItemsReplaceRequest.items` \u2014 not a\nstandalone create-route body (there is no `POST\n/estimates/{id}/lines`; line items are only ever written via the\nbatch-replace route, API spec Section 5). `unit_rate_snapshot`/\n`line_total` are deliberately NOT fields here: both are\nserver-computed at replace-time (unit_rate copied from the referenced\n`CostCatalogItem.unit_rate` at that moment, line_total derived from\n`quantity * unit_rate_snapshot`), never supplied by the caller \u2014 same\n\"don't accept server-computed values from the client\" discipline as\n`CostCatalogItemResponse.is_override` being computed rather than\nstored input.\n\n`quantity` is `Decimal`, never `float` (this codebase's monetary/\nquantity invariant, same as `MarkupProfileCreateRequest.overhead_pct`/\n`CostCatalogItemCreateRequest.unit_rate`).\n\n`expected_unit_rate` is the rate the CALLER saw when they built this\nline, and is the one exception to \"don't accept server-computed values\nfrom the client\" above \u2014 because it is not accepted as a value. It is\nnever stored and never used in any arithmetic; the route compares it to\nthe catalog's current rate and refuses the whole request on a mismatch.\nAn estimator still cannot assert a price.\n\nIt exists because `unit_rate_snapshot` is copied at *replace-time*,\nwhich silently assumes the caller saw the rate an instant ago. They did\nnot: an estimator picks items from the catalog panel, fills in\nquantities, and saves minutes later \u2014 and a catalog edit in between\nre-prices every line without telling anyone. The estimate then shows a\nrate the person who built it never saw, and may have quoted a customer\nagainst. The window is minutes today and would be days under any\ndraft-now-submit-later flow (see\n`docs/superpowers/specs/2026-08-02-offline-pwa-design.md` \u00a71.2).\n\nOptional, exactly like `expected_updated_at` in\n`app/services/concurrency.py`: omit it and the write proceeds\nunchecked, as before. Same reasoning as that module gives \u2014 making it\nmandatory is the stronger guarantee and the right eventual\ndestination, but it would break every existing caller in one step.\n\n## Two shapes, exactly one per line (migration 0035)\n\nA line is either **catalogued** \u2014 `cost_catalog_item_id`, and the name,\nunit and price all come from that item \u2014 or **free-form**:\n`description` + `unit` + `unit_rate`, written by the estimator for work\nthe catalog does not price (site cleanup, a permit fee, a one-off\nallowance). Never a mixture, never neither; `_exactly_one_shape` below\nrejects both, and a CHECK constraint makes the invalid state\nunrepresentable for any writer that bypasses this schema.\n\n`unit_rate` is the one place a caller's price reaches a stored column,\nand the docstring above says an estimator cannot assert a price. Both\nare true: that rule protects a catalogued line from disagreeing with its\ncatalog item, and a free-form line has no catalog item to disagree with.\nSupplying `unit_rate` on a catalogued line is a 422, not a silent drop \u2014\na caller who tried to price a catalog item deserves to be told they\ncannot, rather than getting a 200 whose stored rate is not the one they\nsent.",
         "properties": {
           "cost_catalog_item_id": {
-            "format": "uuid",
-            "title": "Cost Catalog Item Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Catalog Item Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           },
           "expected_unit_rate": {
             "anyOf": [
@@ -2916,10 +2936,37 @@
               }
             ],
             "title": "Quantity"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unit_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Rate"
           }
         },
         "required": [
-          "cost_catalog_item_id",
           "quantity"
         ],
         "title": "EstimateLineItemInput",
@@ -2934,9 +2981,27 @@
             "type": "string"
           },
           "cost_catalog_item_id": {
-            "format": "uuid",
-            "title": "Cost Catalog Item Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Catalog Item Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
           },
           "estimate_id": {
             "format": "uuid",
@@ -2958,6 +3023,17 @@
             "title": "Quantity",
             "type": "string"
           },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
           "unit_rate_snapshot": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Unit Rate Snapshot",
@@ -2969,6 +3045,8 @@
           "estimate_id",
           "company_id",
           "cost_catalog_item_id",
+          "description",
+          "unit",
           "quantity",
           "unit_rate_snapshot",
           "line_total"

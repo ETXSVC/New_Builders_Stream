@@ -597,3 +597,42 @@ async def test_generate_estimate_pdf_actor_marks_failed_on_render_error(client, 
     body = get_response.json()
     assert body["pdf_status"] == "failed"
     assert body["pdf_storage_path"] is None
+
+
+def test_render_estimate_html_shows_a_free_form_line():
+    """A free-form line (migration 0035) has no catalog item, so the two
+    fields this template prints for every row — category and item name —
+    come from somewhere else: the `Miscellaneous` bucket and the estimator's
+    own description, both substituted by `app/tasks/estimate_pdf.py` when it
+    builds the display list.
+
+    Worth pinning at the render layer as well as the query layer, because
+    this is the document a customer signs: a line the estimator wrote and
+    priced must appear on it, with the words they chose.
+    """
+    free_form = EstimateLineItemDisplay(
+        line_item=EstimateLineItem(
+            id=uuid.uuid4(),
+            estimate_id=uuid.uuid4(),
+            company_id=uuid.uuid4(),
+            cost_catalog_item_id=None,
+            description="Site cleanup and haul-off",
+            unit="lot",
+            quantity=Decimal("1.00"),
+            unit_rate_snapshot=Decimal("400.00"),
+            line_total=Decimal("400.00"),
+        ),
+        category="Miscellaneous",
+        name="Site cleanup and haul-off",
+    )
+
+    html = render_estimate_html(
+        estimate=_estimate(),
+        line_items=[free_form],
+        markup_profile=_markup_profile(),
+        company_name="Acme Construction",
+    )
+
+    assert "Site cleanup and haul-off" in html
+    assert "Miscellaneous" in html
+    assert "$400.00" in html

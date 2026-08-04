@@ -15,7 +15,11 @@ import { formatCurrency } from "@/lib/format";
 
 interface LineItem {
   id: string;
-  cost_catalog_item_id: string;
+  // null on a free-form line (migration 0035) — the estimator's own
+  // description and unit stand in for the catalog item's.
+  cost_catalog_item_id: string | null;
+  description: string | null;
+  unit: string | null;
   quantity: string;
   unit_rate_snapshot: string;
   line_total: string;
@@ -306,7 +310,14 @@ export default function EstimateDetailPage() {
           <ul className="flex flex-col gap-1 text-sm">
             {estimate.line_items.map((li) => (
               <li key={li.id} className="flex justify-between">
-                <span>Qty {li.quantity} @ {formatCurrency(li.unit_rate_snapshot)}</span>
+                <span>
+                  {/* A catalogued line has never shown a name here — this
+                      view has no catalog lookup — but a free-form line
+                      carries its own description, so show it rather than
+                      leave the row as a bare quantity. */}
+                  {li.description ? `${li.description} — ` : ""}
+                  Qty {li.quantity} @ {formatCurrency(li.unit_rate_snapshot)}
+                </span>
                 <span>{formatCurrency(li.line_total)}</span>
               </li>
             ))}

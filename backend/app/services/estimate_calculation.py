@@ -70,6 +70,13 @@ from app.core.money import CENTS
 from app.models import CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 
 
+# The category a free-form line (migration 0035) is grouped under. Those lines
+# carry a description the estimator wrote and no catalog item, so they have no
+# category to group by — but they do have money in them, and a breakdown that
+# quietly excluded them would not sum to the subtotal shown next to it.
+MISCELLANEOUS_CATEGORY = "Miscellaneous"
+
+
 @dataclass(frozen=True)
 class CategoryTotal:
     """One category's summed `line_total`s — the raw computation result the
@@ -116,14 +123,21 @@ async def calculate_estimate(session: AsyncSession, estimate: Estimate) -> Estim
     # Step 1 (re-read, not recompute) + Step 2 (category grouping) in one
     # query: `EstimateLineItem` has no `category` column of its own — only
     # `cost_catalog_item_id` — so a join to `CostCatalogItem` is required
-    # to learn each line's category (resolved judgment call #6). An INNER
-    # JOIN is safe here: every `EstimateLineItem.cost_catalog_item_id` is a
-    # NOT NULL FK into `cost_catalog_items` (see
-    # `app/models/estimate_line_item.py`), so no line item row can ever
-    # lack a matching catalog item row.
+    # to learn each line's category (resolved judgment call #6).
+    #
+    # An OUTER join, and that is not a stylistic preference. This was an
+    # INNER join, correct at the time and justified in a comment here that
+    # said no line item could lack a catalog item because the FK was NOT
+    # NULL. Migration 0035 made it nullable for free-form lines, at which
+    # point an inner join stops omitting nothing and starts omitting THE
+    # ESTIMATE'S OWN LINES — silently, since `subtotal` is accumulated from
+    # these same rows. The estimate would have totalled less than the sum of
+    # the lines printed beneath it, with nothing raising. Anything else that
+    # joins from `estimate_line_items` to `cost_catalog_items` needs the same
+    # treatment; `tests/test_estimate_calculation.py` pins this one.
     result = await session.execute(
         select(EstimateLineItem, CostCatalogItem.category)
-        .join(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
+        .outerjoin(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
         .where(EstimateLineItem.estimate_id == estimate.id)
     )
     rows = result.all()
@@ -131,6 +145,10 @@ async def calculate_estimate(session: AsyncSession, estimate: Estimate) -> Estim
     subtotal = Decimal("0")
     category_sums: dict[str, Decimal] = {}
     for line_item, category in rows:
+        # A free-form line has no catalog item and therefore no category of
+        # its own. It still has to appear in the breakdown, or the breakdown
+        # stops adding up to the subtotal printed beside it.
+        category = category if category is not None else MISCELLANEOUS_CATEGORY
         # `line_item.line_total` is already a 2-decimal-place Decimal
         # (Task 2.11 quantized it at write time) — pure Decimal addition
         # below, no rounding concern here (Decimal addition never adds

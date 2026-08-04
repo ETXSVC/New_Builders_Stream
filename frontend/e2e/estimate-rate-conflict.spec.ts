@@ -112,8 +112,17 @@ test("estimate rate conflict: refused, explained, and recoverable", async ({ pag
     await expect(page.getByText(/rate\(s\) changed/i)).toBeVisible({ timeout: 15_000 });
     // Both rates, precisely — whole-dollar rounding would render a 4.00 ->
     // 4.05 conflict as "$4 -> $4", which is worse than saying nothing.
-    await expect(page.getByText("$4.00", { exact: true })).toBeVisible();
-    await expect(page.getByText("$9.00", { exact: true })).toBeVisible();
+    //
+    // Scoped to the conflict notice's own row rather than searched for across
+    // the page. These used to be bare `getByText("$4.00")` calls, which
+    // worked only because that string happened to appear nowhere else — and
+    // stopped working the moment the line rows above grew a unit-rate column
+    // showing the same figure. Asserting inside the row that claims the
+    // conflict is what the step actually means, and it no longer depends on
+    // the rest of the screen staying quiet.
+    const conflictRow = page.getByRole("listitem").filter({ hasText: "Lumber" });
+    await expect(conflictRow.getByText("$4.00", { exact: true })).toBeVisible();
+    await expect(conflictRow.getByText("$9.00", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Use new rates" })).toBeVisible();
 
     // The point of the guard: nothing was written.

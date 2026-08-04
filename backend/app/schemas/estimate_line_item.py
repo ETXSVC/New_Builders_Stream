@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class EstimateLineItemInput(BaseModel):
@@ -43,11 +43,78 @@ class EstimateLineItemInput(BaseModel):
     unchecked, as before. Same reasoning as that module gives — making it
     mandatory is the stronger guarantee and the right eventual
     destination, but it would break every existing caller in one step.
+
+    ## Two shapes, exactly one per line (migration 0035)
+
+    A line is either **catalogued** — `cost_catalog_item_id`, and the name,
+    unit and price all come from that item — or **free-form**:
+    `description` + `unit` + `unit_rate`, written by the estimator for work
+    the catalog does not price (site cleanup, a permit fee, a one-off
+    allowance). Never a mixture, never neither; `_exactly_one_shape` below
+    rejects both, and a CHECK constraint makes the invalid state
+    unrepresentable for any writer that bypasses this schema.
+
+    `unit_rate` is the one place a caller's price reaches a stored column,
+    and the docstring above says an estimator cannot assert a price. Both
+    are true: that rule protects a catalogued line from disagreeing with its
+    catalog item, and a free-form line has no catalog item to disagree with.
+    Supplying `unit_rate` on a catalogued line is a 422, not a silent drop —
+    a caller who tried to price a catalog item deserves to be told they
+    cannot, rather than getting a 200 whose stored rate is not the one they
+    sent.
     """
 
-    cost_catalog_item_id: uuid.UUID
+    cost_catalog_item_id: uuid.UUID | None = None
     quantity: Decimal
     expected_unit_rate: Decimal | None = None
+    # Free-form lines only. Lengths mirror `cost_catalog_items.name`/`.unit`,
+    # the fields these stand in for.
+    description: str | None = Field(None, min_length=1, max_length=255)
+    unit: str | None = Field(None, min_length=1, max_length=50)
+    unit_rate: Decimal | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_shape(self) -> "EstimateLineItemInput":
+        catalogued = self.cost_catalog_item_id is not None
+        free_form = any(
+            value is not None for value in (self.description, self.unit, self.unit_rate)
+        )
+        if catalogued and free_form:
+            raise ValueError(
+                "a line item is either catalogued (cost_catalog_item_id) or free-form "
+                "(description, unit, unit_rate) — not both; a catalogued line's name, "
+                "unit and price all come from its catalog item"
+            )
+        if not catalogued and not free_form:
+            raise ValueError(
+                "supply either cost_catalog_item_id, or description + unit + unit_rate"
+            )
+        if free_form:
+            # Checked as a group rather than field-by-field: a free-form line
+            # with a description and no rate is not a line, it is half of one,
+            # and the caller needs to hear that rather than have a price
+            # invented for them.
+            missing = [
+                name
+                for name, value in (
+                    ("description", self.description),
+                    ("unit", self.unit),
+                    ("unit_rate", self.unit_rate),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(f"a free-form line item also requires: {', '.join(missing)}")
+            if self.expected_unit_rate is not None:
+                # `expected_unit_rate` guards against the CATALOG moving
+                # underneath the caller. A free-form line has no catalog
+                # entry, so there is nothing for it to be stale against, and
+                # accepting it silently would imply a check that never ran.
+                raise ValueError(
+                    "expected_unit_rate does not apply to a free-form line item — there is "
+                    "no catalog rate for it to be checked against"
+                )
+        return self
 
 
 class EstimateLineItemsReplaceRequest(BaseModel):
@@ -72,7 +139,11 @@ class EstimateLineItemResponse(BaseModel):
     id: uuid.UUID
     estimate_id: uuid.UUID
     company_id: uuid.UUID
-    cost_catalog_item_id: uuid.UUID
+    # None on a free-form line (migration 0035), where `description`/`unit`
+    # carry what the catalog item would have supplied.
+    cost_catalog_item_id: uuid.UUID | None
+    description: str | None
+    unit: str | None
     quantity: Decimal
     unit_rate_snapshot: Decimal
     line_total: Decimal

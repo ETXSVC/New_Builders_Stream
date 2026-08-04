@@ -205,6 +205,7 @@ export function CaptureScreen() {
       return [
         ...prev,
         {
+          key: item.id,
           cost_catalog_item_id: item.id,
           name: item.name,
           unit: item.unit,
@@ -234,8 +235,16 @@ export function CaptureScreen() {
       target,
       markup_profile_id: markupProfileId,
       markup_profile_name: profile?.name ?? "",
+      // Catalogued lines only, and deliberately so: a survey captured on
+      // site records WHAT was measured, and the priced quote is produced by
+      // the server once there is a connection. A free-form line
+      // (migration 0035) carries a price the estimator typed, which is a
+      // quoting decision rather than a survey one — `handleAdd` above is the
+      // only way a line gets here, and it only ever adds catalog items, so
+      // the non-null assertion below is the type system catching up with
+      // that rather than a claim being made on faith.
       lines: lines.map((line) => ({
-        cost_catalog_item_id: line.cost_catalog_item_id,
+        cost_catalog_item_id: line.cost_catalog_item_id as string,
         name: line.name,
         unit: line.unit,
         unit_rate: line.unit_rate,
@@ -476,18 +485,18 @@ export function CaptureScreen() {
               emptyMessage="No catalog items stored on this device."
             />
             <div className="flex flex-col gap-3">
+              {/* No `onRateChange`: without it `LineRows` renders every rate
+                  as read-only text, which is what this screen wants — it
+                  captures a survey, and the rates it shows are the catalog's,
+                  not the estimator's to set. */}
               <LineRows
                 lines={lines}
-                onQuantityChange={(id, quantity) =>
+                onQuantityChange={(key, quantity) =>
                   setLines((prev) =>
-                    prev.map((line) =>
-                      line.cost_catalog_item_id === id ? { ...line, quantity } : line
-                    )
+                    prev.map((line) => (line.key === key ? { ...line, quantity } : line))
                   )
                 }
-                onRemove={(id) =>
-                  setLines((prev) => prev.filter((line) => line.cost_catalog_item_id !== id))
-                }
+                onRemove={(key) => setLines((prev) => prev.filter((line) => line.key !== key))}
               />
               {/* No total beyond the subtotal above: overhead, profit and tax
                   are `POST /estimates/{id}/calculate`'s job, and a

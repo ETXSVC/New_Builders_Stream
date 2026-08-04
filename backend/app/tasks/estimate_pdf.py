@@ -60,6 +60,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import SessionLocal, set_current_tenant, set_current_user
 from app.models import Company, CompanyUser, CostCatalogItem, Estimate, EstimateLineItem, MarkupProfile
 from app.services.document_storage import write_estimate_pdf_file
+from app.services.estimate_calculation import MISCELLANEOUS_CATEGORY
 from app.services.pdf_export import EstimateLineItemDisplay, render_estimate_pdf
 from app.tasks import broker  # noqa: F401 - import-time side effect (see module docstring)
 
@@ -119,14 +120,27 @@ async def _generate_and_persist(estimate_id: uuid.UUID, requesting_user_id: str)
         # `CostCatalogItem` for `category`), extended to also select `name`
         # — the exact pair `EstimateLineItemDisplay` (Task 2.13) needs and
         # cannot look up itself (that module has no DB access).
+        #
+        # OUTER, for the reason `calculate_estimate` spells out: since
+        # migration 0035 a free-form line has no catalog item, and an inner
+        # join would drop it. Here that is worse than a wrong number — this
+        # query builds the PDF, so a dropped line is work missing from the
+        # document a customer signs, while the total beneath it still
+        # includes the money.
         line_items_result = await session.execute(
             select(EstimateLineItem, CostCatalogItem.category, CostCatalogItem.name)
-            .join(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
+            .outerjoin(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
             .where(EstimateLineItem.estimate_id == estimate.id)
             .order_by(EstimateLineItem.id.asc())
         )
         line_items = [
-            EstimateLineItemDisplay(line_item=line_item, category=category, name=name)
+            EstimateLineItemDisplay(
+                line_item=line_item,
+                # A free-form line supplies its own name and has no category;
+                # both fall back to what the line itself carries.
+                category=category if category is not None else MISCELLANEOUS_CATEGORY,
+                name=name if name is not None else (line_item.description or ""),
+            )
             for line_item, category, name in line_items_result.all()
         ]
 

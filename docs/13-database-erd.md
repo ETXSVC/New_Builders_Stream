@@ -6,9 +6,10 @@ quietly drift from what `alembic upgrade head` actually produces.
 
 **46 tables** (excluding `alembic_version`). Last re-derived 2026-08-02
 against migration `0033`; the counts and the no-RLS list below come from
-`pg_class`/`pg_attribute`, not from memory. Migration `0034` added a
-column (`daily_logs.client_reference`) and no table, so the counts stand —
-it is reflected in the daily-logs block below.
+`pg_class`/`pg_attribute`, not from memory. Migrations `0034` and `0035`
+added columns and no tables, so the counts stand — `daily_logs.client_reference`
+and `estimate_line_items.description`/`.unit` are reflected in their blocks
+below.
 
 ## Read this first: the tenant boundary is in the database
 
@@ -313,7 +314,9 @@ erDiagram
         uuid id "PK"
         uuid estimate_id "FK"
         uuid company_id "FK"
-        uuid cost_catalog_item_id "FK"
+        uuid cost_catalog_item_id "FK, null on a free-form line"
+        varchar description "free-form lines only"
+        varchar unit "free-form lines only"
         numeric quantity
         numeric unit_rate_snapshot
         numeric line_total
