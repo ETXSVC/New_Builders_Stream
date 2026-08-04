@@ -73,7 +73,19 @@ Grouped together because both are needed before Enterprise-tier subscribers can 
 
 These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Section 8, and are **not** part of any committed phase above:
 
-- Offline-capable mobile/PWA support for field crews.
+- ~~Offline-capable mobile/PWA support for field crews.~~ **Partly shipped
+  2026-08-03, and the PRD's framing of this question was the wrong one.**
+  Scoping it found that the driver is an *estimator on site* capturing an
+  estimate, not a field crew — a different role, a much larger write
+  surface, and the case that actually needs a cached app shell. That case
+  is built: `/estimates/capture`, cold-starting with no network, with the
+  design and the decisions behind it in
+  `docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md` and
+  its parent `2026-08-02-offline-pwa-design.md`. The **field-crew write
+  queue remains unscheduled**: two writes, both independent and
+  append-only, no cached documents and no security implications — it shares
+  almost nothing with the estimator case beyond the words "offline
+  support," and should be decided on its own merits.
 - AI-assisted blueprint takeoff for the Estimation Engine.
 - Multi-currency / multi-language support.
 

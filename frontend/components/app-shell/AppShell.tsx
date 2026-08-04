@@ -4,6 +4,7 @@ import * as React from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Nav } from "@/components/app-shell/Nav";
+import { readCompanyId } from "@/lib/offline/identity";
 
 // Pre-auth screens that live inside the (app) route group (they need its
 // Tailwind globals and AuthProvider) but must not show the app chrome.
@@ -46,35 +47,60 @@ const PRE_AUTH_PATHS = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { accessToken, isHydrating } = useAuth();
+  const { accessToken, isHydrating, sessionUnreachable } = useAuth();
   const isPreAuthPath = PRE_AUTH_PATHS.includes(pathname);
+  // No token, because the server could not be REACHED — not because it said
+  // no. On a path the service worker can serve from cache, that is an
+  // estimator with no signal, and sending them to /login would replace the
+  // one screen that works offline with the one that cannot.
+  const strandedOffline =
+    sessionUnreachable && accessToken === null && OFFLINE_CAPABLE_PATHS.includes(pathname);
 
   React.useEffect(() => {
-    if (isPreAuthPath || isHydrating || accessToken !== null) return;
+    if (isPreAuthPath || isHydrating || accessToken !== null || strandedOffline) return;
     router.replace("/login");
-  }, [isPreAuthPath, isHydrating, accessToken, router]);
+  }, [isPreAuthPath, isHydrating, accessToken, router, strandedOffline]);
 
   if (isPreAuthPath) return <>{children}</>;
 
   // Session confirmed gone (or the redirect above hasn't committed yet):
   // render nothing rather than the app chrome + a page that would just
   // silently no-op every fetch against a token that no longer exists.
-  if (!isHydrating && accessToken === null) return null;
+  if (!isHydrating && accessToken === null && !strandedOffline) return null;
 
   return (
     <>
-      <Nav companyId={decodeCompanyId(accessToken)} />
+      <Nav companyId={readCompanyId(accessToken)} />
       {children}
     </>
   );
 }
 
-function decodeCompanyId(accessToken: string | null): string {
-  if (!accessToken) return "";
-  try {
-    const payload = JSON.parse(atob(accessToken.split(".")[1]));
-    return payload.default_company_id ?? "";
-  } catch {
-    return "";
-  }
-}
+// Screens a service worker can serve from cache, which are the only ones
+// that can be open with no network at all. Keep in step with `sw.js`'s own
+// OFFLINE_PATHS — a path cached there but missing here cold-starts into a
+// redirect to /login, which is the feature not working.
+const OFFLINE_CAPABLE_PATHS = ["/estimates/capture"];
+
+/*
+ * Why `sessionUnreachable` and not `navigator.onLine`:
+ *
+ * An offline cold start cannot produce an access token — it lives in memory
+ * only, and re-deriving it means exchanging the refresh cookie over the
+ * network. So `accessToken === null` after hydration, which is exactly the
+ * condition the redirect above treats as a confirmed-dead session, and the
+ * cached capture screen would load, hydrate, and immediately replace itself
+ * with /login.
+ *
+ * The first version of this guard asked `navigator.onLine`. That flag reads
+ * `true` with no route to anything — behind a captive portal, on a Wi-Fi
+ * that is up but dead, and under Playwright's own offline emulation, which
+ * is how it was caught here rather than in the field. AuthContext's
+ * `sessionUnreachable` is evidence instead of a claim: a request was made
+ * and did not arrive.
+ *
+ * Narrow in both remaining directions: only on a path the worker caches,
+ * and only to SUPPRESS a redirect. The moment a refresh gets through and is
+ * refused, `sessionUnreachable` goes false and the ordinary rule sends them
+ * to /login — over a network they can actually sign in on.
+ */

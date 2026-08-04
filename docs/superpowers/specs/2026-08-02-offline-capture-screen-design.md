@@ -220,6 +220,9 @@ needs the network.
 
 ## 6. What to decide before building
 
+**All four are now decided — see §8.** The list is kept as written so the
+decisions can be read against the questions they answer.
+
 1. ~~Run the §1 spike.~~ **Done 2026-08-02, confirmed** — see §1. This is
    a screen, not a security-architecture change.
 2. **Nonce reuse.** Caching a document replays its nonce for the life of
@@ -248,11 +251,169 @@ needs the network.
    feature does not exist in its current shape and nothing below is worth
    building.
 
+   **Answered 2026-08-03: yes, on a device that asks for it** — §8.1.
+
 ## 7. What this deliberately does not include
 
 Offline **viewing** of existing estimates, projects, or documents; offline
 PDF; offline anything for the field crew (a separate, much smaller feature
 — parent spec §2); and any change to the estimate builder itself.
+
+---
+
+## 8. Decisions taken, 2026-08-03 — before writing any of it
+
+### 8.1 The catalog may be cached, but only on a device that asks
+
+**Decided: yes, with priming as an explicit act.** §6.4 asked whether the
+company's pricing may sit on a phone at all, and the answer that makes it
+acceptable is not a policy sentence — it is that nothing is cached until
+somebody presses **"Make available offline"** on the capture screen. A
+device that never presses it holds no catalog, which means the exposure
+follows the estimator who needs it rather than every browser that ever
+loaded the app.
+
+The same screen shows what it is holding, when it was primed, and a
+**"Remove offline data"** button that clears it. An exposure the person
+carrying it can see and revoke is a different thing from one they cannot.
+
+Keyed by `(user_id, active_company_id)` and cleared on logout and on
+company switch, per §4 — not optional, and the part most likely to be got
+wrong quietly.
+
+### 8.2 A cached document is served for 24 hours, then it is not
+
+**Decided: 24 hours, enforced by the worker, on serve rather than on
+write.** §6.2's question is the nonce: a cached document replays its own
+nonce for as long as the cache entry lives, so the cache lifetime *is* the
+nonce lifetime.
+
+Twenty-four hours is chosen because it is the shape of the actual job — an
+estimator drives out in the morning and is back in signal by evening — and
+because bounding it at the *serve* is what makes the bound real: a stamp
+written at cache time and checked before the response is handed over,
+rather than an eviction policy that only runs when something else happens
+to trigger it.
+
+**What it costs, stated rather than discovered:** an estimator offline for
+longer than a day cannot cold-start the app, and that includes reaching
+drafts already captured. The drafts themselves are not lost — they are in
+IndexedDB, which this bound does not touch — but they are unreachable
+until the device sees the network again. That is the price of not letting
+one nonce live indefinitely, and it is worth it because the failure is
+visible and recoverable while an unbounded nonce is neither.
+
+`/_next/static/*` is exempt: those URLs are content-addressed per build and
+carry no nonce, so a TTL on them would buy nothing and cost the offline
+start its JavaScript.
+
+### 8.3 A 409 at flush parks the draft and waits for a human
+
+**Decided.** §6.3 left the part the online case does not have: at flush
+there may be nobody looking. So the flush **never adopts a rate on its
+own** and **never retries a 409**. It moves the draft to
+`needs_attention`, stores the conflicting lines with both rates, and stops.
+
+The capture screen surfaces those drafts above everything else, and
+resolving one uses the *same component* as the online builder — old → new
+per line, a "Use new rates" button that updates the draft without saving,
+and the estimator pressing save themselves. `RateConflictNotice` is
+extracted for exactly this reason: two copies of that policy would drift,
+and the drift would be silent re-pricing appearing in one of them.
+
+A 403 (the tenant's tier or override moved while they were offline) parks
+the same way with a different message, and is likewise never retried — it
+will never succeed.
+
+### 8.4 Partial failure keeps the estimate id rather than the empty estimate
+
+§3 said the flush must either complete or delete an estimate whose step 1
+succeeded and whose step 2 failed, and that leaving it lying around is not
+an acceptable third option.
+
+**Decided: complete it.** The draft keeps `estimate_id` from the moment
+step 1 returns, persisted before step 2 is attempted, so resuming resumes
+rather than creating a second estimate. Discarding a parked draft that
+holds an id issues `DELETE /estimates/{id}` first and refuses to discard
+locally if that call fails — which is the only path by which an empty
+estimate could otherwise be orphaned.
+
+### 8.5 Logout clears the cache; it does not delete unsent work
+
+Cached reference data — catalog, markup profiles, leads and projects — is
+cleared on logout and on company switch, along with the cached documents.
+
+**Drafts are not.** They are the estimator's own unsent work, and deleting
+them on logout would lose it silently at the exact moment somebody is least
+expecting a destructive side effect. They stay keyed by
+`(user_id, active_company_id)`, so a different user signing in on the same
+device does not see them, and the capture screen shows only the active
+identity's. The residual exposure is real and smaller than the catalog's: a
+draft holds the rates for the lines it captured, not the whole price list.
+
+---
+
+## 9. As built, 2026-08-03 — and the two things the design did not predict
+
+Shipped as designed: `/estimates/capture` (an ordinary `(app)` route, per
+§1), `public/sw.js`, `lib/offline/*`, the draft store keyed by
+`(user_id, active_company_id)`, and `RateConflictNotice` extracted so the
+builder and the flush share one recovery policy. `e2e/offline-capture.spec.ts`
+covers the cold start, the capture, the flush, and the 409-at-flush park,
+with a control proving the worker's allowlist is real.
+
+Two things were wrong in the design, both found by the e2e test rather than
+by review, and both worth recording because they are invisible until the
+app is actually run with the network switched off.
+
+### 9.1 A cached document is not a cached page
+
+§1 proved the *document* replays under its own CSP, and stopped there. The
+first offline cold start rendered **nothing**: the HTML came from the cache
+and every `/_next/static/*` chunk it referenced went to the network and
+failed. Nothing errored — the document served perfectly — so the symptom
+was a blank screen that reads as a broken app rather than as an incomplete
+cache.
+
+The fix is to prime the assets the cached document *names*, extracted from
+its own script and link tags. That list is exactly right by construction:
+it is what the browser will ask for when it replays that document. Priming
+from what the current page happens to have loaded is a different list — an
+estimator who arrived by client-side navigation loaded a different set of
+chunks than a fresh document load will ask for.
+
+The spike missed this because it cached `/_next/static` opportunistically
+through the `fetch` handler and reloaded the page, which pulled the chunks
+in on the way past. A prime-and-then-go-offline flow never makes those
+requests through the worker at all.
+
+### 9.2 `navigator.onLine` reads `true` with no network
+
+The first version of the "do not redirect an offline cold start to /login"
+guard asked `navigator.onLine`. Under Playwright's offline emulation that
+flag stays **true**, so the guard never fired and the cached page hydrated,
+redirected itself to `/login`, and failed to load it — a blank screen
+again, by a completely different route. The same is true in the field
+behind a captive portal or on a Wi-Fi with no route out, so this was a real
+bug that the test happened to expose rather than a test artifact.
+
+That forced a better answer than the design had: `AuthContext` now
+distinguishes a refresh that was **refused** (the server answered no — end
+the session) from one that never **arrived** (`sessionUnreachable` — keep
+the session, retry every 10s). A 5xx counts as unreachable too, since the
+BFF answers 502 when the backend is down and folding that into "signed out"
+turns a backend restart into a mass logout.
+
+Three consequences worth knowing:
+
+- **A network blip no longer signs anyone out mid-session.** Previously any
+  failed scheduled refresh called `clearSession()`. That was deliberate,
+  but it was written for "the cookie expired", and it also fired for "the
+  lift has no signal."
+- **The capture screen's connection badge is evidence**, not a flag: it
+  reads from whether the last send actually arrived.
+- **Waiting drafts retry on a timer** (10s) as well as on the `online`
+  event, because that event is a hint that may never come.
 
 ---
 

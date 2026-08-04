@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { clearOfflineCaches } from "@/lib/offline/reset";
 
 interface Membership {
   company_id: string;
@@ -76,6 +77,13 @@ export function CompanySwitcher() {
         setError(data.detail ?? "Could not switch company");
         return;
       }
+      // The offline cache is keyed by (user, active company), but the
+      // KEYING is not what makes a switch safe on its own — the previous
+      // company's catalog would simply sit there under its old key,
+      // readable by anyone holding the device. So it goes, on the way
+      // through. Unsent drafts stay, keyed to the identity that captured
+      // them (lib/offline/reset.ts).
+      await clearOfflineCaches();
       // No explicit reload: setSession hands out a new access token, which
       // changes `load`'s identity and re-runs the effect above. Calling it
       // here as well fetched the list twice per switch — visible in the

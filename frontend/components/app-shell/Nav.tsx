@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { CompanySwitcher } from "@/components/app-shell/CompanySwitcher";
+import { clearOfflineCaches } from "@/lib/offline/reset";
 
 export function Nav({ companyId }: { companyId: string }) {
   const router = useRouter();
@@ -36,6 +37,11 @@ export function Nav({ companyId }: { companyId: string }) {
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
+    // Before the session goes, and before the redirect: the cached catalog
+    // is the company's pricing, and it must not outlive the session that
+    // was allowed to read it. Unsent drafts survive — see
+    // lib/offline/reset.ts for why the two are treated differently.
+    await clearOfflineCaches();
     clearSession();
     router.push("/login");
   }
@@ -70,6 +76,14 @@ export function Nav({ companyId }: { companyId: string }) {
         {(role === "admin" || role === "project_manager" || role === "accountant") && (
           <Link href="/estimates" className="text-sm text-slate-600 hover:text-slate-900">
             Estimates
+          </Link>
+        )}
+        {/* Admin/PM only, matching POST /estimates' own write roles — the
+            capture screen exists to create estimates, so a role that cannot
+            create one has nothing to do there. */}
+        {(role === "admin" || role === "project_manager") && (
+          <Link href="/estimates/capture" className="text-sm text-slate-600 hover:text-slate-900">
+            On-site capture
           </Link>
         )}
         {(role === "admin" || role === "project_manager") && (
