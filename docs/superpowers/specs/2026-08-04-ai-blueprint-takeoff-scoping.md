@@ -110,6 +110,16 @@ worth enforcing in code rather than trusting.
 **A takeoff that measures perfectly and maps badly is worse than no takeoff**,
 because the quantities look right.
 
+**A free-form line is not the escape hatch it looks like.** Migration 0035
+added lines that carry their own description, unit and price, so a takeoff
+*could* express a measurement with no catalog match by inventing one. It must
+not: a price the model made up, sitting on a document a customer signs, is a
+strictly worse failure than the one it dodges. The third outcome a proposal
+needs is **"measured this, found nothing in your catalog for it"** — surfaced
+as an unmatched list for the estimator to price or ignore. Free-form lines are
+what they will reach for when they price it; they are the human's tool, not the
+model's.
+
 ### 3.3 The accuracy bar — the part that decides whether this ships
 
 An estimate becomes a PDF, gets sent for signature, and is e-signed by a
