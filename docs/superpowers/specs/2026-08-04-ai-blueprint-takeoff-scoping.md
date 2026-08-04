@@ -14,6 +14,16 @@ plan set costs well under a dollar (§4). The hard parts are that a measured
 quantity has to land on *this company's* catalog item (§3.2), and that a wrong
 number ends up on a document a customer signs (§3.3).
 
+**Two things are already decided, 2026-08-04, and they shape everything
+below:**
+
+- **Per-tenant opt-in.** Takeoff is off until a tenant turns it on. It is not
+  a platform-wide property of the product. See §5.1.
+- **Provider-agnostic.** The feature depends on a vision model, not on a
+  specific vendor. Claude is an implementation, not the architecture. See §5.2
+  — this is a real constraint on the design, not a preference, and it is why
+  this document names capabilities rather than a product wherever it can.
+
 ---
 
 ## 1. What a takeoff has to produce
@@ -43,10 +53,13 @@ revokes UPDATE and DELETE, and new versions are new rows. A takeoff can
 therefore cite the exact document row it read, and that citation cannot later
 be edited out from under it.
 
-## 2. What the model can do today
+## 2. What a capable vision model can do today
 
-Two facts worth knowing before scoping the work, both current as of this
-writing and both worth re-checking at implementation time:
+Two capabilities the feature depends on. The specifics below are **one
+provider's numbers, quoted because they are the ones that were to hand** —
+they are here to establish that the capability exists and is adequate, not to
+select a vendor. Every one of them moves, and every provider states them
+differently; re-check at implementation time and per provider (§5.2):
 
 - **High-resolution vision.** Claude Opus 5 and Sonnet 5 accept images up to
   **2576 px on the long edge** and return coordinates that map 1:1 to image
@@ -59,11 +72,12 @@ writing and both worth re-checking at implementation time:
   calls). Blueprints are big and get read repeatedly — the Files API is the
   right shape, and it keeps the bytes out of every subsequent request body.
 
-The published guidance for vision work on Opus 5 is also directly relevant:
-**give the model tools to crop and re-examine its own work rather than more
-thinking budget.** A takeoff is exactly that shape — find the scale, find the
-schedule, zoom the elevation, count the openings — so the architecture should
-be a tool-using loop over a sheet, not a single one-shot prompt.
+One piece of published guidance generalises beyond any single vendor and is
+worth designing around: **give the model tools to crop and re-examine its own
+work rather than more thinking budget.** A takeoff is exactly that shape —
+find the scale, find the schedule, zoom the elevation, count the openings — so
+the architecture should be a tool-using loop over a sheet rather than a single
+one-shot prompt, whichever provider is behind it.
 
 ## 3. The three problems, in order of difficulty
 
@@ -117,27 +131,34 @@ here and is the thing to design around:
 That is not a nice-to-have. It is the difference between a feature that
 accelerates an estimator and one that quietly mis-bids a job.
 
-**An API constraint shapes this, and it is a genuine fork.** Citations
-(`citations: {enabled: true}` on a document block, which returns
-`page_location` with 1-indexed page numbers) and structured outputs
-(`output_config.format`, which guarantees parseable JSON) are **mutually
-exclusive** — requesting both returns a 400. So either:
+**Provenance is a requirement of the interface, and how a provider earns it is
+its own business.** Under §5.2 this is the clearest example of why the seam
+belongs at the domain and not at the vendor: providers differ sharply in what
+they offer here, and at least one has a constraint that would otherwise leak
+into the whole design.
 
-- **(a) Structured JSON, unverified provenance.** Parseable line items; page
-  numbers only as free-form fields the model asserts, with nothing checking
-  them.
-- **(b) Citations, then a second structuring pass.** The extraction call cites
-  real pages; a second, cheap call turns that text into JSON. Two calls, and
-  the provenance is real.
+Concretely, on Claude, citations (`citations: {enabled: true}` on a document
+block, returning a 1-indexed `page_location`) and structured outputs
+(`output_config.format`, guaranteeing parseable JSON) are **mutually
+exclusive** — requesting both returns a 400. So a Claude adapter must either
+extract with citations and structure in a cheap second pass, or accept page
+numbers the model merely asserts. Given §3.3 the two-pass form is the right
+call there, because provenance the reviewer can trust is the point.
 
-Given §3.3, (b) is the one that matches how this codebase treats numbers a
-human has to trust. It should be a stated decision, not a side effect of
-whichever one gets written first.
+But that is a fact about one adapter, not about the feature. Another provider
+may hand back both in one call, or neither. **The interface asks for a line
+with its provenance; the adapter does whatever it must to produce one.**
 
 ## 4. What it costs
 
 Worth doing plainly, because the intuition that "AI on every blueprint" is
 expensive turns out to be wrong at these prices.
+
+Worked with one provider's published prices, because a concrete number beats
+an adjective. **The conclusion is what travels, not the arithmetic** — frontier
+vision pricing across vendors is close enough that a different provider moves
+these figures by tens of percent, not orders of magnitude, and the point below
+survives either way.
 
 A full-resolution sheet costs up to ~4,784 input tokens. Taking a
 twenty-sheet plan set, a few hundred catalog items in the prompt, and a few
@@ -170,43 +191,119 @@ quantity — rather than economising toward a cheaper, shakier answer.
 It also means **per-use metering is probably not worth building.** A flat tier
 gate is simpler and honest at this price point.
 
-## 5. What has to be decided first
+## 5. Decisions
 
-In this order. The first two are product and security calls, not engineering
-ones, and the rest do not matter until they are answered.
+### 5.1 Per-tenant opt-in — decided 2026-08-04
 
-1. **May a tenant's blueprints be sent to a third party at all?** A blueprint
-   is a customer's building. Sending it to Anthropic's API means it leaves the
-   RLS boundary and this deployment entirely — the same class of decision as
-   caching the cost catalog on a device (offline capture design §8.1), and it
-   should be made the same way: explicitly, per tenant, and visibly.
-   Anthropic's API does not train on API inputs, but "does not train on it" and
-   "never left our infrastructure" are different promises, and some customers
-   have contracts that care about the second. **If the answer is no, or
-   "only for tenants who opt in," that shapes everything downstream.**
+**Takeoff is off until a tenant turns it on.** Not a platform-wide property of
+the product, and not a term buried in a contract nobody reads.
 
-2. **What is the accuracy bar, stated as a number?** Not "accurate." Something
-   like: *a takeoff is useful if an estimator accepts ≥70% of proposed lines
-   unchanged and the error on accepted quantities is within ±5%.* Without a
-   number there is no way to tell whether a build succeeded, and no way to
-   decide when to stop tuning. **Measuring this needs a corpus** — a dozen real
-   plan sets with the takeoffs a human actually produced from them — and
-   getting that corpus is the real prerequisite, not any of the code.
+The mechanic that forces the question: a vision model cannot read a drawing
+that has not been sent to it. Today a blueprint sits on this deployment's disk
+and never leaves; with takeoff it is transmitted to a third-party API,
+processed, and returned. That is a narrow and boring fact — no person at the
+vendor opens the file, and the major providers do not train on API inputs —
+but it changes what a builder can say to *their* customer. A blueprint is
+usually the architect's or the owner's document, and builders sometimes hold
+agreements that speak to sharing drawings with third parties.
 
-3. **Citations or structured output** (§3.3). Recommendation: citations plus a
-   structuring pass, because provenance is what makes the review step real.
+So the decision is who gets to say yes, and the answer is: the tenant, per
+tenant, visibly. This is the same shape as the offline capture screen's
+"Make available offline" (design §8.1) — an exposure the customer chose and
+can see beats one that happens to them — and it means one cautious enterprise
+customer cannot block the feature for everyone else.
 
-4. **Which model, and where the effort dial sits.** Recommendation: start at
-   Opus 5 with high effort and a crop/re-examine tool, measure against the
-   corpus, then try Sonnet 5 and lower effort as cost/latency optimisations —
-   in that order. Establishing the quality ceiling first means a later
-   regression is attributable.
+Two consequences worth designing for rather than discovering:
 
-5. **Tier and gating.** Estimation is `pro` today
-   (`MODULE_MIN_TIER["estimation"]`). Takeoff is plausibly `enterprise`, and it
-   would be the first module whose gate protects a real marginal cost rather
-   than just a feature boundary — worth naming as a new kind of gate rather
-   than assuming the existing one transfers.
+- **The setting stores a provider, not a boolean.** Given §5.2, "yes to AI" is
+  not the granularity a procurement review works in — "yes to *this* vendor"
+  is. A tenant may permit one and refuse another.
+- **Tenant-supplied credentials are the natural extension.** An enterprise
+  tenant that wants the drawing to go to *their* vendor account under *their*
+  agreement can supply their own API key. The pattern already exists: the
+  email-server tab stores tenant-supplied credentials encrypted with the
+  integrations key, never returned by any route
+  (`company_email_settings`). Doing the same here dissolves most of the
+  objection for exactly the customers most likely to raise it — and it moves
+  the marginal cost to them, which changes the pricing question in §5.5.
+
+### 5.2 Provider-agnostic — decided 2026-08-04
+
+**The feature depends on a vision model, not on a vendor.** No provider's SDK,
+model id, or response shape may reach outside the adapter that speaks to it.
+
+This is a real design constraint, and the naive reading of it is a trap:
+abstracting to the *intersection* of what every provider offers would strip
+out exactly the capabilities that make a takeoff reviewable — high-resolution
+input, cited pages, schema-guaranteed output. The seam has to sit at the
+**domain**, not at the request:
+
+> Given the sheets of a plan set and this company's resolved catalog, propose
+> line items — each with a `cost_catalog_item_id`, a quantity, the unit it was
+> measured in, where in the document it came from, and how confident the
+> proposal is.
+
+Everything above that line is the product; everything below it is one
+provider's problem. Whether an adapter gets there in one call or three,
+whether it uses native PDF input or rasterises sheets itself, whether it earns
+provenance through a citations API or a second pass (§3.3) — all of that is
+adapter-local.
+
+This codebase already has the pattern twice, and it should be copied rather
+than reinvented: `app/services/accounting_client.py` defines an
+`AccountingProviderClient` Protocol with `RealQuickBooksClient` /
+`RealFreshBooksClient` / `FakeAccountingProviderClient`, selected **per
+provider** by that provider's own credentials being configured, with the fake
+as the default so tests, CI and a local `docker compose up` make no network
+calls. `stripe_client.py` established the same shape before it. A
+`TakeoffProviderClient` Protocol plus a fake is the third instance, and the
+fake matters as much here as it does there: **the entire test suite should
+exercise the fake**, or the suite becomes slow, expensive, and
+non-deterministic.
+
+Three things this decision costs, stated so they are not a surprise:
+
+- **Quality is not portable.** The accuracy bar (§5.3) has to be measured per
+  provider against the same corpus. "It works" on one vendor does not transfer,
+  and the corpus becomes the instrument that decides which provider a tenant
+  should choose — a second reason it is the real prerequisite.
+- **The interface must not promise what a provider cannot deliver.** If one
+  adapter cannot produce page-level provenance at all, that is a fact the
+  interface has to be able to express (provenance present or absent), not one
+  it can paper over.
+- **More surface to maintain.** Every provider is an adapter, an eval run, and
+  a set of credentials. That is the price of not being locked in, and it is
+  worth paying only if a second adapter actually gets written — one Protocol
+  with one implementation is a Protocol with extra steps.
+
+### 5.3 What is the accuracy bar, stated as a number? — open, and blocking
+
+Not "accurate." Something like: *a takeoff is useful if an estimator accepts
+≥70% of proposed lines unchanged and the error on accepted quantities is
+within ±5%.* Without a number there is no way to tell whether a build
+succeeded, no way to decide when to stop tuning, and — given §5.2 — no way to
+compare two providers.
+
+**Measuring it needs a corpus**: a dozen real plan sets with the takeoffs a
+human actually produced from them. Assembling that is the genuine prerequisite
+to this feature, it cannot be done after the fact, and it is the one piece of
+work that is worth starting before any of the rest is decided.
+
+### 5.4 Which model, and where the effort dial sits — open
+
+Recommendation: pick one capable provider, run at high effort with a
+crop/re-examine tool, and measure against the corpus to establish a quality
+ceiling. Only then try cheaper models and lower effort settings — in that
+order, so a later regression is attributable to the thing that caused it.
+
+### 5.5 Tier and gating — open
+
+Estimation is `pro` today (`MODULE_MIN_TIER["estimation"]`). Takeoff is
+plausibly `enterprise`, and it would be the first module whose gate protects a
+**real marginal cost** rather than a feature boundary. §4 argues per-use
+metering is not worth building at these prices — but note that §5.1's
+tenant-supplied-key path moves the cost to the tenant entirely, which may make
+the tier question smaller than it looks.
 
 ## 6. What a first version should be
 
@@ -220,12 +317,17 @@ Deliberately smaller than the phrase "AI takeoff" suggests:
   No new write path, no new approval flow.
 - **Provenance on every line**, or the review step is theatre.
 - **A unit-compatibility check in code**, not in the prompt.
-- **An eval corpus before the feature**, because §5.2 cannot be answered
+- **An eval corpus before the feature**, because §5.3 cannot be answered
   afterwards.
+- **One provider behind the Protocol, plus the fake** — and the Protocol
+  written as if a second adapter exists, because it will. Writing the second
+  adapter is not a first-version job; making the second adapter *possible*
+  without reshaping the feature is.
 
 And explicitly not, in a first version: area/volume tracing from scaled
 geometry, revision comparison between drawing versions, anything that writes
-an estimate without a human, and any per-use billing.
+an estimate without a human, any per-use billing, and a second provider
+adapter.
 
 ---
 
@@ -235,10 +337,20 @@ Codebase as of `5eaf230`: `app/models/estimate_line_item.py`,
 `app/models/cost_catalog_item.py`, `app/models/document.py`,
 `app/services/catalog_resolution.py`, `app/routers/estimates.py`
 (`replace_estimate_line_items`), `app/core/tier_gating.py`, `app/config.py`
-(`storage_root`), and migration 0004's REVOKE. Model capabilities, limits and
-pricing from the `claude-api` skill's current reference (vision resolution and
-image-token ceiling, PDF and Files API limits, the
-citations/structured-outputs incompatibility, batch and caching economics) —
-**re-verify these at implementation time; they move.** PRD §5.2 and §8 for the
-scope boundary, and `2026-08-02-offline-capture-screen-design.md` §8.1 for the
-data-boundary precedent this document's decision 1 follows.
+(`storage_root`), and migration 0004's REVOKE.
+`app/services/accounting_client.py` and `app/services/stripe_client.py` are the
+Protocol-plus-fake precedent §5.2 says to copy;
+`app/routers/company_email_settings.py` is the tenant-supplied-credential
+precedent §5.1 points at.
+
+Model capabilities, limits and prices are **one provider's, quoted to
+establish that the capability exists and to put a real number on the cost** —
+vision resolution and image-token ceiling, PDF and Files API limits, the
+citations/structured-outputs incompatibility, batch and caching economics, all
+from the `claude-api` skill's current reference. **Re-verify at implementation
+time, and separately per provider: every one of these numbers moves, and none
+of them is a commitment to a vendor** (§5.2).
+
+PRD §5.2 and §8 for the scope boundary, and
+`2026-08-02-offline-capture-screen-design.md` §8.1 for the data-boundary
+precedent §5.1 follows.
