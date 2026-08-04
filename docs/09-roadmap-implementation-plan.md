@@ -88,7 +88,13 @@ These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Secti
   making both writes safe to replay — `daily_logs.client_reference`
   (migration 0034) and `expected_status` on `PATCH /tasks/{id}` — see
   `2026-08-04-field-crew-offline-queue-design.md` §2.
-- AI-assisted blueprint takeoff for the Estimation Engine.
+- AI-assisted blueprint takeoff for the Estimation Engine. **Scoped
+  2026-08-04** — `docs/superpowers/specs/2026-08-04-ai-blueprint-takeoff-scoping.md`.
+  Not started, and deliberately: the model work is the easy part and the cost
+  is negligible (well under a dollar per plan set), but two questions have to
+  be answered first — whether a tenant's blueprints may leave this deployment
+  at all, and what the accuracy bar is as a *number*, which needs an eval
+  corpus of real plan sets before any code.
 - Multi-currency / multi-language support.
 
 ## Milestone Summary
