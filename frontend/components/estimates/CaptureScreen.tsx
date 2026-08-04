@@ -25,7 +25,19 @@ import {
 } from "@/lib/offline/store";
 
 /**
- * Capturing an estimate on site, where there is no signal.
+ * Capturing a site SURVEY, where there is no signal.
+ *
+ * The vocabulary is the product's, and the distinction is real: a survey
+ * records what an estimator measured on site and can be captured online or
+ * off; a QUOTE is a priced document, and only exists once the server has
+ * priced it. So nothing on this screen totals anything — see `showSubtotal`
+ * in `LineRows` — and the words "quote" and "total" appear only in the Sent
+ * section below, describing something the server produced.
+ *
+ * The URL stays `/estimates/capture` despite the rename. It is listed in
+ * `public/sw.js`'s allowlist and baked into documents already cached on real
+ * devices, so changing it would strand any estimator who primed before the
+ * deploy.
  *
  * Deliberately NOT the estimate builder. The builder calculates, exports a
  * PDF, sends for signature and takes an e-signature — none of which can work
@@ -223,7 +235,7 @@ export function CaptureScreen() {
     if (!identity || !reference) return;
     const target = reference.targets.find((candidate) => targetKeyOf(candidate) === targetKey);
     if (!target || !markupProfileId || lines.length === 0) {
-      setError("Pick what this estimate is for, a markup profile, and at least one line.");
+      setError("Pick what this survey is for, a markup profile, and at least one line.");
       return;
     }
     const profile = reference.profiles.find((candidate) => candidate.id === markupProfileId);
@@ -342,7 +354,7 @@ export function CaptureScreen() {
   return (
     <main className="p-6 flex flex-col gap-6 max-w-4xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">On-site capture</h1>
+        <h1 className="text-xl font-semibold">Site survey</h1>
         <span
           className={`text-xs rounded-full px-2 py-1 ${
             reachable ? "bg-slate-100 text-slate-600" : "bg-amber-100 text-amber-800"
@@ -438,10 +450,12 @@ export function CaptureScreen() {
 
       {reference && (
         <section className="flex flex-col gap-4">
-          <h2 className="font-medium">Capture an estimate</h2>
+          <h2 className="font-medium">Capture a survey</h2>
           <p className="text-sm text-slate-600">
-            An estimate is captured against a project or a lead that already exists. A new
-            enquiry met on site has to be added as a lead once you are back in signal.
+            A survey records what you measured on site. It is priced into a quote by the
+            server once you are back in signal — nothing here is a price you have offered.
+            A survey attaches to a project or a lead that already exists; a new enquiry met
+            on site has to be added as a lead once you have a connection.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex flex-col gap-1.5">
@@ -490,6 +504,7 @@ export function CaptureScreen() {
                   captures a survey, and the rates it shows are the catalog's,
                   not the estimator's to set. */}
               <LineRows
+                showSubtotal={false}
                 lines={lines}
                 onQuantityChange={(key, quantity) =>
                   setLines((prev) =>
@@ -504,10 +519,12 @@ export function CaptureScreen() {
                   step would disagree with the server by cents on the
                   document a customer signs. */}
               <p className="text-xs text-slate-500">
-                Markup and the final total are calculated by the server when this is sent.
+                No total here: the server prices the survey into a quote when it is sent.
+                The rates shown are your catalog&apos;s, and are checked against it at that
+                point.
               </p>
               <Button type="button" onClick={() => void handleSaveDraft()}>
-                Save draft
+                Save survey
               </Button>
             </div>
           </div>
@@ -516,7 +533,7 @@ export function CaptureScreen() {
 
       {pending.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h2 className="font-medium">Saved on this device</h2>
+          <h2 className="font-medium">Surveys saved on this device</h2>
           {pending.map((draft) => (
             <div
               key={draft.id}
@@ -566,7 +583,7 @@ export function CaptureScreen() {
                   may be reading it back to a customer. Whole-dollar
                   rounding is right for a list of many; it is wrong for the
                   one number that was just decided. */}
-              <span>Estimate created — total {formatCurrency(result.total, { precise: true })}</span>
+              <span>Quote created — total {formatCurrency(result.total, { precise: true })}</span>
               <Link
                 href={`/estimates/${result.estimateId}`}
                 className="text-slate-600 underline hover:text-slate-900"
