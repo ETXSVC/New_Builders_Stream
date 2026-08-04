@@ -299,6 +299,19 @@ human actually produced from them. Assembling that is the genuine prerequisite
 to this feature, it cannot be done after the fact, and it is the one piece of
 work that is worth starting before any of the rest is decided.
 
+**Update, 2026-08-04.** The instrument now exists and this question is
+answerable rather than merely open: `app/services/takeoff_client.py` (the
+domain seam and its fake), `app/services/takeoff_scoring.py` (the arithmetic)
+and `scripts/score_takeoff.py` (the operator command). The corpus itself is
+still missing, and remains the one piece of work no code can do — see
+`2026-08-04-takeoff-eval-corpus.md` for how to assemble one, why a dozen
+cases is enough, and why a high acceptance rate with low recall is not a
+product.
+
+Nothing downstream was built: no vendor adapter, no route, no UI. That is the
+point of stopping here. Writing them first would mean discovering the answer
+to this section *after* having committed to it.
+
 ### 5.4 Which model, and where the effort dial sits — open
 
 Recommendation: pick one capable provider, run at high effort with a
