@@ -2637,6 +2637,16 @@ export interface paths {
          *     company's session acting on a descendant branch's Project, without
          *     switching `X-Tenant-ID`, must not stamp this child row with the
          *     parent's own company_id).
+         *
+         *     **`client_reference` makes this route idempotent** (migration 0034). A
+         *     field crew member's offline queue retries a log whose response was lost,
+         *     and this table cannot be cleaned up afterwards — 0004 revokes UPDATE and
+         *     DELETE on it, so a duplicate is permanent. When the key is supplied and
+         *     already exists in this tenant, the ORIGINAL row is returned and nothing
+         *     is written. The status stays 201: from the caller's point of view the
+         *     log they asked for exists, which is exactly what they wanted to be told,
+         *     and a queue that treated 200-vs-201 as different outcomes would be
+         *     reading meaning into a distinction this route does not draw.
          */
         post: operations["create_daily_log_projects__project_id__daily_logs_post"];
         delete?: never;
@@ -3318,6 +3328,12 @@ export interface paths {
          *     instinct behind this codebase's other explicit-rejection choices,
          *     e.g. the illegal-status-transition 409s in leads.py/projects.py rather
          *     than silently no-op'ing an illegal transition).
+         *
+         *     `expected_status` (optional) makes the write conditional on the task
+         *     still saying what its author saw — see the field's own docstring in
+         *     `app/schemas/task.py` for why the comparison is against the value rather
+         *     than an `updated_at` this table does not have. Omitted, the route
+         *     behaves exactly as it always has: last write wins.
          */
         patch: operations["patch_task_tasks__task_id__patch"];
         trace?: never;
@@ -4577,6 +4593,8 @@ export interface components {
          *     router sets it from `current.user.id`, never from client input.
          */
         DailyLogCreateRequest: {
+            /** Client Reference */
+            client_reference?: string | null;
             /**
              * Log Date
              * Format: date
@@ -4613,6 +4631,8 @@ export interface components {
              * Format: uuid
              */
             author_id: string;
+            /** Client Reference */
+            client_reference: string | null;
             /**
              * Company Id
              * Format: uuid
@@ -6662,6 +6682,8 @@ export interface components {
             assignee_id?: string | null;
             /** Due Date */
             due_date?: string | null;
+            /** Expected Status */
+            expected_status?: string | null;
             /** Name */
             name?: string | null;
             /** Status */

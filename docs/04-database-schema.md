@@ -160,9 +160,20 @@ CREATE TABLE daily_logs (
     log_date DATE NOT NULL,
     weather VARCHAR(100),
     notes TEXT,
+    -- Migration 0034. A key the CLIENT generates, so the field crew's
+    -- offline queue can send the same log twice without writing it twice —
+    -- which matters more here than anywhere else, because migration 0004
+    -- REVOKEs UPDATE and DELETE on this table from app_user, so a duplicate
+    -- could never be removed through the product. Nullable (every online
+    -- caller omits it) and unique per company only among rows that supply
+    -- one, which Postgres's default NULLS DISTINCT gives for free.
+    client_reference UUID,
     created_at TIMESTAMPTZ DEFAULT now()
     -- Immutable once submitted (application-layer enforced).
 );
+
+CREATE UNIQUE INDEX uq_daily_logs_company_client_reference
+    ON daily_logs (company_id, client_reference);
 
 CREATE TABLE change_orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

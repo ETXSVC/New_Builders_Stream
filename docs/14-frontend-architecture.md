@@ -202,18 +202,35 @@ route does not remount, so a component seeded from props needs
 `key={entity.id}` to reset. `app/(app)/estimates/[id]/page.tsx` is the
 worked example.
 
-### 6.1 Offline capture, and how the app decides it is offline
+### 6.1 The two offline screens, and how the app decides it is offline
 
-One screen works with no network: `/estimates/capture`, for an estimator
-standing in a building. `public/sw.js` caches that document — and only
-that document, plus the `/_next/static` chunks it names — and
-`lib/offline/` holds the cached catalog, markup profiles and attachable
-leads/projects in IndexedDB, keyed by `(user_id, active_company_id)`
-because a URL-keyed HTTP cache cannot express whose data it holds and one
-person may belong to two companies. Nothing is registered or cached until
-the estimator presses "Make available offline"; logging out or switching
-company clears it. Full design and the decisions behind it:
-`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`.
+Two screens work with no network, and only two. `/estimates/capture` is for
+an estimator standing in a building
+(`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`), and
+`/my-tasks` is the field crew's entire product — it carries the only two
+writes their role can make anywhere in the application, a task's status and
+a daily log
+(`docs/superpowers/specs/2026-08-04-field-crew-offline-queue-design.md`).
+
+`public/sw.js` caches those documents — and only those, plus the
+`/_next/static` chunks they name — while `lib/offline/` holds the data in
+IndexedDB, keyed by `(user_id, active_company_id)`, because a URL-keyed
+HTTP cache cannot express whose data it holds and one person may belong to
+two companies. Nothing is registered or cached until the user presses "Make
+available offline"; logging out or switching company clears it.
+`lib/offline/hooks.ts` holds what both screens share — identity,
+reachability, retry cadence — so they cannot disagree about whether the
+device is offline; the flushes stay separate, because a three-call estimate
+chain and two independent single-call writes are genuinely different.
+
+**A queued write has to be safe to send twice.** The case the queue exists
+for — the request arrives, the row commits, the response dies — looks
+exactly like the request never arriving, so every offline write carries a
+guard, and all of them are body fields for the reason §1 gives about
+headers: `expected_unit_rate` on estimate lines, `expected_status` on a task
+PATCH, and `client_reference` on a daily log, whose replay returns the
+original row rather than writing a second one that no runtime role could
+ever delete.
 
 **The app never asks `navigator.onLine`.** That flag describes having a
 network interface, not reaching this server: it reads `true` behind a

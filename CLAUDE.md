@@ -419,6 +419,22 @@ work here: the Next BFF forwards a fixed allowlist (`Content-Type`,
 would be silently dropped on the hop and every stale write would sail
 through.
 
+**Every write-conditioning field follows that rule — body, never header**,
+and there are now four of them, because the offline queues send writes
+minutes or days after they were made:
+
+- `expected_updated_at` (`guard_stale_write`) — the general form.
+- `expected_unit_rate` on `PUT /estimates/{id}/lines` — 409 naming both
+  rates, so a draft captured on site cannot be silently re-priced.
+- `expected_status` on `PATCH /tasks/{id}` — compare-and-set against the
+  VALUE, because `tasks` has no `updated_at`; for a three-value enum that
+  only moves when a person moves it, the value is the version.
+- `client_reference` on `POST /projects/{id}/daily-logs` (migration 0034) —
+  idempotency rather than concurrency: a replay returns the original row.
+  It exists because migration 0004 revokes UPDATE and DELETE on
+  `daily_logs`, so a duplicate written by a retry can never be removed
+  through the product.
+
 ### Documented, deliberate substitutions vs. the design docs
 
 A few implementation choices intentionally diverge from `docs/`, each

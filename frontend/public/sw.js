@@ -1,8 +1,10 @@
 /*
- * The offline capture service worker.
+ * The offline service worker.
  *
- * It exists to do one thing: let `/estimates/capture` cold-start with no
- * network, so an estimator standing in a building can open the app and work.
+ * It exists to do one thing: let the two offline-capable screens cold-start
+ * with no network — `/estimates/capture`, so an estimator standing in a
+ * building can open the app and work, and `/my-tasks`, which is the field
+ * crew's entire product.
  * Everything here is shaped by three constraints that are easy to break by
  * accident, so each one is written down where it takes effect.
  *
@@ -55,9 +57,14 @@ const DOCUMENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  *
  * An allowlist, not a rule about what looks cacheable: caching every
  * navigation would put every screen this user visited on the device, and
- * the feature needs exactly one of them.
+ * two of them are all that work offline.
+ *
+ * `/estimates/capture` is the estimator's; `/my-tasks` is the field crew's
+ * entire product — their two writes (a task's status, a daily log) both
+ * live on it. Adding a third means deciding what it caches and what its
+ * writes do when they fail, not just appending a string here.
  */
-const OFFLINE_PATHS = ["/estimates/capture"];
+const OFFLINE_PATHS = ["/estimates/capture", "/my-tasks"];
 
 self.addEventListener("install", () => {
   // The page registers this worker and then immediately asks it to prime,

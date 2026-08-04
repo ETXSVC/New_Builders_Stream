@@ -82,12 +82,24 @@ artifact. HSTS is deliberately NOT here: it belongs at Caddy
 (`deploy/Caddyfile`), being meaningless without TLS and harmful over dev
 HTTP.
 
-## The service worker, and offline estimate capture
+## The service worker, and the two offline screens
 
-`public/sw.js` exists for one screen: `/estimates/capture`, which an
-estimator cold-starts on site with no signal. Design and decisions in
-`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`; four
-things about it are easy to undo by accident.
+`public/sw.js` exists for two screens, and only those two:
+`/estimates/capture`, which an estimator cold-starts on site with no signal
+(`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`), and
+`/my-tasks`, which is the field crew's entire product and carries the only
+two writes their role can make — a task's status and a daily log
+(`docs/superpowers/specs/2026-08-04-field-crew-offline-queue-design.md`).
+Adding a third means deciding what it caches and what its writes do when
+they fail, not appending a string to `OFFLINE_PATHS`.
+
+`lib/offline/hooks.ts` holds what both screens share — whose data this is,
+whether the server is reachable, and when to try again — precisely so the
+two cannot drift on the answers. The flushes stay separate (`flush.ts` for
+the estimator's three-call chain, `crew.ts` for the crew's two independent
+writes); one function stretched over both would need a flag per difference.
+
+Four things about the worker are easy to undo by accident.
 
 - **It caches `response.clone()`, headers and all.** That is what makes a
   cached document legal under the CSP: the nonce and the policy are minted
@@ -108,9 +120,20 @@ things about it are easy to undo by accident.
   cache of `/api/catalog/items` cannot express *whose* catalog it holds.
   Tenant data lives in IndexedDB (`lib/offline/store.ts`) keyed by
   `(user_id, active_company_id)`, cleared on logout and on company switch.
-- **Nothing is registered or cached until the estimator presses "Make
-  available offline."** The catalog is the company's pricing, and a cache
-  sits outside RLS entirely.
+- **Nothing is registered or cached until the user presses "Make available
+  offline."** The catalog is the company's pricing, and a cache sits outside
+  RLS entirely.
+
+**A queued write must be safe to send twice**, because the case the queue
+exists for — the request arrives, the row commits, the response dies — is
+indistinguishable from the request never arriving. Both of the crew's writes
+carry a guard for it, and both are BODY fields rather than headers, because
+the BFF forwards a fixed header allowlist and would drop a header silently
+(the same trap `expected_updated_at` documents for `If-Match`):
+`client_reference` on a daily log (a replay returns the original row —
+migration 0034, and it matters because no runtime role can delete a daily
+log, so a duplicate is permanent), and `expected_status` on a task PATCH
+(409 if it moved, because `tasks` has no `updated_at` to compare against).
 
 **`navigator.onLine` is not used to decide anything, and must not be.** It
 reads `true` with no route to anything — behind a captive portal, on a dead

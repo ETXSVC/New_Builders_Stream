@@ -11,13 +11,13 @@ import { LineRows, type DraftLine } from "./LineRows";
 import { CatalogItemPicker, type PickableCatalogItem } from "./CatalogItemPicker";
 import { RateConflictNotice } from "./RateConflictNotice";
 import { identityKey, readIdentity, type OfflineIdentity } from "@/lib/offline/identity";
+import { useConnectionEvidence, useOfflineIdentity, useRetryTicker } from "@/lib/offline/hooks";
 import { primeOfflineData } from "@/lib/offline/prime";
 import { clearOfflineCaches } from "@/lib/offline/reset";
 import { discardDraft, flushDraft } from "@/lib/offline/flush";
 import {
   listDrafts,
   readReferenceData,
-  readRememberedIdentity,
   saveDraft,
   type CaptureDraft,
   type CaptureTarget,
@@ -65,31 +65,22 @@ interface FlushedEstimate {
   total: string;
 }
 
-/**
- * How often a waiting draft tries again.
- *
- * A timer rather than the `online` event alone, because that event is a
- * hint and not a fact: `navigator.onLine` reads `true` behind a captive
- * portal, on a Wi-Fi with no route out, and under Playwright's offline
- * emulation. The only way to know whether the server is reachable is to ask
- * it, so this asks — but only while there is something waiting to send.
- */
-const FLUSH_RETRY_MS = 10 * 1000;
-
 export function CaptureScreen() {
-  const { accessToken, isHydrating, sessionUnreachable } = useAuth();
+  const { accessToken } = useAuth();
+  // Identity, reachability and the retry cadence are shared with the field
+  // crew's queue (`lib/offline/hooks.ts`) — two screens answering "are we
+  // offline" separately is how they end up disagreeing.
+  const { identity } = useOfflineIdentity();
+  const { reachable, noteAttempt } = useConnectionEvidence();
 
-  const [identity, setIdentity] = React.useState<OfflineIdentity | null>(null);
   const [reference, setReference] = React.useState<ReferenceData | null>(null);
   const [drafts, setDrafts] = React.useState<CaptureDraft[]>([]);
-  /**
-   * Whether the last thing this screen sent actually arrived — evidence,
-   * not `navigator.onLine`. Starts optimistic and is corrected by what
-   * happens: a failed flush says no, a successful one says yes.
-   */
-  const [lastAttemptArrived, setLastAttemptArrived] = React.useState(true);
   const [loaded, setLoaded] = React.useState(false);
-  const [retryTick, setRetryTick] = React.useState(0);
+  // Ticks only while something is still waiting to send, so a device with
+  // no signal makes one attempt per interval and a screen with nothing
+  // queued polls not at all.
+  const waiting = loaded && drafts.some((draft) => draft.status !== "needs_attention");
+  const { tick, retryNow } = useRetryTicker(waiting && !!accessToken);
 
   const [priming, setPriming] = React.useState(false);
   const [primeMessage, setPrimeMessage] = React.useState<string | null>(null);
@@ -108,60 +99,15 @@ export function CaptureScreen() {
   // reintroduced from the other direction.
   const flushingRef = React.useRef(false);
   /**
-   * Drafts already auto-attempted this round.
+   * Which drafts have been auto-attempted, and on which tick.
    *
    * Without it, a draft whose flush is `deferred` (the request never
    * arrived) returns to `captured`, the effect below re-runs on the changed
    * draft list, and it is attempted again immediately — a spin, not a
-   * retry. Cleared once per `FLUSH_RETRY_MS` tick and on the browser's
-   * `online` event; "Send now" clears its own draft and bypasses it.
+   * retry. Keyed by tick rather than cleared on a timer, so there is no
+   * bookkeeping to reset; "Send now" clears its own draft and bypasses it.
    */
-  const autoAttemptedRef = React.useRef<Set<string>>(new Set());
-
-  // --- Connectivity ------------------------------------------------------
-
-  React.useEffect(() => {
-    // The browser's own events, used as hints that shorten a wait: they
-    // clear the attempted set so the next render retries at once instead of
-    // waiting out FLUSH_RETRY_MS. Nothing here is trusted to mean the
-    // server is or is not reachable — that is what the flush outcomes say.
-    const goingOnline = () => {
-      autoAttemptedRef.current.clear();
-      setRetryTick((tick) => tick + 1);
-    };
-    const goingOffline = () => setLastAttemptArrived(false);
-    window.addEventListener("online", goingOnline);
-    window.addEventListener("offline", goingOffline);
-    return () => {
-      window.removeEventListener("online", goingOnline);
-      window.removeEventListener("offline", goingOffline);
-    };
-  }, []);
-
-  /**
-   * Offline, as far as this screen is concerned.
-   *
-   * Derived rather than stored, so the two pieces of evidence cannot get out
-   * of step: AuthContext's `sessionUnreachable` (a cold start that could not
-   * re-establish its session — true before this screen has attempted
-   * anything at all) and what this screen's own last send did.
-   */
-  const reachable = lastAttemptArrived && !sessionUnreachable;
-
-  // --- Whose data is this? -----------------------------------------------
-
-  React.useEffect(() => {
-    if (isHydrating) return;
-    void (async () => {
-      // The token when there is one; the remembered identity when there is
-      // not. A cold start with no network CANNOT have a token — it lives in
-      // memory and re-deriving it needs the refresh cookie exchanged over
-      // the network — so this is the only thing that knows whose drafts and
-      // whose catalog to read.
-      const fromToken = readIdentity(accessToken);
-      setIdentity(fromToken ?? (await readRememberedIdentity()));
-    })();
-  }, [accessToken, isHydrating]);
+  const autoAttemptedRef = React.useRef<Map<string, number>>(new Map());
 
   const refreshDrafts = React.useCallback(async (who: OfflineIdentity) => {
     setDrafts(await listDrafts(who));
@@ -179,16 +125,16 @@ export function CaptureScreen() {
   // --- Flushing ----------------------------------------------------------
 
   const runFlush = React.useCallback(
-    async (candidates: CaptureDraft[], who: OfflineIdentity, token: string) => {
+    async (candidates: CaptureDraft[], who: OfflineIdentity, token: string, attemptTick: number) => {
       if (flushingRef.current || candidates.length === 0) return;
       flushingRef.current = true;
       try {
         for (const draft of candidates) {
-          autoAttemptedRef.current.add(draft.id);
+          autoAttemptedRef.current.set(draft.id, attemptTick);
           const outcome = await flushDraft(draft, token);
           // The connection status, told by the only thing that knows: a
           // request that either arrived or did not.
-          setLastAttemptArrived(outcome.kind !== "deferred");
+          noteAttempt(outcome.kind !== "deferred");
           if (outcome.kind === "flushed") {
             setFlushed((prev) => [
               { draftId: outcome.draftId, estimateId: outcome.estimateId, total: outcome.total },
@@ -201,7 +147,7 @@ export function CaptureScreen() {
         flushingRef.current = false;
       }
     },
-    [refreshDrafts]
+    [noteAttempt, refreshDrafts]
   );
 
   React.useEffect(() => {
@@ -219,25 +165,10 @@ export function CaptureScreen() {
     const pending = drafts.filter(
       (draft) =>
         (draft.status === "captured" || draft.status === "flushing") &&
-        !autoAttemptedRef.current.has(draft.id)
+        autoAttemptedRef.current.get(draft.id) !== tick
     );
-    void runFlush(pending, identity, accessToken);
-  }, [accessToken, drafts, identity, loaded, retryTick, runFlush]);
-
-  React.useEffect(() => {
-    // Re-arm while anything is waiting. Each draft is attempted once per
-    // tick, so a device with no signal makes one request every
-    // FLUSH_RETRY_MS rather than spinning, and stops entirely once
-    // everything has either sent or parked.
-    if (!identity || !accessToken || !loaded) return;
-    const waiting = drafts.some((draft) => draft.status !== "needs_attention");
-    if (!waiting) return;
-    const timer = setTimeout(() => {
-      autoAttemptedRef.current.clear();
-      setRetryTick((tick) => tick + 1);
-    }, FLUSH_RETRY_MS);
-    return () => clearTimeout(timer);
-  }, [accessToken, drafts, identity, loaded, retryTick]);
+    void runFlush(pending, identity, accessToken, tick);
+  }, [accessToken, drafts, identity, loaded, tick, runFlush]);
 
   // --- Priming -----------------------------------------------------------
 
@@ -320,6 +251,9 @@ export function CaptureScreen() {
     setTargetKey("");
     setMarkupProfileId("");
     await refreshDrafts(identity);
+    // Try immediately rather than waiting out an interval — the estimator
+    // may well be back in signal by the time they press save.
+    retryNow();
   }
 
   // --- Acting on a saved draft -------------------------------------------
@@ -328,7 +262,7 @@ export function CaptureScreen() {
     if (!identity || !accessToken) return;
     autoAttemptedRef.current.delete(draft.id);
     setError(null);
-    await runFlush([draft], identity, accessToken);
+    await runFlush([draft], identity, accessToken, tick);
   }
 
   /**
@@ -362,7 +296,7 @@ export function CaptureScreen() {
     // the next tick. Adopting a rate is a decision; sending the estimate at
     // that rate is a second one, and this screen must not make it for them.
     // "Send now" clears this mark.
-    autoAttemptedRef.current.add(updated.id);
+    autoAttemptedRef.current.set(updated.id, tick);
     await saveDraft(updated);
     await refreshDrafts(identity);
   }

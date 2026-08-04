@@ -1,12 +1,14 @@
 # Database ERD
 
-Generated from the **live schema** — a scratch database with all 33 Alembic
+Generated from the **live schema** — a scratch database with all 34 Alembic
 migrations applied — rather than from the ORM models or by hand, so it cannot
 quietly drift from what `alembic upgrade head` actually produces.
 
 **46 tables** (excluding `alembic_version`). Last re-derived 2026-08-02
 against migration `0033`; the counts and the no-RLS list below come from
-`pg_class`/`pg_attribute`, not from memory.
+`pg_class`/`pg_attribute`, not from memory. Migration `0034` added a
+column (`daily_logs.client_reference`) and no table, so the counts stand —
+it is reflected in the daily-logs block below.
 
 ## Read this first: the tenant boundary is in the database
 
@@ -251,6 +253,7 @@ erDiagram
         date log_date
         varchar weather
         text notes
+        uuid client_reference "offline queue idempotency key"
         timestamptz created_at
     }
     project_clients {

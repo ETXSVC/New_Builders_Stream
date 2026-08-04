@@ -926,3 +926,133 @@ async def test_creating_task_under_child_branch_project_uses_child_company_id(cl
     assert listed.status_code == 200, listed.text
     tasks = listed.json()["items"][0]["tasks"]
     assert [t["id"] for t in tasks] == [body["id"]]
+
+
+# --- expected_status: compare-and-set (the offline queue's guard) --------
+#
+# `tasks` has no `updated_at`, so there is no timestamp to compare against.
+# For a three-value enum that only moves when a person moves it, the value
+# IS the version — the same shape as `expected_unit_rate` on estimate line
+# items, for the same reason: a write that assumes a value it read.
+
+
+async def test_patch_with_matching_expected_status_applies(client):
+    admin = await register_and_login(client, "Acme Construction", "exp-ok-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"status": "done", "expected_status": "open"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "done"
+
+
+async def test_patch_with_stale_expected_status_is_refused_and_says_what_it_is_now(client):
+    """The failure the guard exists for: a field crew member marks a task
+    done with no signal, someone moves it meanwhile, and the queue flushes
+    hours later. Without this the queue silently overwrites that decision."""
+    admin = await register_and_login(client, "Acme Construction", "exp-stale-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    moved = await client.patch(
+        f"/tasks/{task_id}", json={"status": "in_progress"}, headers=admin["headers"]
+    )
+    assert moved.status_code == 200, moved.text
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"status": "done", "expected_status": "open"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    # A dict, not a sentence: the caller has to show a human both values,
+    # and re-deriving the current one would cost another round trip on a
+    # connection that has just proved unreliable.
+    assert detail["current_status"] == "in_progress"
+    assert detail["expected_status"] == "open"
+
+    # And nothing was written.
+    unchanged = await client.get(f"/projects/{project_id}/phases", headers=admin["headers"])
+    task = unchanged.json()["items"][0]["tasks"][0]
+    assert task["status"] == "in_progress"
+
+
+async def test_expected_status_is_optional_and_omitting_it_keeps_last_write_wins(client):
+    """Every existing caller omits it. The guard must be opt-in, or adding
+    it would have changed the behaviour of every online screen."""
+    admin = await register_and_login(client, "Acme Construction", "exp-optional-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    await client.patch(f"/tasks/{task_id}", json={"status": "in_progress"}, headers=admin["headers"])
+    response = await client.patch(
+        f"/tasks/{task_id}", json={"status": "done"}, headers=admin["headers"]
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "done"
+
+
+async def test_field_crew_may_send_expected_status_without_tripping_the_field_check(client):
+    """The trap this route sets for itself: `field_crew` may set `status`
+    and nothing else, and that check reads the payload's KEYS. Left in the
+    update set, `expected_status` would 403 a crew member for guarding their
+    own write — punishing the safer call — and then try to write a column
+    that does not exist."""
+    admin = await register_and_login(client, "Acme Construction", "exp-fc-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "exp-fc@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(
+        client, admin, project_id, phase_id, assignee_id=field_crew["user_id"]
+    )
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"status": "done", "expected_status": "open"},
+        headers=field_crew["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "done"
+
+
+async def test_field_crew_still_cannot_widen_their_write_with_expected_status(client):
+    """The non-vacuity floor for the pop above: dropping `expected_status`
+    from the checked set must not drop anything else with it."""
+    admin = await register_and_login(client, "Acme Construction", "exp-fc-wide-admin@acme.test")
+    field_crew = await _invite_and_login_as(client, admin, "field_crew", "exp-fc-wide@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(
+        client, admin, project_id, phase_id, assignee_id=field_crew["user_id"]
+    )
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"status": "done", "expected_status": "open", "name": "Renamed by the crew"},
+        headers=field_crew["headers"],
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_expected_status_must_be_a_known_value(client):
+    """A typo is a 422, not a confusing 409 that reads as "someone changed
+    it underneath you"."""
+    admin = await register_and_login(client, "Acme Construction", "exp-bogus-admin@acme.test")
+    project_id = await _create_project(client, admin)
+    phase_id = await _create_phase(client, admin, project_id)
+    task_id = await _create_task(client, admin, project_id, phase_id)
+
+    response = await client.patch(
+        f"/tasks/{task_id}",
+        json={"status": "done", "expected_status": "compleeted"},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422, response.text

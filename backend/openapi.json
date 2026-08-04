@@ -2162,6 +2162,18 @@
       "DailyLogCreateRequest": {
         "description": "Body for `POST /projects/{id}/daily-logs` (Task 1.16).\n\nDeliberately has NO photo field. US-3.3 mentions photos, but the\n`daily_logs` table (docs/04-database-schema.md Section 4) has no\nphoto/document linkage column at all, and `documents` is the only\nfile-storage mechanism Phase 1 builds. Per the plan's explicit\nrecommendation: photo attachment is deferred rather than added as\nschema-doc scope creep for a P1-nice-to-have \u2014 Daily Logs ship\ntext-only in Phase 1. `author_id` is likewise not a field here; the\nrouter sets it from `current.user.id`, never from client input.",
         "properties": {
+          "client_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Reference"
+          },
           "log_date": {
             "format": "date",
             "title": "Log Date",
@@ -2233,6 +2245,18 @@
             "title": "Author Id",
             "type": "string"
           },
+          "client_reference": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Reference"
+          },
           "company_id": {
             "format": "uuid",
             "title": "Company Id",
@@ -2289,6 +2313,7 @@
           "log_date",
           "weather",
           "notes",
+          "client_reference",
           "created_at"
         ],
         "title": "DailyLogResponse",
@@ -6320,6 +6345,17 @@
               }
             ],
             "title": "Due Date"
+          },
+          "expected_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Status"
           },
           "name": {
             "anyOf": [
@@ -12433,7 +12469,7 @@
         ]
       },
       "post": {
-        "description": "Task 1.16. `require_role(\"admin\", \"project_manager\", \"field_crew\")`\nper _DAILY_LOG_WRITE_ROLES above \u2014 the RBAC matrix's Project Management\nrow is the only place field_crew gets any write verb at all (\"create\nDaily Logs\"), so this route intentionally does NOT reuse _WRITE_ROLES.\n\n`get_project_or_404` first, same ordering as every other project-nested\nwrite route in this router (existence/tenant/field-crew-assigned-scope\ncheck before touching the payload) \u2014 this doubles as field_crew's\nproject-level scoping: a field_crew caller with no assigned task on\n`project_id` gets a 404 here before a DailyLog row is ever created,\nexactly like upload_document's field_crew scoping. US-3.3 (\"submit a\nDaily Log ... for a Project\") and every other field_crew scoping\ndecision in this plan point the same direction: assigned-project-only,\nnot \"any project in the tenant.\"\n\n`author_id=current.user.id` always \u2014 DailyLogCreateRequest has no\n`author_id` field (see its docstring), so a caller cannot claim to be\nsomeone else's author by payload manipulation; this line is the only\nplace author_id is ever set.\n\nNo update/delete route exists anywhere in this router for daily_logs,\nand Task 1.10's migration additionally `REVOKE`s UPDATE/DELETE on this\ntable from `app_user` at the DB level (design decision #6) \u2014 immutable\nonce submitted, matching US-3.3's acceptance criterion, the same\ntwo-layer discipline (no route + DB-level REVOKE) Task 1.7 established\nfor communication_logs.\n\n`company_id=project.company_id`, not `current.company_id` \u2014 see\n`upload_document`'s docstring above for the full rationale (a parent\ncompany's session acting on a descendant branch's Project, without\nswitching `X-Tenant-ID`, must not stamp this child row with the\nparent's own company_id).",
+        "description": "Task 1.16. `require_role(\"admin\", \"project_manager\", \"field_crew\")`\nper _DAILY_LOG_WRITE_ROLES above \u2014 the RBAC matrix's Project Management\nrow is the only place field_crew gets any write verb at all (\"create\nDaily Logs\"), so this route intentionally does NOT reuse _WRITE_ROLES.\n\n`get_project_or_404` first, same ordering as every other project-nested\nwrite route in this router (existence/tenant/field-crew-assigned-scope\ncheck before touching the payload) \u2014 this doubles as field_crew's\nproject-level scoping: a field_crew caller with no assigned task on\n`project_id` gets a 404 here before a DailyLog row is ever created,\nexactly like upload_document's field_crew scoping. US-3.3 (\"submit a\nDaily Log ... for a Project\") and every other field_crew scoping\ndecision in this plan point the same direction: assigned-project-only,\nnot \"any project in the tenant.\"\n\n`author_id=current.user.id` always \u2014 DailyLogCreateRequest has no\n`author_id` field (see its docstring), so a caller cannot claim to be\nsomeone else's author by payload manipulation; this line is the only\nplace author_id is ever set.\n\nNo update/delete route exists anywhere in this router for daily_logs,\nand Task 1.10's migration additionally `REVOKE`s UPDATE/DELETE on this\ntable from `app_user` at the DB level (design decision #6) \u2014 immutable\nonce submitted, matching US-3.3's acceptance criterion, the same\ntwo-layer discipline (no route + DB-level REVOKE) Task 1.7 established\nfor communication_logs.\n\n`company_id=project.company_id`, not `current.company_id` \u2014 see\n`upload_document`'s docstring above for the full rationale (a parent\ncompany's session acting on a descendant branch's Project, without\nswitching `X-Tenant-ID`, must not stamp this child row with the\nparent's own company_id).\n\n**`client_reference` makes this route idempotent** (migration 0034). A\nfield crew member's offline queue retries a log whose response was lost,\nand this table cannot be cleaned up afterwards \u2014 0004 revokes UPDATE and\nDELETE on it, so a duplicate is permanent. When the key is supplied and\nalready exists in this tenant, the ORIGINAL row is returned and nothing\nis written. The status stays 201: from the caller's point of view the\nlog they asked for exists, which is exactly what they wanted to be told,\nand a queue that treated 200-vs-201 as different outcomes would be\nreading meaning into a distinction this route does not draw.",
         "operationId": "create_daily_log_projects__project_id__daily_logs_post",
         "parameters": [
           {
@@ -13982,7 +14018,7 @@
         ]
       },
       "patch": {
-        "description": "The genuinely new RBAC shape Task 1.14 calls out: role AND ownership\nAND a field-level restriction, combined, not just a role gate.\n\n- admin/project_manager: unrestricted \u2014 can set any field this schema\n  exposes (name, due_date, status, assignee_id) on any task in their\n  tenant.\n- field_crew: can set `status` ONLY, and ONLY on a task assigned to\n  them (`assignee_id == current.user.id`).\n\nOwnership is enforced by _get_task_or_404 (404 if the task isn't\ntheirs \u2014 they can't see it at all, so it doesn't \"exist\" from their\npoint of view, matching project_lookup.py's get_project_or_404 precedent).\n\nThe field-level restriction below is enforced with an explicit 403,\nnot a silent drop of disallowed fields. Alternative considered: quietly\nignore any field in the payload a field_crew caller isn't allowed to\ntouch (the same shape ProjectPatchRequest uses for `status`, which\ndoesn't exist on that schema at all, so extra fields are dropped by\nPydantic itself before the router ever sees them). Rejected here\nbecause TaskUpdateRequest's `assignee_id` field is real and admin/PM\nARE allowed to set it \u2014 the restriction is role-conditional, not\nschema-level, so silently ignoring it would mean a field_crew caller\nwho explicitly tried to reassign a task gets a 200 that looks\nsuccessful but did something other than what they asked. An explicit\n403 makes the privilege boundary visible instead of silently\nswallowing the attempt (same \"professional honesty\"/fail-loud\ninstinct behind this codebase's other explicit-rejection choices,\ne.g. the illegal-status-transition 409s in leads.py/projects.py rather\nthan silently no-op'ing an illegal transition).",
+        "description": "The genuinely new RBAC shape Task 1.14 calls out: role AND ownership\nAND a field-level restriction, combined, not just a role gate.\n\n- admin/project_manager: unrestricted \u2014 can set any field this schema\n  exposes (name, due_date, status, assignee_id) on any task in their\n  tenant.\n- field_crew: can set `status` ONLY, and ONLY on a task assigned to\n  them (`assignee_id == current.user.id`).\n\nOwnership is enforced by _get_task_or_404 (404 if the task isn't\ntheirs \u2014 they can't see it at all, so it doesn't \"exist\" from their\npoint of view, matching project_lookup.py's get_project_or_404 precedent).\n\nThe field-level restriction below is enforced with an explicit 403,\nnot a silent drop of disallowed fields. Alternative considered: quietly\nignore any field in the payload a field_crew caller isn't allowed to\ntouch (the same shape ProjectPatchRequest uses for `status`, which\ndoesn't exist on that schema at all, so extra fields are dropped by\nPydantic itself before the router ever sees them). Rejected here\nbecause TaskUpdateRequest's `assignee_id` field is real and admin/PM\nARE allowed to set it \u2014 the restriction is role-conditional, not\nschema-level, so silently ignoring it would mean a field_crew caller\nwho explicitly tried to reassign a task gets a 200 that looks\nsuccessful but did something other than what they asked. An explicit\n403 makes the privilege boundary visible instead of silently\nswallowing the attempt (same \"professional honesty\"/fail-loud\ninstinct behind this codebase's other explicit-rejection choices,\ne.g. the illegal-status-transition 409s in leads.py/projects.py rather\nthan silently no-op'ing an illegal transition).\n\n`expected_status` (optional) makes the write conditional on the task\nstill saying what its author saw \u2014 see the field's own docstring in\n`app/schemas/task.py` for why the comparison is against the value rather\nthan an `updated_at` this table does not have. Omitted, the route\nbehaves exactly as it always has: last write wins.",
         "operationId": "patch_task_tasks__task_id__patch",
         "parameters": [
           {

@@ -34,11 +34,18 @@ import { identityKey } from "./identity";
 import type { RateConflict } from "@/lib/estimates/rate-conflicts";
 
 const DB_NAME = "builders-stream-offline";
-const DB_VERSION = 1;
+// Bumped to 2 by the field-crew queue, which added two stores. The
+// upgrade handler creates only what is missing, so a device that already
+// holds an estimator's drafts keeps them.
+const DB_VERSION = 2;
 
 const REFERENCE_STORE = "reference";
 const DRAFT_STORE = "drafts";
 const META_STORE = "meta";
+// The field crew's half: their assigned tasks, and the writes they have
+// made that have not reached the server yet.
+const CREW_REFERENCE_STORE = "crew_reference";
+const CREW_QUEUE_STORE = "crew_queue";
 
 /** The one meta row: who this device last held a session for. */
 const IDENTITY_KEY = "identity";
@@ -156,6 +163,13 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(META_STORE)) {
         db.createObjectStore(META_STORE, { keyPath: "key" });
       }
+      if (!db.objectStoreNames.contains(CREW_REFERENCE_STORE)) {
+        db.createObjectStore(CREW_REFERENCE_STORE, { keyPath: "identity" });
+      }
+      if (!db.objectStoreNames.contains(CREW_QUEUE_STORE)) {
+        const queue = db.createObjectStore(CREW_QUEUE_STORE, { keyPath: "id" });
+        queue.createIndex("by_identity", "identity", { unique: false });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -221,6 +235,10 @@ export async function readReferenceData(identity: OfflineIdentity): Promise<Refe
 export async function clearReferenceData(): Promise<void> {
   if (unavailable()) return;
   await withStore<void>(REFERENCE_STORE, "readwrite", (store) => store.clear());
+  // The crew's cached task list goes with it. It is less sensitive than a
+  // price list, but it is still one tenant's data sitting outside RLS, and
+  // "cleared on logout" should not mean "some of it".
+  await withStore<void>(CREW_REFERENCE_STORE, "readwrite", (store) => store.clear());
 }
 
 // --- Drafts ---------------------------------------------------------------
@@ -276,4 +294,114 @@ export async function readRememberedIdentity(): Promise<OfflineIdentity | null> 
 export async function forgetIdentity(): Promise<void> {
   if (unavailable()) return;
   await withStore<void>(META_STORE, "readwrite", (store) => store.delete(IDENTITY_KEY));
+}
+
+// --- The field crew's half ------------------------------------------------
+//
+// Two writes and a task list, kept separate from the estimator's drafts
+// above rather than folded into them. A draft is one logical unit flushed
+// as a three-call chain; these are independent single-call writes with
+// their own conflict rules — one shape stretched over both is how a helper
+// acquires four boolean options.
+
+export interface CachedTask {
+  id: string;
+  name: string;
+  status: string;
+  due_date: string | null;
+  project_id: string;
+  project_name: string;
+}
+
+export interface CrewReferenceData {
+  identity: string;
+  cached_at: string;
+  tasks: CachedTask[];
+}
+
+/**
+ * A status change, carrying the value it was made against.
+ *
+ * `expected_status` is what the crew member SAW. The server refuses the
+ * write with a 409 if the task has moved since (migration-free
+ * compare-and-set — `tasks` has no `updated_at`), which is what stops a
+ * change made at 09:00 with no signal from silently undoing a project
+ * manager's decision when it lands at 17:00.
+ */
+export interface QueuedTaskStatus {
+  kind: "task_status";
+  task_id: string;
+  task_name: string;
+  expected_status: string;
+  status: string;
+}
+
+/**
+ * A daily log, carrying the key that makes sending it twice harmless.
+ *
+ * Generated once, when the crew member writes the log, and repeated on
+ * every retry of that same log — `daily_logs` cannot be updated or deleted
+ * by any runtime role, so a duplicate would be permanent.
+ */
+export interface QueuedDailyLog {
+  kind: "daily_log";
+  project_id: string;
+  project_name: string;
+  client_reference: string;
+  log_date: string;
+  weather: string | null;
+  notes: string | null;
+}
+
+export type QueuedWrite = QueuedTaskStatus | QueuedDailyLog;
+
+export type QueueItemStatus = "queued" | "sending" | "needs_attention";
+
+export interface QueueItem {
+  id: string;
+  identity: string;
+  created_at: string;
+  status: QueueItemStatus;
+  /** Why it stopped, when it stopped for a reason a person has to settle. */
+  attention: { message: string; current_status?: string } | null;
+  write: QueuedWrite;
+}
+
+export async function saveCrewReference(data: CrewReferenceData): Promise<void> {
+  if (unavailable()) return;
+  await withStore<void>(CREW_REFERENCE_STORE, "readwrite", (store) => store.put(data));
+}
+
+export async function readCrewReference(
+  identity: OfflineIdentity
+): Promise<CrewReferenceData | null> {
+  if (unavailable()) return null;
+  const record = await withStore<CrewReferenceData | undefined>(
+    CREW_REFERENCE_STORE,
+    "readonly",
+    (store) => store.get(identityKey(identity))
+  );
+  return record ?? null;
+}
+
+export async function saveQueueItem(item: QueueItem): Promise<void> {
+  if (unavailable()) return;
+  await withStore<void>(CREW_QUEUE_STORE, "readwrite", (store) => store.put(item));
+}
+
+export async function listQueueItems(identity: OfflineIdentity): Promise<QueueItem[]> {
+  if (unavailable()) return [];
+  const items = await withStore<QueueItem[]>(CREW_QUEUE_STORE, "readonly", (store) =>
+    store.index("by_identity").getAll(identityKey(identity))
+  );
+  // Oldest first, and that ordering is load-bearing: two status changes to
+  // the same task must reach the server in the order they were made, or the
+  // second one's `expected_status` describes a state the first one already
+  // replaced.
+  return items.sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+export async function deleteQueueItem(itemId: string): Promise<void> {
+  if (unavailable()) return;
+  await withStore<void>(CREW_QUEUE_STORE, "readwrite", (store) => store.delete(itemId));
 }

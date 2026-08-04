@@ -82,10 +82,12 @@ These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Secti
   design and the decisions behind it in
   `docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md` and
   its parent `2026-08-02-offline-pwa-design.md`. The **field-crew write
-  queue remains unscheduled**: two writes, both independent and
-  append-only, no cached documents and no security implications — it shares
-  almost nothing with the estimator case beyond the words "offline
-  support," and should be decided on its own merits.
+  queue followed on 2026-08-04** and was decided on its own merits rather
+  than bundled, as that spec asked: `/my-tasks` cold-starts offline and
+  queues the role's only two writes. What made it more than a queue was
+  making both writes safe to replay — `daily_logs.client_reference`
+  (migration 0034) and `expected_status` on `PATCH /tasks/{id}` — see
+  `2026-08-04-field-crew-offline-queue-design.md` §2.
 - AI-assisted blueprint takeoff for the Estimation Engine.
 - Multi-currency / multi-language support.
 
