@@ -82,6 +82,47 @@ artifact. HSTS is deliberately NOT here: it belongs at Caddy
 (`deploy/Caddyfile`), being meaningless without TLS and harmful over dev
 HTTP.
 
+## The service worker, and offline estimate capture
+
+`public/sw.js` exists for one screen: `/estimates/capture`, which an
+estimator cold-starts on site with no signal. Design and decisions in
+`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`; four
+things about it are easy to undo by accident.
+
+- **It caches `response.clone()`, headers and all.** That is what makes a
+  cached document legal under the CSP: the nonce and the policy are minted
+  together in one `middleware()` pass, so a whole cached response carries a
+  policy naming the nonce its own script tags carry. Re-fabricating a
+  `Response` from the body drops `Content-Security-Policy`, and the page
+  then fails **silently** — markup that never hydrates, with nothing
+  erroring. The cost is nonce reuse for the cache entry's life, which is
+  why a cached document is refused after **24 hours** (checked on serve,
+  not by an eviction pass).
+- **It caches the assets the cached document names**, extracted from that
+  document's own script/link tags. Caching the HTML alone gives an offline
+  cold start with no JavaScript — a blank page that looks like the app is
+  broken rather than like the cache is incomplete. This was found by the
+  e2e test, not by review.
+- **It never caches `/api/*`.** A `Cache` is keyed by URL, and one person
+  may hold memberships in two companies (migration 0031), so a URL-keyed
+  cache of `/api/catalog/items` cannot express *whose* catalog it holds.
+  Tenant data lives in IndexedDB (`lib/offline/store.ts`) keyed by
+  `(user_id, active_company_id)`, cleared on logout and on company switch.
+- **Nothing is registered or cached until the estimator presses "Make
+  available offline."** The catalog is the company's pricing, and a cache
+  sits outside RLS entirely.
+
+**`navigator.onLine` is not used to decide anything, and must not be.** It
+reads `true` with no route to anything — behind a captive portal, on a dead
+Wi-Fi, and under Playwright's own offline emulation, which is how this was
+caught. AuthContext instead distinguishes a refresh that was **refused**
+(session over — `clearSession()`) from one that never **arrived**
+(`sessionUnreachable`, keep the session and retry every 10s). `AppShell`
+reads that flag to keep a tokenless offline cold start on the capture
+screen instead of redirecting it to `/login`, and the capture screen shows
+"Offline" from the same evidence. The browser's `online`/`offline` events
+are used only as hints that shorten a wait.
+
 `lib/use-cursor-list.ts` is the shared loader for cursor-paginated lists,
 and the one to reach for in new code. It carries the stale-response guard
 — a generation ref checked **above** `if (!response.ok)`, so a superseded

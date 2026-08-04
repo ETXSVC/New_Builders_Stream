@@ -18,6 +18,24 @@ interface AuthContextValue extends AuthState {
   // that render differently for "definitely logged out" vs. "haven't
   // heard back yet" can check this instead of misreading null as logged out.
   isHydrating: boolean;
+  /**
+   * The last refresh attempt could not REACH the server — as opposed to
+   * reaching it and being told no.
+   *
+   * The difference is invisible in `accessToken === null`, and everything
+   * that reads it treats the two identically: "no session". That is wrong
+   * for a device with no signal, where there is no way to have a token and
+   * nothing has been revoked. The offline capture screen distinguishes them
+   * to stay on screen instead of bouncing to a sign-in form it cannot
+   * submit, and to say "offline" rather than "signed out".
+   *
+   * NOT derived from `navigator.onLine`, which is a statement about having
+   * a network interface, not about reaching this server: it reads `true`
+   * behind a captive portal, on a Wi-Fi with no route — and under
+   * Playwright's own offline emulation, which is how this was found. The
+   * only honest signal is a request that actually failed.
+   */
+  sessionUnreachable: boolean;
   setSession: (accessToken: string, mfaEnrollmentRequired: boolean, role: string) => void;
   clearSession: () => void;
 }
@@ -48,17 +66,43 @@ const REFRESH_MARGIN_MS = 60 * 1000;
 // network calls, it doesn't share one token across tabs.
 const REFRESH_LOCK_NAME = "builders-stream-auth-refresh";
 
+// How soon to try again when the server could not be reached. Short enough
+// that an estimator who walks back into signal has a session — and their
+// captured drafts on their way — without touching anything; long enough
+// that a genuinely down backend is not hammered by every open tab.
+const UNREACHABLE_RETRY_MS = 10 * 1000;
+
 type RefreshResult = { access_token: string; mfa_enrollment_required: boolean; role: string };
 
-async function performRealRefresh(): Promise<RefreshResult | null> {
+/**
+ * Three outcomes, where there used to be two.
+ *
+ * `unauthenticated` is the server saying no: the refresh cookie is expired,
+ * revoked, or was never there. That ends the session.
+ *
+ * `unreachable` is not an answer at all — the request never got there, or
+ * died in a gateway. Treating it as "signed out" is what sent an estimator
+ * with no signal to a login form, and it is also why a passing tunnel used
+ * to log people out mid-session.
+ *
+ * A 5xx counts as unreachable on purpose: the BFF answers 502 when the
+ * backend itself is unreachable (`lib/api/handler-utils.ts`), so folding it
+ * into "unauthenticated" would turn a backend restart into a mass logout.
+ */
+type RefreshOutcome =
+  | { status: "ok"; data: RefreshResult }
+  | { status: "unauthenticated" }
+  | { status: "unreachable" };
+
+async function performRealRefresh(): Promise<RefreshOutcome> {
   try {
     const response = await fetch("/api/auth/refresh", { method: "POST" });
-    if (!response.ok) return null;
-    return (await response.json()) as RefreshResult;
+    if (response.status >= 500) return { status: "unreachable" };
+    if (!response.ok) return { status: "unauthenticated" };
+    return { status: "ok", data: (await response.json()) as RefreshResult };
   } catch {
-    // Network-level failure (offline, DNS, backend unreachable) — treat
-    // the same as a failed refresh, not an unhandled rejection.
-    return null;
+    // Network-level failure (offline, DNS, the server not there at all).
+    return { status: "unreachable" };
   }
 }
 
@@ -66,8 +110,8 @@ async function performRealRefresh(): Promise<RefreshResult | null> {
 // the in-flight-promise ref each caller passes in, and the Web Locks call
 // itself needs no React lifecycle.
 async function coordinatedRefresh(
-  inFlightRef: React.RefObject<Promise<RefreshResult | null> | null>
-): Promise<RefreshResult | null> {
+  inFlightRef: React.RefObject<Promise<RefreshOutcome> | null>
+): Promise<RefreshOutcome> {
   // Shared by every caller in THIS tab that wants a refresh right now, so
   // React's dev-only Strict Mode double-invoking the mount effect below —
   // or any other source of overlapping calls within one tab — triggers at
@@ -92,8 +136,10 @@ async function coordinatedRefresh(
       // coordinatedRefresh and past scheduleRefresh's `await` — skipping
       // its own re-arm call and silently ending the tab's refresh cycle
       // for good, with nothing to bring it back except a full reload.
-      // Treat it the same as a failed refresh.
-      return null;
+      // Treat it as unreachable rather than as a refusal: nothing was heard
+      // back from the server, which is the definition of the former and not
+      // of the latter.
+      return { status: "unreachable" } as RefreshOutcome;
     }
   })();
 
@@ -118,6 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     role: null,
   });
   const [isHydrating, setIsHydrating] = React.useState(true);
+  const [sessionUnreachable, setSessionUnreachable] = React.useState(false);
   const refreshTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Bumped by every explicit session change (setSession/clearSession). An
   // async refresh in flight when one of those happens captures the
@@ -126,11 +173,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // already stale by the time it resolves could silently resurrect a
   // session the user (or another code path) already explicitly ended.
   const sessionGenerationRef = React.useRef(0);
-  const inFlightRefreshRef = React.useRef<Promise<RefreshResult | null> | null>(null);
+  const inFlightRefreshRef = React.useRef<Promise<RefreshOutcome> | null>(null);
 
   const clearSession = React.useCallback(() => {
     sessionGenerationRef.current += 1;
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    setSessionUnreachable(false);
     setState({ accessToken: null, mfaEnrollmentRequired: false, role: null });
   }, []);
 
@@ -141,19 +189,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // initializing yet from the compiler/lint's point of view, while
   // preserving the exact same recursive-timer behavior.
   const scheduleRefresh = React.useCallback(
-    function scheduleRefresh() {
+    function scheduleRefresh(delayMs = ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS) {
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = setTimeout(async () => {
         const generationAtStart = sessionGenerationRef.current;
-        const data = await coordinatedRefresh(inFlightRefreshRef);
+        const outcome = await coordinatedRefresh(inFlightRefreshRef);
         if (sessionGenerationRef.current !== generationAtStart) return;
-        if (data === null) {
+        if (outcome.status === "unauthenticated") {
+          // The server answered, and the answer was no. This is the path
+          // that ends a session, and the only one that should.
           clearSession();
           return;
         }
-        setState({ accessToken: data.access_token, mfaEnrollmentRequired: data.mfa_enrollment_required, role: data.role });
+        if (outcome.status === "unreachable") {
+          // Deliberately NOT clearSession(). Logging someone out because
+          // their phone lost signal helps nobody: the refresh cookie is
+          // untouched, nothing has been revoked, and clearing the session
+          // would take the screen holding their unsent work with it. Keep
+          // what we have and try again shortly — this is also what makes a
+          // backend restart survivable rather than a mass logout.
+          setSessionUnreachable(true);
+          scheduleRefresh(UNREACHABLE_RETRY_MS);
+          return;
+        }
+        setSessionUnreachable(false);
+        setState({
+          accessToken: outcome.data.access_token,
+          mfaEnrollmentRequired: outcome.data.mfa_enrollment_required,
+          role: outcome.data.role,
+        });
         scheduleRefresh();
-      }, ACCESS_TOKEN_LIFETIME_MS - REFRESH_MARGIN_MS);
+      }, delayMs);
     },
     [clearSession]
   );
@@ -161,6 +227,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const setSession = React.useCallback(
     (accessToken: string, mfaEnrollmentRequired: boolean, role: string) => {
       sessionGenerationRef.current += 1;
+      setSessionUnreachable(false);
       setState({ accessToken, mfaEnrollmentRequired, role });
       scheduleRefresh();
     },
@@ -178,9 +245,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const generationAtStart = sessionGenerationRef.current;
     coordinatedRefresh(inFlightRefreshRef)
-      .then((data) => {
+      .then((outcome) => {
         if (cancelled || sessionGenerationRef.current !== generationAtStart) return;
-        if (data) setSession(data.access_token, data.mfa_enrollment_required, data.role);
+        if (outcome.status === "ok") {
+          setSession(outcome.data.access_token, outcome.data.mfa_enrollment_required, outcome.data.role);
+          return;
+        }
+        if (outcome.status === "unreachable") {
+          // The cold-start-with-no-network case, which is the whole reason
+          // the offline capture screen can exist: this tab has no token and
+          // no way to get one yet, but nothing has ended. Say so, and keep
+          // trying — otherwise the tab sits tokenless until a reload, and a
+          // draft captured on site waits while the estimator watches a
+          // working connection.
+          setSessionUnreachable(true);
+          scheduleRefresh(UNREACHABLE_RETRY_MS);
+        }
       })
       .finally(() => {
         if (!cancelled) setIsHydrating(false);
@@ -197,13 +277,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   React.useEffect(() => {
+    // Try again IMMEDIATELY when the browser says the network is back,
+    // rather than waiting out the retry above.
+    //
+    // A hint, not the mechanism. `online` fires late, or not at all, and
+    // `navigator.onLine` lies in both directions — which is exactly why the
+    // retry timer exists and why this only shortens the wait. Guarded on
+    // there being no token, so a live session is never disturbed by a
+    // flapping connection.
+    const handleOnline = () => {
+      if (state.accessToken !== null) return;
+      scheduleRefresh(0);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [scheduleRefresh, state.accessToken]);
+
+  React.useEffect(() => {
     return () => {
       if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, isHydrating, setSession, clearSession }}>
+    <AuthContext.Provider
+      value={{ ...state, isHydrating, sessionUnreachable, setSession, clearSession }}
+    >
       {children}
     </AuthContext.Provider>
   );

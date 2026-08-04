@@ -202,6 +202,40 @@ route does not remount, so a component seeded from props needs
 `key={entity.id}` to reset. `app/(app)/estimates/[id]/page.tsx` is the
 worked example.
 
+### 6.1 Offline capture, and how the app decides it is offline
+
+One screen works with no network: `/estimates/capture`, for an estimator
+standing in a building. `public/sw.js` caches that document — and only
+that document, plus the `/_next/static` chunks it names — and
+`lib/offline/` holds the cached catalog, markup profiles and attachable
+leads/projects in IndexedDB, keyed by `(user_id, active_company_id)`
+because a URL-keyed HTTP cache cannot express whose data it holds and one
+person may belong to two companies. Nothing is registered or cached until
+the estimator presses "Make available offline"; logging out or switching
+company clears it. Full design and the decisions behind it:
+`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`.
+
+**The app never asks `navigator.onLine`.** That flag describes having a
+network interface, not reaching this server: it reads `true` behind a
+captive portal, on a Wi-Fi with no route out, and under Playwright's
+offline emulation — which is how the first version of this feature was
+caught redirecting a cached, hydrated capture screen to `/login`.
+
+`AuthContext` therefore distinguishes three refresh outcomes rather than
+two. **Refused** (the server answered no) ends the session, as it always
+did. **Unreachable** — a failed request, or a 5xx, since the BFF answers
+502 when the backend is down — keeps the session, sets `sessionUnreachable`
+and retries every 10 seconds. `AppShell` reads that flag to leave a
+tokenless offline cold start on the capture screen instead of bouncing it
+to a sign-in form it could not submit, and the capture screen's own
+"Offline" badge comes from whether its last send actually arrived. The
+browser's `online`/`offline` events are used only as hints that shorten a
+wait, never as the signal itself.
+
+A side effect worth knowing: a network blip during a scheduled refresh no
+longer signs the user out. It used to, and that behaviour was written for
+"the cookie expired" rather than "the lift has no signal."
+
 ## 7. Tests
 
 Playwright, in `frontend/e2e/`, against the real stack — no mocked

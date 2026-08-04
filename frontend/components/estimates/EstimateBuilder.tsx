@@ -5,7 +5,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { CatalogPanel } from "./CatalogPanel";
 import { LineRows, DraftLine } from "./LineRows";
-import { formatCurrency } from "@/lib/format";
+import { RateConflictNotice } from "./RateConflictNotice";
+import { readSaveError, type RateConflict } from "@/lib/estimates/rate-conflicts";
 
 interface ExistingLineItem {
   cost_catalog_item_id: string;
@@ -16,35 +17,6 @@ interface ExistingLineItem {
 interface CategorySubtotal {
   category: string;
   subtotal: string;
-}
-
-/** One entry from the 409 `detail.rate_conflicts` the lines route returns. */
-interface RateConflict {
-  cost_catalog_item_id: string;
-  name: string;
-  expected_unit_rate: string;
-  current_unit_rate: string;
-}
-
-/**
- * `detail` is a plain string for most failures and a dict for the
- * rate-conflict 409 — the route needs to hand back the current rates so
- * adopting them costs no extra round trip. Rendering the dict as text would
- * put "[object Object]" in the banner, so both shapes are handled here
- * rather than at the call site.
- */
-function readSaveError(detail: unknown): { message: string; conflicts: RateConflict[] } {
-  if (detail && typeof detail === "object" && "rate_conflicts" in detail) {
-    const structured = detail as { message?: string; rate_conflicts?: RateConflict[] };
-    return {
-      message: structured.message ?? "Catalog rates changed since this estimate was built.",
-      conflicts: structured.rate_conflicts ?? [],
-    };
-  }
-  return {
-    message: typeof detail === "string" ? detail : "Failed to save line items",
-    conflicts: [],
-  };
 }
 
 export function EstimateBuilder({
@@ -179,42 +151,12 @@ export function EstimateBuilder({
             {error}
           </p>
         )}
-        {rateConflicts.length > 0 && (
-          <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 p-3">
-            <ul className="flex flex-col gap-1 text-sm">
-              {rateConflicts.map((conflict) => (
-                <li key={conflict.cost_catalog_item_id} className="flex items-center gap-2">
-                  <span className="flex-1">{conflict.name}</span>
-                  {/* `precise` on both: whole-dollar rounding is the default
-                      because list screens read better without a column of
-                      ".00", and it is exactly wrong here — a conflict
-                      between 4.00 and 4.05 would render as "$4 → $4". */}
-                  <span className="text-slate-500 line-through">
-                    {formatCurrency(conflict.expected_unit_rate, { precise: true })}
-                  </span>
-                  <span aria-hidden="true">→</span>
-                  <span className="font-medium">
-                    {formatCurrency(conflict.current_unit_rate, { precise: true })}
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="self-start"
-              onClick={handleAdoptNewRates}
-              disabled={saving}
-            >
-              Use new rates
-            </Button>
-            <p className="text-xs text-slate-600">
-              Nothing has been saved. Using the new rates updates the lines below so you can
-              review the totals before saving.
-            </p>
-          </div>
-        )}
+        <RateConflictNotice
+          conflicts={rateConflicts}
+          onAdopt={handleAdoptNewRates}
+          disabled={saving}
+          note="Nothing has been saved. Using the new rates updates the lines below so you can review the totals before saving."
+        />
         <Button type="button" onClick={handleSave} disabled={saving}>
           {saving ? "Saving…" : "Save & calculate"}
         </Button>
