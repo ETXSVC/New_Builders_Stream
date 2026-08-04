@@ -1908,3 +1908,221 @@ async def test_replace_line_items_reports_every_rate_conflict_at_once(client):
     # The name is carried so the UI can say WHICH line moved without holding
     # a catalog lookup of its own.
     assert by_id[first["id"]]["name"] == "Framing"
+
+
+# =============================================================================
+# Free-form line items (migration 0035)
+# =============================================================================
+#
+# A line the estimator writes themselves, for work the catalog does not price.
+# The rule these all circle is that a line is EITHER catalogued OR free-form,
+# and that the one thing a free-form line may do — carry a price the caller
+# supplied — remains impossible for a catalogued one.
+
+
+async def _estimate_for_lines(client, admin):
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+async def test_free_form_line_stores_the_price_the_caller_supplied(client):
+    """The case the feature exists for: site cleanup, a permit fee, an
+    allowance — priced by the estimator because the catalog does not price
+    it."""
+    admin = await _register_and_login(client, "Acme Construction", "ff-basic@acme.test")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "description": "Site cleanup and haul-off",
+                    "unit": "lot",
+                    "quantity": "1.00",
+                    "unit_rate": "400.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    line = response.json()["line_items"][0]
+    assert line["cost_catalog_item_id"] is None
+    assert line["description"] == "Site cleanup and haul-off"
+    assert line["unit"] == "lot"
+    assert line["unit_rate_snapshot"] == "400.00"
+    assert line["line_total"] == "400.00"
+
+
+async def test_free_form_line_reaches_the_subtotal_and_the_breakdown(client):
+    """The regression this feature could most easily have shipped with.
+
+    `calculate_estimate` reaches each line's category by joining through
+    `cost_catalog_item_id`, and that join was INNER — correct while the
+    column was NOT NULL. Left alone, a free-form line would be dropped from
+    the very query that accumulates `subtotal`, so the estimate would total
+    LESS than the sum of the lines printed beneath it, with nothing raising.
+    """
+    admin = await _register_and_login(client, "Acme Construction", "ff-subtotal@acme.test")
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    replace = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {"cost_catalog_item_id": catalog_item["id"], "quantity": "10.00"},
+                {
+                    "description": "Permit fee",
+                    "unit": "ea",
+                    "quantity": "1.00",
+                    "unit_rate": "250.00",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert replace.status_code == 200, replace.text
+
+    calculated = await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    assert calculated.status_code == 200, calculated.text
+    body = calculated.json()
+
+    # 450 catalogued + 250 free-form. Without the outer join this is 450.
+    assert body["subtotal"] == "700.00"
+    # And the breakdown still adds up to the subtotal beside it.
+    breakdown = {entry["category"]: entry["subtotal"] for entry in body["category_breakdown"]}
+    assert breakdown["Miscellaneous"] == "250.00"
+    assert sum(Decimal(value) for value in breakdown.values()) == Decimal("700.00")
+
+
+async def test_a_line_cannot_be_both_catalogued_and_free_form(client):
+    admin = await _register_and_login(client, "Acme Construction", "ff-both@acme.test")
+    catalog_item = await _create_catalog_item(client, admin["headers"])
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "cost_catalog_item_id": catalog_item["id"],
+                    "quantity": "1.00",
+                    "unit_rate": "9999.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    # The whole point: a caller cannot smuggle a price onto a catalogued
+    # line. Rejected, not silently stored at the catalog's rate — a 200
+    # whose stored rate is not the one they sent would be worse.
+    assert response.status_code == 422, response.text
+
+
+async def test_a_half_written_free_form_line_is_refused(client):
+    """A description with no rate is not a line, it is half of one — and the
+    alternative to refusing it is inventing a price for a customer's
+    estimate."""
+    admin = await _register_and_login(client, "Acme Construction", "ff-partial@acme.test")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"description": "Site cleanup", "quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_a_line_that_is_neither_shape_is_refused(client):
+    admin = await _register_and_login(client, "Acme Construction", "ff-neither@acme.test")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"quantity": "1.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_expected_unit_rate_is_refused_on_a_free_form_line(client):
+    """`expected_unit_rate` asks whether the catalog has moved underneath the
+    caller. A free-form line has no catalog entry, so accepting the field
+    would imply a check that never ran."""
+    admin = await _register_and_login(client, "Acme Construction", "ff-guard@acme.test")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {
+                    "description": "Site cleanup",
+                    "unit": "lot",
+                    "quantity": "1.00",
+                    "unit_rate": "400.00",
+                    "expected_unit_rate": "400.00",
+                }
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 422, response.text
+
+
+async def test_catalogued_lines_still_cannot_assert_a_price(client):
+    """The non-vacuity floor for the whole feature. Free-form lines carve out
+    ONE case; if this ever starts passing, the carve-out has eaten the rule it
+    was carved out of."""
+    admin = await _register_and_login(client, "Acme Construction", "ff-floor@acme.test")
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": [{"cost_catalog_item_id": catalog_item["id"], "quantity": "2.00"}]},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    # The catalog's rate, not anything the caller could influence.
+    assert response.json()["line_items"][0]["unit_rate_snapshot"] == "45.00"
+
+
+async def test_free_form_and_catalogued_lines_coexist_on_one_estimate(client):
+    admin = await _register_and_login(client, "Acme Construction", "ff-mixed@acme.test")
+    catalog_item = await _create_catalog_item(client, admin["headers"], unit_rate="45.00")
+    estimate_id = await _estimate_for_lines(client, admin)
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={
+            "items": [
+                {"cost_catalog_item_id": catalog_item["id"], "quantity": "10.00"},
+                {
+                    "description": "Site cleanup",
+                    "unit": "lot",
+                    "quantity": "1.00",
+                    "unit_rate": "400.00",
+                },
+            ]
+        },
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    lines = response.json()["line_items"]
+    assert len(lines) == 2
+    catalogued = next(line for line in lines if line["cost_catalog_item_id"] is not None)
+    free_form = next(line for line in lines if line["cost_catalog_item_id"] is None)
+    # Each shape keeps its own fields, and neither leaks into the other.
+    assert catalogued["description"] is None and catalogued["unit"] is None
+    assert free_form["description"] == "Site cleanup" and free_form["unit"] == "lot"

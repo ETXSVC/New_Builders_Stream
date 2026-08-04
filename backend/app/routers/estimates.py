@@ -44,7 +44,11 @@ from app.schemas.estimate import (
     EstimateRejectRequest,
     EstimateResponse,
 )
-from app.schemas.estimate_line_item import EstimateLineItemResponse, EstimateLineItemsReplaceRequest
+from app.schemas.estimate_line_item import (
+    EstimateLineItemInput,
+    EstimateLineItemResponse,
+    EstimateLineItemsReplaceRequest,
+)
 from app.services.audit import write_audit_log
 from app.services.catalog_resolution import resolve_visible_catalog_items
 from app.services.client_access import client_emails_for_estimate, company_display_name
@@ -549,9 +553,22 @@ async def replace_estimate_line_items(
     resolved_items = await resolve_visible_catalog_items(current.session, current.company_id)
     resolved_by_id: dict[uuid.UUID, CostCatalogItem] = {item.id: item for item in resolved_items}
 
-    resolved_lines: list[tuple[uuid.UUID, Decimal, CostCatalogItem]] = []
+    # A resolved line is either catalogued (a CostCatalogItem supplies the
+    # name, unit and rate) or free-form (migration 0035: the estimator
+    # supplied all three). `None` in the third slot is the free-form case,
+    # and the INSERT loop below branches on exactly that.
+    resolved_lines: list[tuple[EstimateLineItemInput, CostCatalogItem | None]] = []
     rate_conflicts: list[dict[str, str]] = []
     for line in payload.items:
+        if line.cost_catalog_item_id is None:
+            # Free-form: nothing to resolve and nothing to guard against.
+            # `EstimateLineItemInput` has already checked that description,
+            # unit and unit_rate are all present and that no
+            # `expected_unit_rate` came with them, so there is no validation
+            # left to do here — the rate the caller sent is the rate stored.
+            resolved_lines.append((line, None))
+            continue
+
         catalog_item = resolved_by_id.get(line.cost_catalog_item_id)
         if catalog_item is None:
             raise HTTPException(
@@ -594,7 +611,7 @@ async def replace_estimate_line_items(
                     "current_unit_rate": str(catalog_item.unit_rate),
                 }
             )
-        resolved_lines.append((line.cost_catalog_item_id, line.quantity, catalog_item))
+        resolved_lines.append((line, catalog_item))
 
     # Still before any DELETE/INSERT — the whole loop above only reads.
     if rate_conflicts:
@@ -622,12 +639,19 @@ async def replace_estimate_line_items(
     )
 
     new_line_items: list[EstimateLineItem] = []
-    for cost_catalog_item_id, quantity, catalog_item in resolved_lines:
-        unit_rate_snapshot = catalog_item.unit_rate
+    for line, catalog_item in resolved_lines:
+        # The rate comes from the catalog when there is one, and from the
+        # caller when there is not. `unit_rate` is non-None on every
+        # free-form line — the schema's `_exactly_one_shape` guarantees it —
+        # so the `or` below is unreachable padding for type-checking, not a
+        # default anybody can hit.
+        unit_rate_snapshot = (
+            catalog_item.unit_rate if catalog_item is not None else (line.unit_rate or Decimal("0"))
+        )
         # See `CENTS`'s own module-level comment above for why this
         # quantize() is required, not optional: unquantized Decimal
         # multiplication would return more than 2 decimal places.
-        line_total = (quantity * unit_rate_snapshot).quantize(CENTS, rounding=ROUND_HALF_UP)
+        line_total = (line.quantity * unit_rate_snapshot).quantize(CENTS, rounding=ROUND_HALF_UP)
         line_item = EstimateLineItem(
             estimate_id=estimate.id,
             # estimate.company_id, not current.company_id — same
@@ -637,8 +661,13 @@ async def replace_estimate_line_items(
             # grant), and stamping the PARENT here would make the child's
             # own session see its estimate with zero line items.
             company_id=estimate.company_id,
-            cost_catalog_item_id=cost_catalog_item_id,
-            quantity=quantity,
+            cost_catalog_item_id=line.cost_catalog_item_id,
+            # Both NULL on a catalogued line: its name and unit live on the
+            # catalog item, and a second copy here would be free to drift
+            # from it. The CHECK constraint enforces that pairing.
+            description=line.description,
+            unit=line.unit,
+            quantity=line.quantity,
             unit_rate_snapshot=unit_rate_snapshot,
             line_total=line_total,
         )
