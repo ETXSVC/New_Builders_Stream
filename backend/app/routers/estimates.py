@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.core.uploads import read_upload_limited
@@ -680,7 +681,29 @@ async def replace_estimate_line_items(
         current.session.add(line_item)
         new_line_items.append(line_item)
 
-    await current.session.flush()
+    try:
+        await current.session.flush()
+    except IntegrityError:
+        # `uq_estimate_line_items_estimate_position` (migration 0036), and the
+        # only way to reach it is the race that constraint exists for: another
+        # request replaced this estimate's lines while this one was working.
+        # The DELETE above ran against this transaction's own snapshot, so it
+        # could not see rows the other writer had not committed yet — it
+        # removed what it could see and is now inserting on top of what it
+        # could not, which without the constraint leaves the estimate holding
+        # BOTH sets of lines and a total roughly double the true one.
+        #
+        # 409 rather than the 500 that an unhandled IntegrityError produces,
+        # because this is a conflict a person can act on and the fix is to
+        # reload and re-apply — the same answer `expected_updated_at` and
+        # `expected_unit_rate` give for their own version of "this moved
+        # underneath you". Caught rather than pre-checked, because a pre-check
+        # races exactly the way this does.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "These line items were changed by someone else while you were editing. "
+            "Reload the estimate and apply your changes again.",
+        )
     # No explicit commit here — get_current_user (Inherited Invariant #4)
     # commits current.session once, after this handler returns.
 
