@@ -1,7 +1,7 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,6 +59,15 @@ class EstimateLineItem(Base, UUIDPKMixin):
     # drift from it.
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Migration 0036. Where this line sits on the estimate, 0-based. Every read
+    # of this table orders by it, because `id` is a random uuid4 and ordering by
+    # that is arbitrary order — an estimator arranges lines the way the job runs
+    # and used to get them back shuffled, including on the signed PDF.
+    #
+    # There is no API field for it: `PUT /estimates/{id}/lines` writes the index
+    # of each item in the request array, so the contract is "the order you send
+    # is the order you get". Same idea as `Phase.sequence`.
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     # Copied from CostCatalogItem.unit_rate at add-time rather than joined/
     # looked-up live — intentionally a separate column, per the schema doc's
@@ -77,4 +86,9 @@ class EstimateLineItem(Base, UUIDPKMixin):
 
     __table_args__ = (
         CheckConstraint(CATALOGUED_XOR_FREE_FORM, name="ck_estimate_line_items_catalogued_xor_free_form"),
+        # Two lines cannot claim one slot. Migration 0036's docstring has the
+        # part that is not obvious: this also stops two concurrent batch
+        # replaces from leaving BOTH sets of lines on one estimate, which is a
+        # silently doubled total on a document a customer signs.
+        UniqueConstraint("estimate_id", "position", name="uq_estimate_line_items_estimate_position"),
     )

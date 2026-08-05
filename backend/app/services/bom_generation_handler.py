@@ -42,13 +42,26 @@ async def handle_estimate_approved_bom(
     if not await tier_allows(session, company_id, "estimation"):
         return
 
-    # EstimateLineItem.cost_catalog_item_id is NOT NULL (verified against
-    # app/models/estimate_line_item.py) — every line item participates,
-    # no filtering needed.
+    # This join is INNER, and since migration 0035 that is a filter rather
+    # than a formality: `cost_catalog_item_id` is nullable now, so a free-form
+    # line does not participate. That is the right outcome — a bill of
+    # materials lists things to order, and "site cleanup" or a permit fee is
+    # not a material — but it is no longer true, as the comment here used to
+    # say, that every line item participates. The two other joins through this
+    # column (`estimate_calculation`, `estimate_pdf`) had the same stale
+    # justification and had to become OUTER joins, because dropping a line
+    # there loses money and loses work off a signed document. Here dropping it
+    # is the intent, so state the intent.
+    #
+    # Ordered by `position` (migration 0036) so the BOM comes out in the same
+    # order as the estimate it was generated from: `BomLine`s are created in
+    # this loop's order, and the BOM list route paginates by `(created_at, id)`,
+    # so this iteration order is what a person eventually reads.
     line_items_result = await session.execute(
         select(EstimateLineItem, CostCatalogItem)
         .join(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
         .where(EstimateLineItem.estimate_id == estimate_id)
+        .order_by(EstimateLineItem.position.asc(), EstimateLineItem.id.asc())
     )
     line_items = line_items_result.all()
     if not line_items:

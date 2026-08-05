@@ -131,7 +131,7 @@ async def _generate_and_persist(estimate_id: uuid.UUID, requesting_user_id: str)
             select(EstimateLineItem, CostCatalogItem.category, CostCatalogItem.name)
             .outerjoin(CostCatalogItem, EstimateLineItem.cost_catalog_item_id == CostCatalogItem.id)
             .where(EstimateLineItem.estimate_id == estimate.id)
-            .order_by(EstimateLineItem.id.asc())
+            .order_by(EstimateLineItem.position.asc(), EstimateLineItem.id.asc())
         )
         line_items = [
             EstimateLineItemDisplay(
