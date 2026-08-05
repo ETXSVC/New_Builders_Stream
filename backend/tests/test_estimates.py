@@ -2331,3 +2331,89 @@ async def test_two_lines_cannot_claim_one_position(db_session):
         )
     )
     assert result.scalar_one_or_none() == "uq_estimate_line_items_estimate_position"
+
+
+async def test_a_replace_that_collides_with_an_uncommitted_writer_is_a_409(client):
+    """The race `uq_estimate_line_items_estimate_position` exists for, made
+    deterministic — and the reason this is worth the setup below is that two
+    `asyncio.gather`-ed requests do NOT reproduce it: they serialise, and the
+    test passes with the constraint removed, guarding nothing.
+
+    The interleaving that matters needs a writer holding an OPEN transaction:
+
+    1. Another transaction inserts this estimate's lines and does not commit.
+    2. This route's `DELETE ... WHERE estimate_id = X` runs against its own
+       snapshot, cannot see those rows, and so deletes nothing and does not
+       block.
+    3. Its INSERT of position 0 collides with the invisible row and waits.
+    4. The other transaction commits, and the INSERT fails.
+
+    Without the constraint, step 3 succeeds instead — and the estimate is left
+    holding BOTH sets of lines, with a total on the quote roughly double the
+    real one, nothing raised, and nothing in any log.
+    """
+    import asyncio
+
+    admin = await _register_and_login(client, "Acme Construction", "line-collide@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = uuid.UUID(created.json()["id"])
+
+    conn = await asyncpg.connect(OWNER_DSN)
+    try:
+        company_id = await conn.fetchval(
+            "SELECT company_id FROM estimates WHERE id = $1", estimate_id
+        )
+        transaction = conn.transaction()
+        await transaction.start()
+        for position in range(3):
+            await conn.execute(
+                "INSERT INTO estimate_line_items "
+                "(id, estimate_id, company_id, cost_catalog_item_id, description, unit, "
+                " position, quantity, unit_rate_snapshot, line_total) "
+                "VALUES (gen_random_uuid(), $1, $2, NULL, $3, 'lot', $4, 1.00, 100.00, 100.00)",
+                estimate_id,
+                company_id,
+                f"Other writer {position}",
+                position,
+            )
+
+        # Started, not awaited: this request blocks inside Postgres on the
+        # first colliding INSERT and cannot finish until the transaction above
+        # resolves.
+        pending = asyncio.create_task(
+            client.put(
+                f"/estimates/{estimate_id}/lines",
+                json={
+                    "items": [
+                        {
+                            "description": f"Mine {n}",
+                            "unit": "lot",
+                            "unit_rate": "100.00",
+                            "quantity": "1.00",
+                        }
+                        for n in range(3)
+                    ]
+                },
+                headers=admin["headers"],
+            )
+        )
+        await asyncio.sleep(0.5)
+        await transaction.commit()
+        response = await pending
+    finally:
+        await conn.close()
+
+    # 409, not the 500 an unhandled IntegrityError produces.
+    assert response.status_code == 409, (response.status_code, response.text)
+    assert "changed by someone else" in response.json()["detail"]
+
+    # And the estimate holds ONE writer's lines, not both stacked together.
+    final = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    descriptions = [li["description"] for li in final.json()["line_items"]]
+    assert descriptions == ["Other writer 0", "Other writer 1", "Other writer 2"], descriptions
