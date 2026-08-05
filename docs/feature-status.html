@@ -62,11 +62,11 @@
 <body>
 
 <div id="footerContent">
-  Builders Stream — Feature Status &middot; generated from the code at commit 9c731e2, 2026-08-04 &middot; page <pdf:pagenumber /> of <pdf:pagecount />
+  Builders Stream — Feature Status &middot; generated from the code at commit 815ff87, 2026-08-04 &middot; page <pdf:pagenumber /> of <pdf:pagecount />
 </div>
 
 <h1>Builders Stream</h1>
-<p class="sub"><b>Feature status</b> &middot; 2026-08-04 &middot; branch <code>main</code> at <code>9c731e2</code></p>
+<p class="sub"><b>Feature status</b> &middot; 2026-08-04 &middot; branch <code>main</code> at <code>815ff87</code></p>
 
 <p class="lead">
 Status below is derived from the code, the migrations and the test suite rather than
@@ -102,7 +102,7 @@ records, a corpus of drawings), that is stated explicitly rather than counted as
 
 <div class="box">
   <p><b>Headline.</b> Phases 0&ndash;4 of the roadmap are complete and in the product,
-  backend and frontend. 1,317 backend tests and a 43-case Playwright suite gate every
+  backend and frontend. 1,321 backend tests and a 43-case Playwright suite gate every
   merge across six CI jobs. 36 migrations.</p>
   <p class="last"><b>What is not done</b> divides into two kinds, and the difference
   matters when planning: work that needs <i>code</i> (multi-currency, localization, the
@@ -189,8 +189,8 @@ records, a corpus of drawings), that is stated explicitly rather than counted as
     <td class="note">Migration 0036. Lines keep the order the estimator put them in, on the API, the BOM and the PDF. They previously came back ordered by a random <code>uuid4</code> primary key &mdash; arbitrary order, unrelated to anything a person did. No new API field: the index in the request array is the position, so the contract is "the order you send is the order you get".</td>
   </tr>
   <tr class="alt">
-    <td class="feat">Concurrent-edit safety</td><td class="stat"><span class="s-rev">In review</span></td>
-    <td class="note">PR #141. Two simultaneous saves of one estimate's lines used to leave <b>both</b> sets on it &mdash; a total roughly double the real one, silently, on a quote. Migration 0036's unique constraint makes that impossible; this returns a 409 a person can act on rather than the 500 an unhandled integrity error produces. The corruption was reproduced in a test before being fixed.</td>
+    <td class="feat">Concurrent-edit safety</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Two simultaneous saves of one estimate's lines used to leave <b>both</b> sets on it &mdash; a total roughly double the real one, silently, on a quote a customer signs. Migration 0036's unique constraint makes that unrepresentable, and the route returns a 409 a person can act on rather than the 500 an unhandled integrity error produces. The corruption was reproduced in a test before being fixed, not argued about.</td>
   </tr>
   <tr>
     <td class="feat">PDF export</td><td class="stat"><span class="s-ship">Shipped</span></td>

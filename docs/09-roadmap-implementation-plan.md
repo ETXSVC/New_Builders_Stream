@@ -69,7 +69,10 @@ Grouped together because both are needed before Enterprise-tier subscribers can 
 
 ## Phase 5 — Open Items (Scope TBD, Not Yet Scheduled)
 
-**Status: not started.**
+**Status as of 2026-08-04: partly shipped.** Both offline cases are built (see
+the first bullet), and AI takeoff has its seam and its measurement harness but
+no feature. Multi-currency and multi-language remain untouched. This section is
+no longer a single status — read the per-item notes.
 
 These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Section 8, and are **not** part of any committed phase above:
 
@@ -98,7 +101,26 @@ These are explicitly deferred pending decisions noted in [PRD](01-prd.md), Secti
   SDK or response format outside its adapter). What still blocks it is the
   accuracy bar stated as a *number*, which needs an eval corpus of real plan
   sets — and that corpus is the one piece of work worth starting first.
-- Multi-currency / multi-language support.
+
+  **Update 2026-08-04: the instrument is built, the feature is not.**
+  `app/services/takeoff_client.py` (Protocol, fake, and a unit-compatibility
+  rule enforced over any adapter's output),
+  `app/services/takeoff_scoring.py` and `scripts/score_takeoff.py`. Still no
+  vendor adapter, route or UI — deliberately, since those are downstream of the
+  number this harness produces. What remains is the corpus itself:
+  `docs/superpowers/specs/2026-08-04-takeoff-eval-corpus.md` covers where the
+  ground truth comes from and why four cases is where to start rather than
+  sixty.
+- Multi-currency / multi-language support. **Localization was requested
+  2026-08-04** and is to be scoped once current work closes; nothing built.
+  The screen that most wants it is `/my-tasks`, whose users — the field crew —
+  are the one group who may not be the person who bought the software. Three
+  decisions come before any code: where the locale lives (per user, per
+  company, or the browser — noting one person may hold memberships in two
+  companies since migration 0031); whether the signed PDF and transactional
+  email follow the UI, since a translated screen over an English contract is a
+  half-measure; and how a locale change invalidates the offline caches, which
+  hold whole documents rather than strings.
 
 ## Milestone Summary
 

@@ -180,3 +180,33 @@ call the wrapper: `useAuth()` throws without a provider, and the console has
 none. Reach for the core, not a copy, if you ever need it outside `(app)`.
 `integrations/page.tsx` is a deliberate permanent exception: different
 response envelope, and a 404 there means "not connected", not an error.
+
+## A red e2e check is not "flaky", by configuration
+
+`playwright.config.ts` sets `failOnFlakyTests` under CI, so a test that fails
+once and passes on retry **fails the merge gate**. That is deliberate and the
+config comment says why: two real product bugs once hid behind retry-passes,
+because `2 flaky, 6 passed` is indistinguishable from a clean run at the only
+level anyone reads — the check conclusion.
+
+So when e2e goes red on a retry-pass, the first move is to diagnose, not
+re-run. On 2026-08-04 that policy caught a genuinely broken feature —
+duplicating an estimate that carried a free-form line failed outright — which
+had been presenting as an intermittent "element not found".
+
+Two things that made that diagnosis far more expensive than it needed to be,
+both now fixed, both worth not reintroducing:
+
+- **`trace` is `retain-on-first-failure`, not `on-first-retry`.** The latter
+  traces the *retry* — so the one attempt never recorded is the failing one,
+  which is the only reason anyone opens a trace. The bug had to be read out of
+  a `error-context.md` aria snapshot instead, with no network log.
+- **Assert that something CHANGED, not that it matches a shape it already
+  matched.** The step asserted `toHaveURL(/\/estimates\/[0-9a-f-]+$/)` after
+  clicking through — a pattern the page it started on already satisfied, so
+  every failure mode of that flow passed instantly and resurfaced 15 seconds
+  later as a missing input, naming none of them.
+
+`getByRole("alert")` can never read zero in this app: Next's route announcer
+is a permanent `role="alert"` element outside `<main>` that receives the page
+title on every client navigation. Scope alert assertions to `main`.

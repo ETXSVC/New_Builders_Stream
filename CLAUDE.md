@@ -35,9 +35,17 @@ per-feature implementation plans and design specs actually built against;
 when a router/model/migration's docstring references one of these, read it
 for the "why" before changing that area.
 
-`README.md`'s "Build Status" table was refreshed 2026-07-24 to match the
-code, but READMEs drift — when in doubt, trust the code and its migrations
-over any prose status table.
+`README.md`'s "Build Status" table drifts — when in doubt, trust the code
+and its migrations over any prose status table. It was claiming 1,272 tests
+against an actual 1,317 as recently as 2026-08-04.
+`docs/Builders-Stream-Feature-Status.pdf` answers "what is built" instead,
+and is meant to be **re-derived rather than edited**: regenerate it with
+`backend/scripts/render_feature_status.py` after updating its source,
+`docs/feature-status.html`. Its five statuses exist because done/not-done
+hides the distinction that matters — four features (Stripe, QuickBooks,
+FreshBooks, email) are code-complete behind a real client selected only when
+its own credentials are configured, and none of them is closed by building
+anything.
 
 ## Commands
 
@@ -435,6 +443,34 @@ minutes or days after they were made:
   `daily_logs`, so a duplicate written by a retry can never be removed
   through the product.
 
+### Estimate line items: two properties nothing else in the schema needs
+
+`PUT /estimates/{id}/lines` is a **batch replace** — one `DELETE` for the
+estimate, then N inserts — and both of the following fall out of that shape.
+Neither is obvious from reading the route, and both were bugs first.
+
+- **Order is data.** `position` (migration 0036) is written from each item's
+  index in the request array, so the contract is *the order you send is the
+  order you get* — there is no API field for it and no reorder route. Every
+  read orders by it. Before that they ordered by `id`, a random `uuid4`, so an
+  estimator's arrangement was discarded on save and the lines came back
+  shuffled on the PDF a customer signs. Do not order this table by
+  `created_at`: it has no timestamp columns deliberately, and a batch replace
+  rewrites every row anyway, so creation order would just be "whatever the
+  client serialised", tie-prone and unenforceable.
+- **A second writer must not merge with the first.** The second request's
+  `DELETE` runs against its own snapshot, cannot see rows the first has not
+  committed, and so deletes nothing and inserts on top — leaving the estimate
+  holding BOTH sets of lines and a total roughly double the true one, silently.
+  `uq_estimate_line_items_estimate_position` makes that unrepresentable and the
+  route maps the resulting `IntegrityError` to a 409.
+
+`cost_catalog_item_id` is **nullable** since migration 0035 (free-form lines),
+which quietly turned every join through it into a filter. Three queries had
+inner joins justified by comments asserting the column could never be NULL;
+two of them lost money before anyone noticed. Both properties above are now
+AST gates rather than conventions — see the test list below.
+
 ### Documented, deliberate substitutions vs. the design docs
 
 A few implementation choices intentionally diverge from `docs/`, each
@@ -448,6 +484,31 @@ back to match the docs:
   tradeoff.
 - **Auth:** plain PyJWT + Argon2id, not an OIDC/Keycloak provider.
 - **Background jobs:** Dramatiq, not Celery.
+
+### AI blueprint takeoff: a seam and a measurement, no feature
+
+`app/services/takeoff_client.py` is a Protocol plus a fake, in the shape
+`accounting_client.py` and `stripe_client.py` established. **There is no
+vendor adapter, no route and no UI, and that is finished rather than
+unfinished.** The scoping doc
+(`docs/superpowers/specs/2026-08-04-ai-blueprint-takeoff-scoping.md` §5.3)
+identifies the one thing the feature is blocked on — an accuracy bar stated
+as a number — and that is answered by running a provider over a corpus, not
+by writing more of the feature. Building the adapter first would mean
+answering the question *after* having committed to it.
+
+Two decisions are binding on anything added here: **per-tenant opt-in** (the
+setting stores which provider, not a boolean), and **provider-agnostic** (no
+vendor's SDK, model id or response shape outside its own adapter — the
+Protocol asks for a proposal and says nothing about how one is obtained).
+
+`reject_incompatible_units` is enforced in code over whatever an adapter
+returns rather than requested in a prompt: a prompt is a request, that is a
+rule. `app/services/takeoff_scoring.py` + `scripts/score_takeoff.py` report
+acceptance and recall **separately and never blended** — acceptance alone
+rewards a provider that proposes one line it is sure of and stays quiet.
+`docs/superpowers/specs/2026-08-04-takeoff-eval-corpus.md` covers assembling
+the corpus, which is the one piece of work no code can do.
 
 ## Tests
 
@@ -489,12 +550,22 @@ suites that matter architecturally:
   back to `head` on a scratch database. The re-upgrade is the half that
   matters: it proves a downgrade actually removed things rather than merely
   not raising.
+- `test_estimate_line_ordering.py` + `test_free_form_line_joins.py` — the two
+  properties in "Estimate line items" above, as AST sweeps. A `select()`
+  returning whole line-item rows must order by `position`; a join through
+  `cost_catalog_item_id` must be OUTER. Each has an allowlist keyed by module
+  path, and an entry needs a stated reason. Both exist because the same class
+  of mistake was made three times and found three separate times, always
+  afterwards — the ordering sweep turned up a fourth call site
+  (`bom_generation_handler.py`) on the day it was written.
 - `test_module_boundaries.py`, `test_metrics.py`, `test_monitoring_config.py`
-  — described in their sections above. All three share a shape worth
+  — described in their sections above. All of these share a shape worth
   copying: they assert against something the code *generates* (the AST, the
   live Prometheus registry, the compose file) rather than against a
   transcribed list, and each carries a non-vacuity floor, because every one
-  of these sweeps passes trivially over an empty set.
+  of these sweeps passes trivially over an empty set. When adding one, write
+  the floor first: a sweep whose matcher silently stops matching is worse
+  than no sweep, because it stays green.
 
 Shared setup lives in `tests/conftest.py` — `register_and_login`,
 `set_subscription_tier`, `grant_client_access`. `register_and_login` in
