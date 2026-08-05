@@ -90,6 +90,21 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
   await test.step("build the estimate and calculate", async () => {
     await page.getByRole("button", { name: "+" }).first().click();
     await page.getByLabel(/Quantity for/).fill("10");
+    // A free-form line (migration 0035) alongside the catalogued one, and it
+    // is here for the duplicate step further down rather than for this one.
+    // The two shapes serialise differently — `{cost_catalog_item_id,
+    // quantity}` vs `{description, unit, unit_rate, quantity}` — and sending
+    // the catalogued shape for a free-form line 422s the entire batch. So
+    // one Miscellaneous line broke "Duplicate as new draft" for the whole
+    // estimate, and nothing caught it, because no e2e had ever put a
+    // free-form line on an estimate that was later duplicated.
+    //
+    // `exact` on both: `getByLabel` matches substrings, and LineRows emits
+    // "Unit rate for <name>" on free-form rows, which a bare "Rate" would
+    // also match as soon as one exists.
+    await page.getByLabel("Description", { exact: true }).fill("Site cleanup");
+    await page.getByLabel("Rate", { exact: true }).fill("9.00");
+    await page.getByRole("button", { name: "Add line" }).click();
     await page.getByRole("button", { name: "Save & calculate" }).click();
     await expect(page.getByText("Subtotal (before markup)")).toBeVisible({ timeout: 15_000 });
   });
@@ -203,12 +218,45 @@ test("estimation and e-signature: catalog, builder, PDF, client sign-off, change
 
     await page.goto(`/estimates/${estimateId}`);
     await page.getByRole("button", { name: "Duplicate as new draft" }).click();
+    // Assert the URL CHANGED, not that it matches a shape the current URL
+    // already matches. `/estimates/[0-9a-f-]+$` was true of the page this
+    // click started on, so every way the duplicate could fail — a 422 from
+    // the batch line write, a swallowed click, a 401 — passed this line
+    // instantly and then failed 15s later on a missing quantity input, which
+    // names none of them. Two CI runs were spent on that.
+    await expect(page).not.toHaveURL(new RegExp(`/estimates/${estimateId}$`), {
+      timeout: 15_000,
+    });
     await expect(page).toHaveURL(/\/estimates\/[0-9a-f-]+$/, { timeout: 15_000 });
+    // And if the handler reported a reason, surface THAT rather than letting
+    // it be discovered as an absent input two assertions later.
+    //
+    // Scoped to `main`: Next's route announcer is a `role="alert"` element
+    // that lives outside it, is present on every page, and gets the new
+    // page's title as text after each client navigation. An unscoped
+    // `getByRole("alert")` therefore never reads zero here — it matches a
+    // framework element, not the page's error banner.
+    await expect(page.locator("main").getByRole("alert")).toHaveCount(0);
     // The duplicated estimate is a fresh draft, which renders the
     // two-panel builder (not the read-only "Qty N @ rate" list that only
     // sent/approved/rejected estimates show) — so the copied line item's
     // quantity surfaces as an editable input's value, not as static text.
-    await expect(page.getByLabel(/Quantity for/)).toHaveValue("10.00", { timeout: 15_000 });
+    // Both lines, both shapes. The count is asserted first because it fails
+    // with a number rather than with "element(s) not found" — which is what
+    // an empty builder reports, and it reads identically whether the copy
+    // was empty, slow, or never happened.
+    await expect(page.getByLabel(/Quantity for/)).toHaveCount(2, { timeout: 15_000 });
+    // Addressed by label rather than by position. `GET /estimates/{id}`
+    // orders line items by `id`, which is a random UUID, so the order the
+    // rows come back in is arbitrary and `.first()` picked whichever row
+    // won the draw. The catalogued row's label is "Quantity for —" because
+    // a persisted catalogued line carries no name — EstimateBuilder
+    // substitutes an em dash until the catalog panel re-resolves it.
+    await expect(page.getByLabel("Quantity for —")).toHaveValue("10.00");
+    // The free-form line is the regression gate: it can only be here if the
+    // duplicate sent it as `{description, unit, unit_rate, quantity}` rather
+    // than as a catalogued line with a null id.
+    await expect(page.getByLabel("Quantity for Site cleanup")).toHaveValue("1.00");
   });
 
   await test.step("change order blocks completion until approved", async () => {

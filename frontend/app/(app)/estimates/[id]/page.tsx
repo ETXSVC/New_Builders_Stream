@@ -166,7 +166,17 @@ export default function EstimateDetailPage() {
   }
 
   async function handleDuplicate() {
-    if (!accessToken || !estimate || duplicating) return;
+    if (duplicating) return;
+    if (!accessToken || !estimate) {
+      // Never a silent return. The guard is real — a click can land while the
+      // session is being refreshed, and firing the two writes below without a
+      // token would 401 halfway through and leave an empty estimate behind —
+      // but "nothing happened, and nothing said so" is the one outcome a
+      // person cannot act on. They press the button again, it does nothing
+      // again, and there is no evidence anywhere that a click occurred.
+      setError("Still getting ready — try that again in a moment.");
+      return;
+    }
     setDuplicating(true);
     setError(null);
     try {
@@ -188,10 +198,29 @@ export default function EstimateDetailPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
-          items: estimate.line_items.map((li) => ({
-            cost_catalog_item_id: li.cost_catalog_item_id,
-            quantity: li.quantity,
-          })),
+          // Two shapes, because migration 0035 made `cost_catalog_item_id`
+          // nullable and the API's `_exactly_one_shape` validator rejects a
+          // line that is neither. Sending `{cost_catalog_item_id: null,
+          // quantity}` for a free-form line 422s the whole BATCH, so one
+          // Miscellaneous line made "Duplicate as new draft" fail outright on
+          // an estimate that was otherwise fine.
+          //
+          // A catalogued line deliberately does NOT carry its rate: it is
+          // re-priced from the catalog at write time, which is correct for a
+          // new draft — the copy should quote today's prices, not the ones
+          // the original was signed at. A free-form line has no catalog item
+          // to re-read, so its rate travels with it, and that is the only way
+          // it can survive the copy at all.
+          items: estimate.line_items.map((li) =>
+            li.cost_catalog_item_id !== null
+              ? { cost_catalog_item_id: li.cost_catalog_item_id, quantity: li.quantity }
+              : {
+                  description: li.description,
+                  unit: li.unit,
+                  unit_rate: li.unit_rate_snapshot,
+                  quantity: li.quantity,
+                }
+          ),
         }),
       });
       const linesData = await linesResponse.json();
