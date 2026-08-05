@@ -89,11 +89,11 @@ async function captureDraft(page: Page, suffix: string): Promise<void> {
   // cached page's own CSP.
   await page.getByLabel(/Quantity for Lumber/).fill("10");
   await expect(page.getByLabel(/Quantity for Lumber/)).toHaveValue("10");
-  await page.getByRole("button", { name: "Save draft" }).click();
+  await page.getByRole("button", { name: "Save survey" }).click();
   // By role, not by text: `getByText` matches case-insensitive
-  // SUBSTRINGS, so "Saved on this device" also matches the offline badge
+  // SUBSTRINGS, so "saved on this device" also matches the offline badge
   // ("...drafts are saved on this device") and fails strict mode.
-  await expect(page.getByRole("heading", { name: "Saved on this device" })).toBeVisible({
+  await expect(page.getByRole("heading", { name: "Surveys saved on this device" })).toBeVisible({
     timeout: 15_000,
   });
 }
@@ -162,7 +162,7 @@ test("offline capture: cold-starts with no network, and flushes when it returns"
 
   await test.step("cold-start the capture screen with no network", async () => {
     await page.goto("/estimates/capture");
-    await expect(page.getByRole("heading", { name: "On-site capture" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Site survey" })).toBeVisible({
       timeout: 15_000,
     });
     // The exact badge, not /Offline/i — this screen says the word "offline"
@@ -195,7 +195,7 @@ test("offline capture: cold-starts with no network, and flushes when it returns"
     // customer signs.
     await expect(page.getByText("$50.60")).toBeVisible();
     // Nothing left waiting: the draft is deleted once the server holds it.
-    await expect(page.getByRole("heading", { name: "Saved on this device" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Surveys saved on this device" })).toHaveCount(0);
   });
 
   await test.step("the estimate really exists on the server", async () => {
@@ -226,7 +226,7 @@ test("a rate that moved while the estimator was offline parks the draft", async 
   await test.step("capture a line at the rate the estimator can see", async () => {
     await context.setOffline(true);
     await page.goto("/estimates/capture");
-    await expect(page.getByRole("heading", { name: "On-site capture" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Site survey" })).toBeVisible({
       timeout: 15_000,
     });
     await captureDraft(page, suffix);
@@ -258,7 +258,7 @@ test("a rate that moved while the estimator was offline parks the draft", async 
   await test.step("adopting the new rates does not send it either", async () => {
     await page.getByRole("button", { name: "Use new rates" }).click();
     await expect(page.getByRole("heading", { name: "Needs your attention" })).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "Saved on this device" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Surveys saved on this device" })).toBeVisible();
     // A human adopts rates; a background flush must not. If this ever
     // starts sending on its own, the silent re-pricing the server guard
     // exists to prevent has simply moved into the client.

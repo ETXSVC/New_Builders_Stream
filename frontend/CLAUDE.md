@@ -85,13 +85,22 @@ HTTP.
 ## The service worker, and the two offline screens
 
 `public/sw.js` exists for two screens, and only those two:
-`/estimates/capture`, which an estimator cold-starts on site with no signal
-(`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`), and
+`/estimates/capture` — the **site survey**, which an estimator cold-starts on
+site with no signal
+(`docs/superpowers/specs/2026-08-02-offline-capture-screen-design.md`; note
+the URL keeps the older "capture" wording deliberately, because it is in the
+worker's allowlist and in documents already cached on real devices) — and
 `/my-tasks`, which is the field crew's entire product and carries the only
 two writes their role can make — a task's status and a daily log
 (`docs/superpowers/specs/2026-08-04-field-crew-offline-queue-design.md`).
 Adding a third means deciding what it caches and what its writes do when
 they fail, not appending a string to `OFFLINE_PATHS`.
+
+**A survey is not a quote, and the vocabulary is load-bearing.** A survey
+records what was measured and happens online or offline; a quote is priced,
+and only exists once the server has priced it. That is why the survey screen
+shows no total (`LineRows`' `showSubtotal={false}`) — a running total there
+would be a price produced by a screen that is not allowed to produce one.
 
 `lib/offline/hooks.ts` holds what both screens share — whose data this is,
 whether the server is reachable, and when to try again — precisely so the

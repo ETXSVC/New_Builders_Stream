@@ -78,12 +78,12 @@ export function Nav({ companyId }: { companyId: string }) {
             Estimates
           </Link>
         )}
-        {/* Admin/PM only, matching POST /estimates' own write roles — the
-            capture screen exists to create estimates, so a role that cannot
-            create one has nothing to do there. */}
+        {/* Admin/PM only, matching POST /estimates' own write roles — a survey
+            becomes a quote, so a role that cannot create one has nothing to
+            do there. */}
         {(role === "admin" || role === "project_manager") && (
           <Link href="/estimates/capture" className="text-sm text-slate-600 hover:text-slate-900">
-            On-site capture
+            Site survey
           </Link>
         )}
         {(role === "admin" || role === "project_manager") && (

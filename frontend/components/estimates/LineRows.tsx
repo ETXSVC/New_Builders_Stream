@@ -31,21 +31,33 @@ export function LineRows({
   onQuantityChange,
   onRemove,
   onRateChange,
+  showSubtotal = true,
 }: {
   lines: DraftLine[];
   onQuantityChange: (key: string, quantity: string) => void;
   onRemove: (key: string) => void;
   /**
    * Free-form rows only. Omitted by callers that cannot create them (the
-   * offline capture screen), which is also why a catalogued row never shows
-   * an editable rate even when this is supplied.
+   * site survey screen), which is also why a catalogued row never shows an
+   * editable rate even when this is supplied.
    */
   onRateChange?: (key: string, unitRate: string) => void;
+  /**
+   * False on the site survey screen, and that is a product rule rather than
+   * a layout preference: a survey records what was measured, and the priced
+   * quote is produced by the server. A running total computed here would be
+   * a price offered by a screen that is not allowed to produce one — and it
+   * is arithmetic done in JS `Number`, so it could disagree with the
+   * server's `Decimal` figure by a cent anyway.
+   */
+  showSubtotal?: boolean;
 }) {
-  const subtotal = lines.reduce(
-    (sum, line) => sum + Number(line.quantity || 0) * Number(line.unit_rate || 0),
-    0
-  );
+  const subtotal = showSubtotal
+    ? lines.reduce(
+        (sum, line) => sum + Number(line.quantity || 0) * Number(line.unit_rate || 0),
+        0
+      )
+    : 0;
 
   return (
     <div className="flex flex-col gap-2">
@@ -104,10 +116,12 @@ export function LineRows({
           </div>
         );
       })}
-      <div className="border-t border-slate-200 pt-2 flex justify-between text-sm font-medium">
-        <span>Subtotal (before markup)</span>
-        <span>{formatCurrency(subtotal)}</span>
-      </div>
+      {showSubtotal && (
+        <div className="border-t border-slate-200 pt-2 flex justify-between text-sm font-medium">
+          <span>Subtotal (before markup)</span>
+          <span>{formatCurrency(subtotal)}</span>
+        </div>
+      )}
     </div>
   );
 }

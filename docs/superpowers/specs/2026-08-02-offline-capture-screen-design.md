@@ -353,6 +353,33 @@ draft holds the rates for the lines it captured, not the whole price list.
 
 ---
 
+## 8.6 A survey is not a quote — vocabulary, decided 2026-08-04
+
+The screen originally called what it captured an "estimate", which blurred the
+line the product actually draws:
+
+- **A site survey** records what an estimator measured. It happens **online or
+  offline** — that is the whole point of this feature.
+- **A quote** is a priced document. It exists **only once the server has
+  priced it**, which requires a connection.
+
+So the offline screen is now *Site survey* throughout, its button saves a
+*survey*, and the word *quote* appears only where it describes something the
+server produced. Consequences that are more than wording:
+
+- **No total on the survey screen.** `LineRows` takes `showSubtotal`, and the
+  survey passes `false`. A running total there would be a price offered by a
+  screen that is not allowed to produce one — and it was computed in JS
+  `Number` rather than `Decimal`, so it could disagree with the server's
+  figure by a cent regardless.
+- **Per-line catalog rates stay.** They are what the company's catalog says,
+  not a price the estimator has offered, and they are what makes the 409 at
+  flush meaningful when the catalog moves (§8.3).
+- **The URL did not change.** `/estimates/capture` is in `public/sw.js`'s
+  allowlist and is baked into documents already cached on devices, so renaming
+  the route would strand any estimator who primed before the deploy. The words
+  changed; the path did not.
+
 ## 9. As built, 2026-08-03 — and the two things the design did not predict
 
 Shipped as designed: `/estimates/capture` (an ordinary `(app)` route, per
