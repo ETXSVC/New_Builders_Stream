@@ -1,0 +1,381 @@
+<!--
+  Source for docs/Builders-Stream-Feature-Status.pdf.
+
+  Regenerate after changing this file, from the repo root:
+
+      backend/.venv/Scripts/python.exe backend/scripts/render_feature_status.py
+
+  Rendered with xhtml2pdf - the same Jinja2 -> HTML -> PDF path the estimate
+  export uses, so there is no second toolchain to install. Its CSS support is
+  reduced (no flex, no grid); tables and simple block layout are what work.
+
+  The status column is derived from the code, the migrations and the test
+  suite, NOT from README.md's own Build Status table - that table drifts, and
+  this repository's guidance is to trust the code over any prose status claim.
+  When updating, re-derive rather than edit in place: the router/model/
+  migration inventory, the credential-gated client selectors (a "real" client
+  that is only chosen when its key is configured is NOT the same as a feature
+  that works), and the test count from pytest --collect-only.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @page {
+    size: letter portrait;
+    margin: 1.8cm 1.6cm 2.2cm 1.6cm;
+    @frame footer {
+      -pdf-frame-content: footerContent;
+      bottom: 1.0cm; margin-left: 1.6cm; margin-right: 1.6cm; height: 1cm;
+    }
+  }
+  body { font-family: Helvetica, sans-serif; font-size: 9pt; color: #1a1a1a; line-height: 1.4; }
+  h1 { font-size: 20pt; margin: 0 0 2pt 0; color: #0f172a; }
+  h2 { font-size: 12pt; margin: 16pt 0 5pt 0; color: #0f172a;
+       border-bottom: 1.2pt solid #0f172a; padding-bottom: 2pt; }
+  h3 { font-size: 9.5pt; margin: 10pt 0 3pt 0; color: #334155; }
+  .sub { font-size: 9pt; color: #475569; margin: 0 0 10pt 0; }
+  .lead { font-size: 9pt; color: #334155; margin: 0 0 9pt 0; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 4pt; }
+  th { background-color: #0f172a; color: #ffffff; font-size: 8pt; text-align: left;
+       padding: 4pt 5pt; font-weight: bold; }
+  td { font-size: 8.2pt; padding: 4pt 5pt; border-bottom: 0.5pt solid #cbd5e1;
+       vertical-align: top; }
+  tr.alt td { background-color: #f1f5f9; }
+  .feat { width: 27%; font-weight: bold; color: #0f172a; }
+  .stat { width: 16%; }
+  .note { width: 57%; color: #334155; }
+  .s-ship { color: #14532d; font-weight: bold; }
+  .s-cred { color: #78350f; font-weight: bold; }
+  .s-rev  { color: #1e3a8a; font-weight: bold; }
+  .s-part { color: #6b21a8; font-weight: bold; }
+  .s-none { color: #64748b; font-weight: bold; }
+  .legend td { font-size: 8pt; border-bottom: none; padding: 2pt 5pt; }
+  .box { background-color: #f1f5f9; padding: 7pt 9pt; margin: 8pt 0 12pt 0; }
+  .box p { margin: 0 0 4pt 0; font-size: 8.4pt; color: #334155; }
+  .box p.last { margin-bottom: 0; }
+  code { font-family: Courier, monospace; font-size: 7.8pt; color: #0f172a; }
+  #footerContent { font-size: 7.5pt; color: #94a3b8; text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="footerContent">
+  Builders Stream — Feature Status &middot; generated from the code at commit 9c731e2, 2026-08-04 &middot; page <pdf:pagenumber /> of <pdf:pagecount />
+</div>
+
+<h1>Builders Stream</h1>
+<p class="sub"><b>Feature status</b> &middot; 2026-08-04 &middot; branch <code>main</code> at <code>9c731e2</code></p>
+
+<p class="lead">
+Status below is derived from the code, the migrations and the test suite rather than
+from any prose status table &mdash; the repository's own guidance is that READMEs and
+review documents drift, while the schema snapshot and CI gates do not. Where a
+feature's status depends on something outside the codebase (a vendor account, DNS
+records, a corpus of drawings), that is stated explicitly rather than counted as
+"done".
+</p>
+
+<table class="legend">
+  <tr>
+    <td width="19%"><span class="s-ship">Shipped</span></td>
+    <td>Merged to <code>main</code>, covered by tests, reachable in the product.</td>
+  </tr>
+  <tr>
+    <td><span class="s-cred">Awaiting creds</span></td>
+    <td>Code complete and tested against a fake; needs an external account, key or DNS record to run for real.</td>
+  </tr>
+  <tr>
+    <td><span class="s-rev">In review</span></td>
+    <td>Written and verified, sitting in an open pull request.</td>
+  </tr>
+  <tr>
+    <td><span class="s-part">Partial</span></td>
+    <td>A deliberate subset is built; the remainder is blocked on a stated decision or input.</td>
+  </tr>
+  <tr>
+    <td><span class="s-none">Not started</span></td>
+    <td>Named in the roadmap, no code.</td>
+  </tr>
+</table>
+
+<div class="box">
+  <p><b>Headline.</b> Phases 0&ndash;4 of the roadmap are complete and in the product,
+  backend and frontend. 1,317 backend tests and a 43-case Playwright suite gate every
+  merge across six CI jobs. 36 migrations.</p>
+  <p class="last"><b>What is not done</b> divides into two kinds, and the difference
+  matters when planning: work that needs <i>code</i> (multi-currency, localization, the
+  AI takeoff feature itself) and work that needs <i>an account or a decision</i>
+  (Stripe keys, accounting OAuth approval, mail DNS, an accuracy bar for takeoff). The
+  second kind cannot be closed by building anything.</p>
+</div>
+
+<h2>Phase 0 &mdash; Foundation</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Multi-tenancy</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">PostgreSQL row-level security is the enforcement boundary, not application code. Company hierarchy via an immutable <code>companies.parent_id</code>. Two catalog-driven sweeps assert every table Postgres reports has a real policy and a <code>company_id</code> index &mdash; so a table added later cannot slip past by nobody remembering.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Authentication</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">PyJWT + Argon2id, refresh-token rotation, MFA/TOTP, password reset by email. A documented substitution for the design doc's OIDC/Keycloak.</td>
+  </tr>
+  <tr>
+    <td class="feat">Authorization</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Three orthogonal per-route dependencies: role, subscription standing, and tier entitlement. The <code>client</code> role is additionally scoped by row &mdash; company-scoped RLS says nothing about two clients of the same company, and a dedicated test suite covers exactly that case.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Audit log</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Entitlement changes made by an operator are written to the <i>target tenant's</i> log, not a separate platform log.</td>
+  </tr>
+  <tr>
+    <td class="feat">Multi-company membership</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">One person may belong to several companies and switch in-app. The switch rides the refresh-token chain, so it survives token rotation instead of silently reverting mid-task.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">CI gates</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Six jobs across three workflows. Both <code>docker-build</code> jobs <i>run</i> the image rather than only building it, because the production image installs non-editably and a file setuptools does not package exists everywhere except in the artifact that ships.</td>
+  </tr>
+</table>
+
+<h2>Phase 1 &mdash; CRM &amp; Project Management</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Leads</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Full CRUD, client access grants, communication log. Winning a lead publishes an event that drafts a project.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Projects, phases, tasks</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Full CRUD. Project lookup is centralised in one service because six routers needed it and an open-coded query silently drops both the field crew's assigned-only scope and the client's row scope.</td>
+  </tr>
+  <tr>
+    <td class="feat">Documents</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Immutable by migration &mdash; UPDATE and DELETE are revoked, and a new version is a new row.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Daily logs</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Also immutable, which is why the offline queue had to make them safe to replay rather than de-duplicate after the fact.</td>
+  </tr>
+  <tr>
+    <td class="feat">Invitations</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">With email delivery and an accept screen. No route joins an existing user to a second company.</td>
+  </tr>
+</table>
+
+<h2>Phase 2 &mdash; Estimation &amp; E-Signature</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Cost catalog</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Per tenant, inheritance-resolved &mdash; a branch may override its parent's item.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Markup profiles &amp; calculation</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Money is <code>Numeric(12,2)</code> throughout, quantized with one shared constant and <code>ROUND_HALF_UP</code> to match Postgres.</td>
+  </tr>
+  <tr>
+    <td class="feat">Free-form ("Miscellaneous") lines</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Migration 0035. For work the catalog does not price &mdash; site cleanup, a permit fee, an allowance. Replaces a field workaround that printed "400 &times; $1.00" on the document a customer signs. A database CHECK makes "neither shape" unrepresentable.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Stale-rate guard</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">A save whose catalog rate moved underneath it is refused with both numbers named, and the conflict is recoverable in the UI rather than a dead end. Carried in the request body, never a header &mdash; the frontend proxy forwards a fixed header allowlist and would drop one silently.</td>
+  </tr>
+  <tr>
+    <td class="feat">Line order</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Migration 0036. Lines keep the order the estimator put them in, on the API, the BOM and the PDF. They previously came back ordered by a random <code>uuid4</code> primary key &mdash; arbitrary order, unrelated to anything a person did. No new API field: the index in the request array is the position, so the contract is "the order you send is the order you get".</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Concurrent-edit safety</td><td class="stat"><span class="s-rev">In review</span></td>
+    <td class="note">PR #141. Two simultaneous saves of one estimate's lines used to leave <b>both</b> sets on it &mdash; a total roughly double the real one, silently, on a quote. Migration 0036's unique constraint makes that impossible; this returns a 409 a person can act on rather than the 500 an unhandled integrity error produces. The corruption was reproduced in a test before being fixed.</td>
+  </tr>
+  <tr>
+    <td class="feat">PDF export</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Background job, Jinja2 &rarr; HTML &rarr; PDF via xhtml2pdf (a documented substitution for WeasyPrint, which has no simple Windows dev install).</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">E-signature</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Client sign-off flow with signer identity and IP recorded.</td>
+  </tr>
+  <tr>
+    <td class="feat">Change orders</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Block project completion until approved.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Duplicate an estimate</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Shipped, then broken by the free-form line work, then fixed (#139): the copy sent one payload shape for every line, and the batch write rejects a free-form line sent as a catalogued one &mdash; so a single Miscellaneous line failed the duplicate for the whole estimate. The regression is now gated by an end-to-end test that had never covered it.</td>
+  </tr>
+</table>
+
+<h2>Phase 3 &mdash; Compliance</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Subcontractor registry</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">With assignment to projects and an override flow.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Compliance documents &amp; expiry</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Dashboard, notifications, and a daily scheduler sweeping every tenant.</td>
+  </tr>
+  <tr>
+    <td class="feat">Expiry email</td><td class="stat"><span class="s-cred">Awaiting creds</span></td>
+    <td class="note">The SMTP client is real (see Email below); what is missing is a mail account and DNS.</td>
+  </tr>
+</table>
+
+<h2>Phase 3 &mdash; Accounting &amp; Billing</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Invoices &amp; payments</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Partial payments supported; the sync event fires per payment, not when an invoice settles.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Bills &amp; expenses</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Accounts payable, with its own tenant-isolation suite.</td>
+  </tr>
+  <tr>
+    <td class="feat">Auto-drafted invoices</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Approving an estimate drafts a deposit invoice; completing a project drafts a final invoice for the uninvoiced remainder. Event-driven, in the same transaction.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Tenant financial settings</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Deposit percentage and tax rate per tenant, resolved company &rarr; root company &rarr; code default, so a head office sets policy once and a branch in another state can still differ.</td>
+  </tr>
+  <tr>
+    <td class="feat">Profitability reporting</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Revenue, cost and margin per project, with AR/AP aging and estimated tax liability.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Subscription lifecycle</td><td class="stat"><span class="s-cred">Awaiting creds</span></td>
+    <td class="note">Tiers, tier gating, read-only enforcement and the Stripe webhook are complete and tested. The real Stripe client is SDK-backed and selected only when an API key is configured; the fake is the default, so tests, CI and a local stack need no Stripe account. What is missing is the account.</td>
+  </tr>
+</table>
+
+<h2>Phase 4 &mdash; External Integrations</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">QuickBooks &amp; FreshBooks</td><td class="stat"><span class="s-cred">Awaiting creds</span></td>
+    <td class="note">OAuth connect and idempotent sync are built. Real HTTP clients are selected <i>per provider</i> on that provider's client id being configured, so one can be live while the other is still a fake &mdash; they are separate OAuth applications. Provider-side ids are remembered so a re-sync updates rather than duplicates. Blocked on approved OAuth applications, which is an application process, not code.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Email delivery</td><td class="stat"><span class="s-cred">Awaiting creds</span></td>
+    <td class="note">A real stdlib SMTP client, switched on by one setting, with a script that proves a server's configuration without inviting anybody. A tenant may also point the product at their own mail server &mdash; credentials encrypted at rest, never returned by any route, and the host checked against private and reserved networks before every send, because a tenant-supplied hostname is an outbound request made on their behalf. Blocked on a provider account and SPF/DKIM/DMARC records, which no code can supply.</td>
+  </tr>
+</table>
+
+<h2>Platform console &mdash; cross-tenant administration</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Tenant administration</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">List, create (company + owner + trial), rename, change tier or status, and take out of service. Built <i>beside</i> the product's auth path: a different dependency, a different token scope, a different database role that owns nothing. Privilege is re-checked every request, so revoking takes effect within one request rather than one token lifetime.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Module entitlement overrides</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Three-state per tenant &mdash; grant what the tier withholds, withhold what it grants, or defer to the tier. Collapsing the first two would make "off" unexpressible.</td>
+  </tr>
+  <tr>
+    <td class="feat">Taking a tenant out of service</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">A soft delete: the console's role holds DELETE on nothing. Destroying a tenant for real crosses ~40 tables of foreign keys and stays behind a shell and the table owner, deliberately.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Creating an operator account</td><td class="stat"><span class="s-part">By script</span></td>
+    <td class="note">Deliberate, not missing. No route can grant this privilege &mdash; writes to the admin table are revoked from both runtime roles &mdash; so escalation into this tier is removed as a category rather than defended against. Minting an operator needs database access and a shell.</td>
+  </tr>
+</table>
+
+<h2>Offline &amp; field use</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Offline site survey</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">An estimator on site picks a cached lead or project, a markup profile and catalog items, and saves to the device; it sends itself when signal returns. Cold-starts with no network at all. Nothing is cached until the user asks for it, and caches are keyed by user and company because row-level security stops at the network boundary.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Field-crew write queue</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">The crew's whole product cold-starts with no signal and queues their only two writes. The hard part was making both safe to replay: a daily log carries a client-generated key (a duplicate would be permanent, since no runtime role can delete one), and a status change carries the value it was made against, so one queued at 09:00 cannot silently undo a decision taken at 17:00.</td>
+  </tr>
+  <tr>
+    <td class="feat">Survey vocabulary</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">The offline screen captures a <i>survey</i>; the priced quote is produced by the server. The screen shows no running total, because a total computed on the device is a price offered by a screen that is not allowed to produce one. The URL keeps the older "capture" wording deliberately &mdash; it is in the service worker's allowlist and in documents already cached on real devices.</td>
+  </tr>
+</table>
+
+<h2>Phase 5 &mdash; open items</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">AI blueprint takeoff</td><td class="stat"><span class="s-part">Partial</span></td>
+    <td class="note">Two decisions are made and binding: <b>per-tenant opt-in</b> (a drawing leaving this deployment is the tenant's call) and <b>provider-agnostic</b> (no vendor's SDK or response format outside its adapter). The seam, the fake, a unit-compatibility rule and an evaluation harness are merged. <b>No vendor adapter, no route, no UI</b> &mdash; deliberately, because those are downstream of an accuracy bar nobody has measured yet.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">&nbsp;&nbsp;&mdash; the blocker</td><td class="stat"><span class="s-none">Needs input</span></td>
+    <td class="note">A corpus of real plan sets with the takeoffs humans produced from them. Four cases is enough to decide; the decision is "build it" or "don't", and both outcomes are visible long before sixty cases sharpen the number. This is the one piece of work no code can do.</td>
+  </tr>
+  <tr>
+    <td class="feat">Multi-currency</td><td class="stat"><span class="s-none">Not started</span></td>
+    <td class="note">Named in the roadmap. Money columns and rounding are already centralised, which is the part that would otherwise be scattered.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Localization (multi-language UI)</td><td class="stat"><span class="s-none">Not started</span></td>
+    <td class="note">Requested 2026-08-04, to be scoped once current work closes. The screen that most wants it is the field crew's, whose users may not be the person who bought the software. Three decisions come first: where the locale lives (per user, per company, or the browser); whether the signed PDF and transactional email follow the UI, since a translated screen over an English contract is a half-measure; and how a locale change invalidates the offline caches, which hold whole documents.</td>
+  </tr>
+</table>
+
+<h2>Operations</h2>
+<table>
+  <thead><tr><th class="feat">Feature</th><th class="stat">Status</th><th class="note">Notes / evidence</th></tr></thead>
+  <tr>
+    <td class="feat">Health &amp; readiness</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Split deliberately: liveness is what a restart policy acts on, readiness is what a load balancer gates on. Conflating them would make a database outage restart-loop the application for no benefit.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Metrics</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Prometheus. No series is ever labelled with a tenant, and requests are labelled with the matched route template so a 404 scan cannot grow memory from outside. Both are tests, not conventions.</td>
+  </tr>
+  <tr>
+    <td class="feat">Error reporting</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Sentry, off unless configured. Everything outbound is scrubbed on both server and browser &mdash; the browser's list includes a bare <code>id</code>, because the invitation-accept page reads a one-time credential from the query string.</td>
+  </tr>
+  <tr class="alt">
+    <td class="feat">Monitoring stack</td><td class="stat"><span class="s-part">Partial</span></td>
+    <td class="note">Prometheus, Grafana, Alertmanager and exporters ship in the production stack, bound to loopback, and every alert's metric name is checked against the live registry &mdash; an alert naming a metric that does not exist never fires and never errors. No notifier is wired up: Alertmanager cannot read environment variables, so those details are filled in on the box.</td>
+  </tr>
+  <tr>
+    <td class="feat">Production deployment</td><td class="stat"><span class="s-ship">Shipped</span></td>
+    <td class="note">Hardened compose stack with TLS, a runbook, and backups. Backup failure has its own mail path independent of the monitoring stack.</td>
+  </tr>
+</table>
+
+<h2>How to read a status here</h2>
+<div class="box">
+  <p><b>"Shipped" means merged, tested and reachable</b> &mdash; not "written". Several
+  gates in this codebase exist because something looked done and was not: an alert
+  naming a metric that does not exist, a policy that would satisfy a "has a policy"
+  check and leak everything, a test suite that passes trivially over an empty set.
+  Each of those is now asserted against something the system generates rather than
+  against a transcribed list.</p>
+  <p><b>"Awaiting credentials" is not a code estimate.</b> Stripe, the two accounting
+  providers and email are each complete behind a real client that is selected only when
+  its own credentials are configured, with a fake as the default. Nothing further gets
+  built by waiting; someone has to open an account or publish a DNS record.</p>
+  <p><b>The one genuinely open engineering question</b> is the accuracy bar for AI
+  takeoff, and it is now measurable rather than arguable. What it needs is a handful
+  of real plan sets and the takeoffs your estimators produced from them.</p>
+  <p class="last"><b>Where a bug was found, a gate was added.</b> Making one line
+  nullable (migration 0035) silently broke three separate queries that joined through
+  it, each carrying a comment saying it could never be null; all three were found
+  afterwards, separately. Two sweeps now assert those properties over the code itself
+  rather than relying on a fourth careful reading &mdash; one for join correctness, one
+  for line ordering. The second found a call site nobody had noticed on the day it
+  was written.</p>
+</div>
+
+</body>
+</html>
