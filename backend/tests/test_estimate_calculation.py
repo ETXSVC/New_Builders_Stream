@@ -136,10 +136,16 @@ async def _insert_line_item_directly(
     conn = await asyncpg.connect(OWNER_DSN)
     try:
         await conn.execute(
+            # `position` (migration 0036) is computed rather than passed: this
+            # helper appends, which is what the route it stands in for does, and
+            # a unique constraint on (estimate_id, position) means two calls for
+            # one estimate cannot both take slot 0.
             "INSERT INTO estimate_line_items "
             "(id, estimate_id, company_id, cost_catalog_item_id, quantity, "
-            "unit_rate_snapshot, line_total) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)",
+            "unit_rate_snapshot, line_total, position) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, "
+            "(SELECT coalesce(max(position) + 1, 0) FROM estimate_line_items "
+            " WHERE estimate_id = $1))",
             estimate_id,
             company_id,
             cost_catalog_item_id,

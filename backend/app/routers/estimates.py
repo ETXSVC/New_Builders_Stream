@@ -430,7 +430,7 @@ async def get_estimate(
     line_items_result = await current.session.execute(
         select(EstimateLineItem)
         .where(EstimateLineItem.estimate_id == estimate.id)
-        .order_by(EstimateLineItem.id.asc())
+        .order_by(EstimateLineItem.position.asc(), EstimateLineItem.id.asc())
     )
     line_items = list(line_items_result.scalars().all())
 
@@ -639,7 +639,12 @@ async def replace_estimate_line_items(
     )
 
     new_line_items: list[EstimateLineItem] = []
-    for line, catalog_item in resolved_lines:
+    # `enumerate` is the whole ordering contract: the index of an item in the
+    # request array becomes its `position`, so the order a caller sends lines
+    # in is the order every read gives them back — including the PDF. Before
+    # migration 0036 the reads ordered by `id`, a random uuid4, so an
+    # estimator's arrangement was discarded on save.
+    for position, (line, catalog_item) in enumerate(resolved_lines):
         # The rate comes from the catalog when there is one, and from the
         # caller when there is not. `unit_rate` is non-None on every
         # free-form line — the schema's `_exactly_one_shape` guarantees it —
@@ -661,6 +666,7 @@ async def replace_estimate_line_items(
             # grant), and stamping the PARENT here would make the child's
             # own session see its estimate with zero line items.
             company_id=estimate.company_id,
+            position=position,
             cost_catalog_item_id=line.cost_catalog_item_id,
             # Both NULL on a catalogued line: its name and unit live on the
             # catalog item, and a second copy here would be free to drift
@@ -756,7 +762,7 @@ async def calculate_estimate_totals(
     line_items_result = await current.session.execute(
         select(EstimateLineItem)
         .where(EstimateLineItem.estimate_id == estimate.id)
-        .order_by(EstimateLineItem.id.asc())
+        .order_by(EstimateLineItem.position.asc(), EstimateLineItem.id.asc())
     )
     line_items = list(line_items_result.scalars().all())
 

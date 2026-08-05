@@ -238,6 +238,11 @@ CREATE TABLE estimate_line_items (
     -- the catalog item and a second copy here would be free to drift.
     description VARCHAR(255),
     unit VARCHAR(50),
+    -- Migration 0036. Where this line sits on the estimate, 0-based. Every
+    -- read orders by it: `id` is a random uuid4, so ordering by that is
+    -- arbitrary order, and an estimator's arrangement used to be discarded on
+    -- save — including on the PDF a customer signs.
+    position INTEGER NOT NULL,
     quantity NUMERIC(12,2) NOT NULL,
     -- Copied from the catalog at add-time on a catalogued line (immune to
     -- later catalog price changes); on a FREE-FORM line it is the rate the
@@ -249,9 +254,27 @@ CREATE TABLE estimate_line_items (
         (cost_catalog_item_id IS NOT NULL AND description IS NULL AND unit IS NULL)
         OR
         (cost_catalog_item_id IS NULL AND description IS NOT NULL AND unit IS NOT NULL)
-    )
+    ),
+    -- Two lines cannot claim one slot. Also stops two concurrent batch
+    -- replaces leaving BOTH sets of lines on one estimate — see below.
+    CONSTRAINT uq_estimate_line_items_estimate_position UNIQUE (estimate_id, position)
 );
 ```
+
+**Line order (migration 0036).** `position` records the order the estimator
+put the lines in. There is no API field for it: `PUT /estimates/{id}/lines`
+writes each item's index in the request array, so the contract is *the order
+you send is the order you get*. Before it existed, all three read paths
+ordered by `id` — a random `uuid4` — so a saved estimate came back shuffled,
+which on the PDF is the quote a customer reads.
+
+The unique constraint carries a second, less obvious guarantee. Two concurrent
+`PUT .../lines` on one estimate: the second writer's `DELETE ... WHERE
+estimate_id = X` runs against its own statement snapshot and cannot see rows
+the first has not committed yet, so it deletes what it can see and inserts its
+own — leaving the estimate holding **both** sets of lines and a total roughly
+double the true one, silently. The constraint turns that into an integrity
+error instead.
 
 **Free-form lines (migration 0035).** Every line used to require a catalog
 item, which left nowhere to put the last line of most real estimates — site

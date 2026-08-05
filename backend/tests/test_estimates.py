@@ -11,6 +11,7 @@ estimate yet, but this task's own `?status=` filter and client-scoping
 logic still need to be exercised against one).
 """
 
+import uuid
 from decimal import Decimal
 
 import asyncpg
@@ -209,10 +210,16 @@ async def _insert_line_item_directly(
     conn = await asyncpg.connect(OWNER_DSN)
     try:
         await conn.execute(
+            # `position` (migration 0036) is computed rather than passed: this
+            # helper appends, which is what the route it stands in for does, and
+            # a unique constraint on (estimate_id, position) means two calls for
+            # one estimate cannot both take slot 0.
             "INSERT INTO estimate_line_items "
             "(id, estimate_id, company_id, cost_catalog_item_id, quantity, "
-            "unit_rate_snapshot, line_total) "
-            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)",
+            "unit_rate_snapshot, line_total, position) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, "
+            "(SELECT coalesce(max(position) + 1, 0) FROM estimate_line_items "
+            " WHERE estimate_id = $1))",
             estimate_id,
             company_id,
             cost_catalog_item_id,
@@ -2126,3 +2133,201 @@ async def test_free_form_and_catalogued_lines_coexist_on_one_estimate(client):
     # Each shape keeps its own fields, and neither leaks into the other.
     assert catalogued["description"] is None and catalogued["unit"] is None
     assert free_form["description"] == "Site cleanup" and free_form["unit"] == "lot"
+
+
+# --- Line ordering (migration 0036) ---------------------------------------
+#
+# Before `position` existed, every read of `estimate_line_items` ordered by
+# `id` — a random uuid4 — so an estimator's arrangement was discarded the
+# moment they saved. Eight lines are used below rather than two or three
+# deliberately: the old behaviour returned a random permutation, so a
+# three-line test would have agreed with it by chance one time in six. At
+# eight it is one in 40,320.
+
+_ORDERED_DESCRIPTIONS = [
+    "01 Site preparation",
+    "02 Demolition",
+    "03 Excavation",
+    "04 Framing",
+    "05 Roofing",
+    "06 Interior finishes",
+    "07 Final clean",
+    "08 Contingency allowance",
+]
+
+
+def _ordered_free_form_items():
+    """Free-form lines, so each one carries a description that identifies it.
+
+    Catalogued lines would all have to point at distinct catalog items to be
+    told apart, which is a lot of setup to prove something about ordering.
+    """
+    return [
+        {"description": description, "unit": "lot", "unit_rate": "100.00", "quantity": "1.00"}
+        for description in _ORDERED_DESCRIPTIONS
+    ]
+
+
+async def test_replace_line_items_returns_lines_in_the_order_they_were_sent(client):
+    admin = await _register_and_login(client, "Acme Construction", "line-order@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": _ordered_free_form_items()},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert [li["description"] for li in response.json()["line_items"]] == _ORDERED_DESCRIPTIONS
+
+
+async def test_line_order_survives_a_re_read(client):
+    """The write returning them in order proves nothing on its own — it can
+    just echo the list it was handed. This one goes back to the database."""
+    admin = await _register_and_login(client, "Acme Construction", "line-order-get@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": _ordered_free_form_items()},
+        headers=admin["headers"],
+    )
+
+    response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert response.status_code == 200
+    assert [li["description"] for li in response.json()["line_items"]] == _ORDERED_DESCRIPTIONS
+
+
+async def test_line_order_survives_a_recalculate(client):
+    """The third read path, and the one easiest to forget: `calculate` builds
+    its own query rather than reusing the detail route's."""
+    admin = await _register_and_login(client, "Acme Construction", "line-order-calc@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": _ordered_free_form_items()},
+        headers=admin["headers"],
+    )
+
+    response = await client.post(f"/estimates/{estimate_id}/calculate", headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert [li["description"] for li in response.json()["line_items"]] == _ORDERED_DESCRIPTIONS
+
+
+async def test_reordering_the_request_reorders_the_estimate(client):
+    """The contract is "the order you send is the order you get", which means
+    a caller can rearrange lines by sending them rearranged — there is no
+    separate reorder route, and this is why one is not needed."""
+    admin = await _register_and_login(client, "Acme Construction", "line-reorder@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": _ordered_free_form_items()},
+        headers=admin["headers"],
+    )
+
+    reversed_items = list(reversed(_ordered_free_form_items()))
+    response = await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": reversed_items},
+        headers=admin["headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert [li["description"] for li in response.json()["line_items"]] == list(
+        reversed(_ORDERED_DESCRIPTIONS)
+    )
+
+    get_response = await client.get(f"/estimates/{estimate_id}", headers=admin["headers"])
+    assert [li["description"] for li in get_response.json()["line_items"]] == list(
+        reversed(_ORDERED_DESCRIPTIONS)
+    )
+
+
+async def test_line_positions_are_zero_based_and_contiguous(client, db_session):
+    """`position` is the estimator's arrangement, not a sort key with gaps.
+
+    Asserted against the stored rows rather than the response, because the
+    response never exposes the column — the array order IS the contract, and
+    this is the invariant underneath it.
+    """
+    from sqlalchemy import select as sa_select
+
+    from app.models import EstimateLineItem
+
+    admin = await _register_and_login(client, "Acme Construction", "line-position@acme.test")
+    project = await _create_project(client, admin["headers"])
+    markup = await _create_markup_profile(client, admin["headers"])
+    created = await client.post(
+        "/estimates",
+        json={"project_id": project["id"], "markup_profile_id": markup["id"]},
+        headers=admin["headers"],
+    )
+    estimate_id = created.json()["id"]
+    await client.put(
+        f"/estimates/{estimate_id}/lines",
+        json={"items": _ordered_free_form_items()},
+        headers=admin["headers"],
+    )
+
+    rows = (
+        await db_session.execute(
+            sa_select(EstimateLineItem.position, EstimateLineItem.description)
+            .where(EstimateLineItem.estimate_id == uuid.UUID(estimate_id))
+            .order_by(EstimateLineItem.position)
+        )
+    ).all()
+
+    assert [position for position, _ in rows] == list(range(len(_ORDERED_DESCRIPTIONS)))
+    assert [description for _, description in rows] == _ORDERED_DESCRIPTIONS
+
+
+async def test_two_lines_cannot_claim_one_position(db_session):
+    """The constraint is not decoration.
+
+    Its real job is not stopping a careless INSERT — it is stopping two
+    concurrent batch replaces from leaving BOTH sets of lines on one
+    estimate, because the second writer's DELETE cannot see rows the first
+    has not committed yet. That failure is a silently doubled total on a
+    document a customer signs. Asserted here at the level the guarantee
+    actually lives, since no route can produce it on demand.
+    """
+    from sqlalchemy import text
+
+    result = await db_session.execute(
+        text(
+            """
+            SELECT conname FROM pg_constraint
+            WHERE conrelid = 'estimate_line_items'::regclass
+              AND contype = 'u'
+              AND conname = 'uq_estimate_line_items_estimate_position'
+            """
+        )
+    )
+    assert result.scalar_one_or_none() == "uq_estimate_line_items_estimate_position"
