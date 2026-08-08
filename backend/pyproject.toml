@@ -11,7 +11,7 @@ dependencies = [
     # `iter_api_routes` in tests/test_tier_gating.py, which is the only
     # thing in this repo that walks routes directly.
     "fastapi>=0.140.13,<0.141",
-    "uvicorn[standard]>=0.32,<0.33",
+    "uvicorn[standard]>=0.52.1,<0.53",
     "sqlalchemy[asyncio]>=2.0.51,<2.1",
     "asyncpg>=0.30,<0.31",
     "alembic>=1.18.5,<1.19",
