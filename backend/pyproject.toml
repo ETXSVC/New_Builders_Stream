@@ -80,7 +80,7 @@ dependencies = [
     # It was previously dev-only, which meant the entire test suite and
     # every CI job had it while the production image did not — a gap that
     # by construction could only ever appear in the artifact that ships.
-    "httpx>=0.27,<0.28",
+    "httpx>=0.28.1,<0.29",
 ]
 
 [project.optional-dependencies]
@@ -119,7 +119,7 @@ dev = [
     # the changelog.
     "pytest>=9.1.1,<10.0",
     "pytest-asyncio>=1.0,<2.0",
-    "httpx>=0.27,<0.28",
+    "httpx>=0.28.1,<0.29",
     "ruff>=0.16.0,<1.0",
     # tests/test_monitoring_config.py parses the Prometheus/Alertmanager/
     # Grafana config and docker-compose.prod.yml. Already present
