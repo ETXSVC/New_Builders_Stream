@@ -125,7 +125,7 @@ dev = [
     # Grafana config and docker-compose.prod.yml. Already present
     # transitively (uvicorn[standard]), declared here because a test
     # dependency that arrives by accident disappears the same way.
-    "pyyaml>=6.0,<7.0",
+    "pyyaml>=6.0.3,<7.0",
     "mypy>=2.3.0,<3.0",
     # Coverage measurement. Not gated on a threshold in CI (see the
     # [tool.coverage] section below for why); the point is that a reviewer
